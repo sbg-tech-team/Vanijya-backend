@@ -20,6 +20,7 @@ from app.shared.utils.storage import (
 
 _STORAGE_BUCKET = os.environ.get("DATABASE_STORAGE_BUCKET", "avatars")
 
+from app.modules.connections.models import UserConnection
 from app.modules.profile.models import (
     Commodity,
     Interest,
@@ -181,7 +182,22 @@ def _load_profile_for_user(db: Session, user_id: UUID) -> Profile | None:
     )
 
 
-def _to_response(profile: Profile, posts_count: int = 0) -> ProfileResponse:
+def _get_follow_counts(db: Session, user_id: UUID) -> tuple[int, int]:
+    followers = db.query(func.count(UserConnection.follower_id)).filter(
+        UserConnection.following_id == user_id
+    ).scalar() or 0
+    following = db.query(func.count(UserConnection.following_id)).filter(
+        UserConnection.follower_id == user_id
+    ).scalar() or 0
+    return followers, following
+
+
+def _to_response(
+    profile: Profile,
+    posts_count: int = 0,
+    followers_count: int = 0,
+    following_count: int = 0,
+) -> ProfileResponse:
     return ProfileResponse(
         id=profile.id,
         name=profile.name,
@@ -191,7 +207,8 @@ def _to_response(profile: Profile, posts_count: int = 0) -> ProfileResponse:
         is_verified=profile.is_verified,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
-        followers_count=profile.followers_count,
+        followers_count=followers_count,
+        following_count=following_count,
         posts_count=posts_count,
         commodities=[CommodityOut.model_validate(pc.commodity) for pc in profile.commodities],
         interests=[InterestOut.model_validate(pi.interest) for pi in profile.interests],
@@ -292,7 +309,7 @@ def create_profile(db: Session, user_id: UUID, payload: ProfileCreate) -> Profil
         loaded_profile = _load_profile_for_user(db, user_id)
         if not loaded_profile:
             raise ProfileNotFoundError("Profile not found")
-        return _to_response(loaded_profile, posts_count=0)
+        return _to_response(loaded_profile, posts_count=0, followers_count=0, following_count=0)
     except Exception:
         db.rollback()
         raise
@@ -305,7 +322,8 @@ def get_my_profile(db: Session, user_id: UUID) -> ProfileResponse:
     posts_count = (
         db.query(func.count(Post.id)).filter(Post.profile_id == profile.id).scalar() or 0
     )
-    return _to_response(profile, posts_count=posts_count)
+    followers_count, following_count = _get_follow_counts(db, user_id)
+    return _to_response(profile, posts_count=posts_count, followers_count=followers_count, following_count=following_count)
 
 
 def update_profile(db: Session, user_id: UUID, payload: ProfileUpdate) -> ProfileResponse:
@@ -362,7 +380,8 @@ def update_profile(db: Session, user_id: UUID, payload: ProfileUpdate) -> Profil
     posts_count = (
         db.query(func.count(Post.id)).filter(Post.profile_id == profile_resp.id).scalar() or 0
     )
-    return _to_response(profile_resp, posts_count=posts_count)
+    followers_count, following_count = _get_follow_counts(db, user_id)
+    return _to_response(profile_resp, posts_count=posts_count, followers_count=followers_count, following_count=following_count)
 
 
 def delete_profile(db: Session, user_id: UUID) -> None:
@@ -404,6 +423,7 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
     posts_count = (
         db.query(func.count(Post.id)).filter(Post.profile_id == profile_id).scalar() or 0
     )
+    followers_count, following_count = _get_follow_counts(db, profile.users_id)
 
     return ProfilePublicResponse(
         id=profile.id,
@@ -411,7 +431,8 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
         role_id=profile.role_id,
         is_verified=profile.is_verified,
         commodities=[CommodityOut.model_validate(pc.commodity) for pc in profile.commodities],
-        followers_count=profile.followers_count,
+        followers_count=followers_count,
+        following_count=following_count,
         posts_count=posts_count,
         business_name=profile.business_name,
         city=profile.city,

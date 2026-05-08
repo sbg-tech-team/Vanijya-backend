@@ -146,6 +146,7 @@ Content-Type: application/json
     "is_user_verified": false,
     "is_business_verified": false,
     "followers_count": 0,
+    "following_count": 0,
     "posts_count": 0,
     "business_name": "Shri Balaji Global",
     "city": "Pune",
@@ -207,6 +208,7 @@ Authorization: Bearer <access_token>
   "is_user_verified": false,
   "is_business_verified": false,
   "followers_count": 47,
+  "following_count": 23,
   "posts_count": 12,
   "business_name": "Shri Balaji Global",
   "city": "Pune",
@@ -455,6 +457,7 @@ GET /profile/{profile_id}
     { "id": 1, "name": "Rice" }
   ],
   "followers_count": 47,
+  "following_count": 23,
   "posts_count": 12,
   "business_name": "Shri Balaji Global",
   "city": "Pune",
@@ -531,7 +534,8 @@ interests        Interest[]    — [{id, name}]
 is_verified      bool          — true if identity OR business is verified
 is_user_verified bool          — PAN/Aadhaar verified
 is_business_verified bool      — GST/Trade License verified
-followers_count  int
+followers_count  int           — number of users following this profile (live count)
+following_count  int           — number of users this profile follows (live count)
 posts_count      int
 business_name    string|null
 city             string|null
@@ -548,7 +552,8 @@ name             string
 role_id          int
 is_verified      bool
 commodities      Commodity[]
-followers_count  int
+followers_count  int           — number of users following this profile (live count)
+following_count  int           — number of users this profile follows (live count)
 posts_count      int
 business_name    string|null
 city             string|null

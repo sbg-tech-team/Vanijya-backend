@@ -90,6 +90,7 @@ class ProfileResponse(BaseModel):
     is_user_verified: bool
     is_business_verified: bool
     followers_count: int
+    following_count: int
     posts_count: int
     business_name: Optional[str]
     city: Optional[str] = None
@@ -107,7 +108,8 @@ class ProfilePublicResponse(BaseModel):
     role_id: int
     is_verified: bool
     commodities: List[CommodityOut]
-    followers_count: int    # shown on other users' profile header
+    followers_count: int
+    following_count: int
     posts_count: int
     business_name: Optional[str]
     city: Optional[str] = None
