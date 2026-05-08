@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
-
+import requests
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 from sqlalchemy.orm import Session
@@ -14,6 +14,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security.jwt_handler import create_access_token, create_onboarding_token
 from app.modules.auth.models import UserSession
+
+sandbox_base_url = "https://api.sandbox.co.in"
+
+
+
 
 # ---------------------------------------------------------------------------
 # Firebase Admin SDK initialisation
@@ -176,3 +181,83 @@ def revoke_all_sessions(db: Session, user_id: UUID) -> None:
         UserSession.is_active == True,
     ).update({"is_active": False})
     db.commit()
+
+
+# Sandbox API integrations for KYC (PAN card and GST number verification)
+
+_sandbox_token: str | None = None
+def _get_sandbox_token() -> str:
+    global _sandbox_token
+    if _sandbox_token:
+        return _sandbox_token
+    _sandbox_token = _auth_sandbox_api()
+    return _sandbox_token
+
+
+
+def _auth_sandbox_api() -> str:
+    """Authenticate with sandbox apis to get a token -- fill this token directly in the headers for all the requests"""
+    x_api_key = os.getenv("X-API-KEY")
+    x_api_secret = os.getenv("X-API-SECRET")
+    url= f"{sandbox_base_url}/authenticate"
+    headers={
+        "X-API-KEY": x_api_key,
+        "X-API-SECRET": x_api_secret,
+    }
+    response = requests.post(url, headers=headers )
+    
+    if response.status_code == 200:
+        response_json = response.json()
+        token=response_json.get("access_token")
+        return token
+    else:
+        raise ValueError(f"Authentication failed: {response.text}")
+
+def _verify_pan_card(pan:str, user_name:str, date_of_birth:str, consent:str) -> dict:
+    """We use the sandbox api to get details of the person based on the PAN card number. This is used for KYC during onboarding."""
+    x_api_key = os.getenv("X-API-KEY")
+    x_api_secret = os.getenv("X-API-SECRET")
+    url= f"{sandbox_base_url}/kyc/pan/verify"
+    headers={
+        "X-API-KEY": x_api_key,
+        "X-API-SECRET": x_api_secret,
+        "Authorization": _get_sandbox_token()
+    }
+    body={
+        "@entity": "in.co.sandbox.kyc.pan_verification.request",
+        "pan": pan,
+        "name_as_per_pan": user_name,
+        "date_of_birth": date_of_birth,
+        "consent": consent,
+        "reason": "For onboarding customers"
+        }
+    response = requests.post(url, headers=headers, json=body)
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 400:
+        error_info = response.json()
+        error_message = error_info.get("error", "Unknown error")
+        raise ValueError(f"PAN verification failed: {error_message}")
+    else:
+        raise ValueError(f"PAN verification failed: {response.text}")
+
+
+def _verify_gst_number(gstin:str) -> dict:
+    """We use the sandbox api to get details of the business based on the GST number. This is used for KYC during onboarding."""
+    x_api_key = os.getenv("X-API-KEY")
+    x_api_secret = os.getenv("X-API-SECRET")
+    url= f"{sandbox_base_url}/gst/compliance/public/gstin/verify"
+    headers={
+        "X-API-KEY": x_api_key,
+        "X-API-SECRET": x_api_secret,
+        "Authorization":_get_sandbox_token()
+
+    }
+    body={
+            "gstin": gstin,
+        }
+    response = requests.post(url, headers=headers, json=body)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise ValueError(f"GST verification failed: {response.text}")
