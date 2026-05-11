@@ -98,6 +98,14 @@ def follow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
     if existing:
         raise HTTPException(status_code=409, detail="Already following this user.")
     db.add(UserConnection(follower_id=follower_id, following_id=following_id))
+    # increment following_count on the follower's profile
+    db.query(Profile).filter(Profile.users_id == follower_id).update(
+        {"following_count": Profile.following_count + 1}
+    )
+    # increment followers_count on the target's profile
+    db.query(Profile).filter(Profile.users_id == following_id).update(
+        {"followers_count": Profile.followers_count + 1}
+    )
     db.commit()
     return {"status": "following", "following_id": str(following_id)}
 
@@ -110,6 +118,14 @@ def unfollow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
     if not conn:
         raise HTTPException(status_code=404, detail="You are not following this user.")
     db.delete(conn)
+    # decrement following_count on the follower's profile (floor at 0)
+    db.query(Profile).filter(
+        Profile.users_id == follower_id, Profile.following_count > 0
+    ).update({"following_count": Profile.following_count - 1})
+    # decrement followers_count on the target's profile (floor at 0)
+    db.query(Profile).filter(
+        Profile.users_id == following_id, Profile.followers_count > 0
+    ).update({"followers_count": Profile.followers_count - 1})
     db.commit()
     return {"status": "unfollowed", "following_id": str(following_id)}
 
