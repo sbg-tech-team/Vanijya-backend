@@ -35,13 +35,18 @@ The connections module handles three things:
 
 ## 2. How User Identity Works
 
-**No auth token is required** for any connections API. The acting user is identified by `{user_id}` in the URL path.
+All mutating endpoints require `Authorization: Bearer <token>`. The acting user's identity is derived exclusively from the JWT — **never** from a path or query parameter.
 
 ```
-POST /connections/{user_id}/follow/{target_id}
+POST /connections/follow/{target_id}
+Authorization: Bearer <access_token>
 ```
 
-`{user_id}` is the acting user (you). `{target_id}` is the other party. Both are UUIDs obtained during onboarding (`POST /profile/user` returns the UUID).
+`{target_id}` is the user you want to follow. Your own identity (`me`) comes from the token automatically.
+
+Public read-only endpoints (`GET /{user_id}/followers`, `GET /{user_id}/following`, `GET /search/suggestions`) do not require a token.
+
+> **Migration note (2026-05-12):** The old `/{user_id}/follow/{target_id}` pattern (where the acting user was in the path) has been removed. All callers must send a Bearer token instead.
 
 ---
 

@@ -11,8 +11,9 @@
 }
 ```
 
-**All endpoints require `user_id` (UUID) as a query parameter.**  
-> `user_id` is the UUID from the `users` table — the same one used across the platform.
+**All endpoints require `Authorization: Bearer <token>` header.**  
+> The acting user's identity is derived from the JWT token — do not pass `user_id` as a query parameter.  
+> See [auth_and_access_control.md](auth_and_access_control.md) for the full auth model.
 
 ---
 

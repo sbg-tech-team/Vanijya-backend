@@ -6,15 +6,15 @@ Route ordering:  specific paths before parameterised ones to avoid clashes.
   /suggestions            before  /:id
   /join-by-link/:token    before  /:id/...
 
-No auth token required — caller passes ?user_id=<uuid> as a query param
-wherever the acting user needs to be identified.
+All mutating endpoints require a Bearer token; user identity is derived from
+the JWT via get_current_user_id — never from a client-supplied query param.
 """
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user_id, get_db
 from app.modules.groups.schemas import (
     AddMembersRequest,
     GroupCreate,
@@ -68,9 +68,9 @@ def _handle(fn, *args, **kwargs):
 
 # ── 1. GET /suggestions/:user_id ─────────────────────────────────────────────
 
-@router.get("/suggestions/{user_id}")
+@router.get("/suggestions")
 def suggest_groups(
-    user_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -83,7 +83,7 @@ def suggest_groups(
 
 @router.get("/")
 def list_groups_api(
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     commodity: str | None = Query(None),
     accessibility: str | None = Query(None),
     page: int = Query(1, ge=1),
@@ -105,7 +105,7 @@ def list_groups_api(
 @router.post("/", status_code=201)
 def create_group_api(
     payload: GroupCreate,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(create_group, db, user_id, payload)
@@ -118,7 +118,7 @@ def create_group_api(
 @router.post("/join-by-link/{token}")
 def join_by_link_api(
     token: str,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(join_by_invite_link, db, token, user_id)
@@ -130,7 +130,7 @@ def join_by_link_api(
 @router.get("/{group_id}")
 def get_group_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(get_group, db, group_id, user_id)
@@ -143,7 +143,7 @@ def get_group_api(
 def update_group_api(
     group_id: UUID,
     payload: GroupUpdate,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(update_group, db, group_id, user_id, payload)
@@ -156,7 +156,7 @@ def update_group_api(
 def update_permissions_api(
     group_id: UUID,
     payload: GroupPermissionsUpdate,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(update_permissions, db, group_id, user_id, payload)
@@ -168,7 +168,7 @@ def update_permissions_api(
 @router.post("/{group_id}/join")
 def join_group_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(join_group, db, group_id, user_id)
@@ -180,7 +180,7 @@ def join_group_api(
 @router.delete("/{group_id}/leave")
 def leave_group_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     _handle(leave_group, db, group_id, user_id)
@@ -192,7 +192,7 @@ def leave_group_api(
 @router.get("/{group_id}/members")
 def get_members_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -207,7 +207,7 @@ def get_members_api(
 def add_members_api(
     group_id: UUID,
     payload: AddMembersRequest,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(add_members, db, group_id, user_id, payload.user_ids)
@@ -220,7 +220,7 @@ def add_members_api(
 def remove_member_api(
     group_id: UUID,
     target_user_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     _handle(remove_member, db, group_id, user_id, target_user_id)
@@ -233,7 +233,7 @@ def remove_member_api(
 def freeze_member_api(
     group_id: UUID,
     target_user_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(set_member_frozen, db, group_id, user_id, target_user_id, True)
@@ -246,7 +246,7 @@ def freeze_member_api(
 def unfreeze_member_api(
     group_id: UUID,
     target_user_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(set_member_frozen, db, group_id, user_id, target_user_id, False)
@@ -258,7 +258,7 @@ def unfreeze_member_api(
 @router.post("/{group_id}/mute")
 def mute_group_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(toggle_mute, db, group_id, user_id)
@@ -270,7 +270,7 @@ def mute_group_api(
 @router.post("/{group_id}/favorite")
 def favorite_group_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(toggle_favorite, db, group_id, user_id)
@@ -282,7 +282,7 @@ def favorite_group_api(
 @router.get("/{group_id}/invite-link")
 def invite_link_api(
     group_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     result = _handle(get_or_create_invite_link, db, group_id, user_id)
@@ -295,7 +295,7 @@ def invite_link_api(
 def report_group_api(
     group_id: UUID,
     payload: ReportGroupRequest,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     _handle(get_group, db, group_id, user_id)

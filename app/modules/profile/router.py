@@ -59,7 +59,7 @@ def create_user_api(
 # Requires onboarding_token.
 # ---------------------------------------------------------------------------
 
-@router.post("/")
+@router.post("/", status_code=201)
 def create_profile_api(
     payload: ProfileCreate,
     request: Request,
@@ -149,7 +149,7 @@ def update_fcm_token_api(
 # Verification documents — JWT protected
 # ---------------------------------------------------------------------------
 
-@router.post("/verify")
+@router.post("/verify", status_code=201)
 def verify_profile_api(
     payload: VerifyProfileRequest,
     db: Session = Depends(get_db),

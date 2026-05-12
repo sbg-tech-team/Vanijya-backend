@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user_id, get_db
 from app.modules.news.schemas import (
     CommentRequest,
     EngageRequest,
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/news", tags=["News"])
 
 @router.get("/feed")
 def news_feed(
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     state: str = Query("", description="User's state e.g. punjab (optional)"),
     scope: str = Query("national", description="local | state | national | global"),
     db: Session = Depends(get_db),
@@ -65,7 +65,7 @@ def search(
 
 @router.get("/my/taste")
 def my_taste(
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -79,7 +79,7 @@ def my_taste(
 
 @router.get("/my/history")
 def my_history(
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     action_type: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -93,7 +93,7 @@ def my_history(
 
 @router.get("/saved")
 def saved_articles(
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     results = get_saved_articles(db, user_id)
@@ -105,7 +105,7 @@ def saved_articles(
 @router.get("/{article_id}")
 def article_detail(
     article_id: UUID,
-    user_id: Optional[UUID] = Query(None, description="Optional: pass to get liked/saved status"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -121,7 +121,7 @@ def article_detail(
 def engage(
     article_id: UUID,
     payload: EngageRequest,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -146,7 +146,7 @@ def engage(
 @router.post("/{article_id}/like")
 def like(
     article_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -161,7 +161,7 @@ def like(
 @router.post("/{article_id}/save")
 def save(
     article_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -176,7 +176,7 @@ def save(
 @router.post("/{article_id}/share")
 def share(
     article_id: UUID,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -192,7 +192,7 @@ def share(
 def comment(
     article_id: UUID,
     payload: CommentRequest,
-    user_id: UUID = Query(..., description="Acting user's UUID"),
+    user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:

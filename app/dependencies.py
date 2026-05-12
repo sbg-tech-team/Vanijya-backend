@@ -43,6 +43,11 @@ def get_current_user_id(token: str = Depends(oauth2_scheme)) -> UUID:
     return decode_access_token(token).user_id
 
 
+def get_current_profile_id(token: str = Depends(oauth2_scheme)) -> int:
+    """Convenience dep for endpoints that only need profile_id."""
+    return decode_access_token(token).profile_id
+
+
 def get_onboarding_claims(token: str = Depends(oauth2_scheme)) -> OnboardingClaims:
     return decode_onboarding_claims(token)
 

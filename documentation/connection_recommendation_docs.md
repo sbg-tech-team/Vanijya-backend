@@ -221,9 +221,9 @@ LIMIT 20
 
 All recommendation endpoints live under the connections router (`/recommendations`).
 
-### `GET /recommendations/{user_id}`
+### `GET /recommendations/`
 
-Fetch top 20 matches for an existing user.
+Fetch top 20 matches for the authenticated user. Requires `Authorization: Bearer <token>`.
 
 1. Loads the user's profile (role + commodities) from DB.
 2. Builds their WANT vector using `build_query_vector()`.

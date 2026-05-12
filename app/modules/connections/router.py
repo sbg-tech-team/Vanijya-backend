@@ -5,24 +5,18 @@ Two sub-routers:
   connections_router      /connections/...
   recommendations_router  /recommendations/...
 
-URL convention
---------------
-{user_id}   — the ACTING user (you). Explicit in every path for backend testability.
-{target_id} — the OTHER user being followed / messaged.
-
-No auth token required — user_id is passed in the URL path.
-
-Import into main.py:
-  from app.modules.connections.router import connections_router, recommendations_router
+Identity is derived from the Bearer token via get_current_user_id — never
+from client-supplied path or query params.
 """
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user_id, get_db
 from app.modules.connections.schemas import SearchPayload
 from app.modules.connections import service
+from app.shared.utils.response import ok
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -32,48 +26,63 @@ from app.modules.connections import service
 connections_router = APIRouter(prefix="/connections", tags=["connections"])
 
 
-# ── Search suggestions (no user context — register BEFORE /{user_id} routes) ──
+# ── Search suggestions (public — register BEFORE parameterised routes) ─────────
 
 @connections_router.get("/search/suggestions")
 def suggestions(
     q: str = Query(..., min_length=2),
     db: Session = Depends(get_db),
 ):
-    """Name / business_name prefix suggestions. Returns top 8. No user context needed."""
+    """Name / business_name prefix suggestions. Returns top 8. No auth needed."""
     results = service.search_suggestions(db, q=q)
-    return {"q": q, "total": len(results), "suggestions": results}
+    return ok({"total": len(results), "suggestions": results}, "Suggestions fetched")
 
 
 # ── Follow ────────────────────────────────────────────────────────────────────
 
-@connections_router.post("/{user_id}/follow/{target_id}")
+@connections_router.post("/follow/{target_id}", status_code=201)
 def follow(
-    user_id: UUID,
     target_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Follow target_id as user_id. Returns 409 if already following."""
-    return service.follow_user(db, follower_id=user_id, following_id=target_id)
+    """Follow target_id. Returns 409 if already following."""
+    result = service.follow_user(db, follower_id=me, following_id=target_id)
+    return ok(result, "Now following")
 
 
-@connections_router.delete("/{user_id}/follow/{target_id}")
+@connections_router.delete("/follow/{target_id}")
 def unfollow(
-    user_id: UUID,
     target_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Unfollow target_id as user_id. Returns 404 if not currently following."""
-    return service.unfollow_user(db, follower_id=user_id, following_id=target_id)
+    """Unfollow target_id. Returns 404 if not currently following."""
+    result = service.unfollow_user(db, follower_id=me, following_id=target_id)
+    return ok(result, "Unfollowed")
 
+
+@connections_router.get("/follow/status/{target_id}")
+def follow_status(
+    target_id: UUID,
+    me: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Am I following this person? Drives Follow / Unfollow button state."""
+    following = service.is_following(db, me=me, target=target_id)
+    return ok({"following": following}, "Follow status fetched")
+
+
+# Public — viewing any user's social graph
 
 @connections_router.get("/{user_id}/followers")
 def list_followers(
     user_id: UUID,
     db: Session = Depends(get_db),
 ):
-    """Everyone who follows user_id."""
+    """Everyone who follows user_id (public)."""
     followers = service.get_followers(db, user_id)
-    return {"user_id": str(user_id), "total": len(followers), "followers": followers}
+    return ok({"total": len(followers), "followers": followers}, "Followers fetched")
 
 
 @connections_router.get("/{user_id}/following")
@@ -81,90 +90,82 @@ def list_following(
     user_id: UUID,
     db: Session = Depends(get_db),
 ):
-    """Everyone user_id follows."""
+    """Everyone user_id follows (public)."""
     following = service.get_following(db, user_id)
-    return {"user_id": str(user_id), "total": len(following), "following": following}
-
-
-@connections_router.get("/{user_id}/follow/status/{target_id}")
-def follow_status(
-    user_id: UUID,
-    target_id: UUID,
-    db: Session = Depends(get_db),
-):
-    """Is user_id following target_id? Drives Follow / Unfollow button state."""
-    following = service.is_following(db, me=user_id, target=target_id)
-    return {"me": str(user_id), "target": str(target_id), "following": following}
+    return ok({"total": len(following), "following": following}, "Following fetched")
 
 
 # ── Message Requests ──────────────────────────────────────────────────────────
 
-@connections_router.post("/{user_id}/message-request/{target_id}")
+@connections_router.post("/message-request/{target_id}", status_code=201)
 def send_request(
-    user_id: UUID,
     target_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Send a message request from user_id to target_id. Returns 409 if one already exists."""
-    result = service.send_message_request(db, sender_id=user_id, receiver_id=target_id)
-    return {"status": "sent", **result}
+    """Send a message request to target_id. Returns 409 if one already exists."""
+    result = service.send_message_request(db, sender_id=me, receiver_id=target_id)
+    return ok(result, "Message request sent")
 
 
-@connections_router.delete("/{user_id}/message-request/{target_id}")
+@connections_router.delete("/message-request/{target_id}")
 def withdraw_request(
-    user_id: UUID,
     target_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     """Withdraw a pending message request. Returns 404 if no pending request."""
-    return service.withdraw_message_request(db, sender_id=user_id, receiver_id=target_id)
+    result = service.withdraw_message_request(db, sender_id=me, receiver_id=target_id)
+    return ok(result, "Request withdrawn")
 
 
-@connections_router.patch("/{user_id}/message-request/{request_id}/accept")
+@connections_router.patch("/message-request/{request_id}/accept")
 def accept_request(
-    user_id: UUID,
     request_id: int,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Accept a message request. user_id must be the receiver."""
-    return service.respond_to_request(db, request_id=request_id, me=user_id, action="accepted")
+    """Accept a message request. Only the receiver can accept."""
+    result = service.respond_to_request(db, request_id=request_id, me=me, action="accepted")
+    return ok(result, "Request accepted")
 
 
-@connections_router.patch("/{user_id}/message-request/{request_id}/decline")
+@connections_router.patch("/message-request/{request_id}/decline")
 def decline_request(
-    user_id: UUID,
     request_id: int,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Decline a message request. user_id must be the receiver."""
-    return service.respond_to_request(db, request_id=request_id, me=user_id, action="declined")
+    """Decline a message request. Only the receiver can decline."""
+    result = service.respond_to_request(db, request_id=request_id, me=me, action="declined")
+    return ok(result, "Request declined")
 
 
-@connections_router.get("/{user_id}/message-requests/received")
+@connections_router.get("/message-requests/received")
 def received_requests(
-    user_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Pending message requests waiting on user_id to accept or decline."""
-    requests = service.get_received_requests(db, me=user_id)
-    return {"me": str(user_id), "total": len(requests), "requests": requests}
+    """Pending message requests waiting on me to accept or decline."""
+    requests = service.get_received_requests(db, me=me)
+    return ok({"total": len(requests), "requests": requests}, "Received requests fetched")
 
 
-@connections_router.get("/{user_id}/message-requests/sent")
+@connections_router.get("/message-requests/sent")
 def sent_requests(
-    user_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """All message requests user_id has sent, across all statuses."""
-    requests = service.get_sent_requests(db, me=user_id)
-    return {"me": str(user_id), "total": len(requests), "requests": requests}
+    """All message requests I have sent, across all statuses."""
+    requests = service.get_sent_requests(db, me=me)
+    return ok({"total": len(requests), "requests": requests}, "Sent requests fetched")
 
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
-@connections_router.get("/{user_id}/search")
+@connections_router.get("/search")
 def search(
-    user_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
     q:             str | None = Query(default=None, description="Partial match on name or business name"),
     role:          str | None = Query(default=None, description="trader | broker | exporter"),
@@ -174,11 +175,12 @@ def search(
     page:          int        = Query(default=1, ge=1),
     limit:         int        = Query(default=20, ge=1, le=100),
 ):
-    """Filtered user search. user_id is excluded from results. All query params optional."""
-    return service.search_users(
-        db, me=user_id, q=q, role=role, commodity=commodity,
+    """Filtered user search. Me is excluded from results. All query params optional."""
+    result = service.search_users(
+        db, me=me, q=q, role=role, commodity=commodity,
         city=city, verified_only=verified_only, page=page, limit=limit,
     )
+    return ok(result, "Search results fetched")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -188,16 +190,14 @@ def search(
 recommendations_router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 
-@recommendations_router.get("/{user_id}")
+@recommendations_router.get("/")
 def get_recommendations(
-    user_id: UUID,
+    me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Top-20 user matches for user_id based on their profile
-    (commodity, role, location, quantity). Sorted by cosine similarity descending.
-    """
-    return service.get_recommendations(db, user_id=user_id)
+    """Top-20 user matches based on my profile (commodity, role, location, quantity)."""
+    result = service.get_recommendations(db, user_id=me)
+    return ok(result, "Recommendations fetched")
 
 
 @recommendations_router.post("/search")
@@ -205,11 +205,8 @@ def custom_search(
     payload: SearchPayload,
     db: Session = Depends(get_db),
 ):
-    """
-    Ad-hoc vector search with a custom payload — no user_id needed.
-    Useful for showing preview results before or during signup.
-    """
-    return service.custom_recommendation_search(
+    """Ad-hoc vector search with a custom payload — no auth needed."""
+    result = service.custom_recommendation_search(
         db,
         commodity=payload.commodity,
         role=payload.role,
@@ -218,3 +215,4 @@ def custom_search(
         qty_min_mt=payload.qty_min_mt,
         qty_max_mt=payload.qty_max_mt,
     )
+    return ok(result, "Search results fetched")

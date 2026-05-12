@@ -11,8 +11,9 @@
 }
 ```
 
-**All endpoints require `user_id` (UUID) as a query parameter.**  
-> `user_id` is the UUID returned after authentication. It is the same UUID carried in the JWT token.
+**All endpoints require `Authorization: Bearer <token>` header.**  
+> The acting user's identity is derived from the JWT token — do not pass `user_id` as a query parameter.  
+> See [auth_and_access_control.md](auth_and_access_control.md) for the full auth model.
 
 ---
 
@@ -232,8 +233,8 @@ The cursor tracks pagination state across all four content sources independently
 
 ## 1. Get Home Feed
 
-**`GET /feed/home?user_id={user_id}`**  
-**`GET /feed/home?user_id={user_id}&cursor={cursor_json}`**
+**`GET /feed/home`**  
+**`GET /feed/home?cursor={cursor_json}`**
 
 Returns one page (20 items) of the blended home feed.
 
@@ -244,8 +245,9 @@ Returns one page (20 items) of the blended home feed.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | UUID | Yes | Caller's user UUID |
 | `cursor` | string | No | JSON-encoded cursor from the previous response |
+
+> Identity comes from the `Authorization: Bearer <token>` header, not a query param.
 
 ### Response — `200 OK`
 
@@ -409,17 +411,15 @@ When ≤ 3 priority items remain in the list, the feed begins interleaving norma
 
 ## 2. Submit Engagement Signals
 
-**`POST /feed/engagement?user_id={user_id}`**
+**`POST /feed/engagement`**
 
 Sends a batch of user engagement signals to the backend. Currently the signals are acknowledged — session-taste weight adaptation will be enabled in a future release.
 
 > **When to call:** Send after every ~10 viewport events (item enters/exits screen), or when the user performs an explicit action (like, save, share).
 
-### Query Parameters
+### Auth
 
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `user_id` | UUID | Yes | Caller's user UUID |
+`Authorization: Bearer <token>` required. No query params for identity.
 
 ### Request Body
 
@@ -528,8 +528,8 @@ All errors follow this shape:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/feed/home` | `?user_id=<uuid>` | Get home feed page |
-| `POST` | `/feed/engagement` | `?user_id=<uuid>` | Submit engagement signals |
+| `GET` | `/feed/home` | Bearer token | Get home feed page |
+| `POST` | `/feed/engagement` | Bearer token | Submit engagement signals |
 
 ---
 
@@ -557,9 +557,9 @@ All errors follow this shape:
 - [ ] Send empty `signals: []` — expect `200`, `signals_processed: 0`
 
 ### Error Cases
-- [ ] **GET /feed/home** with unknown `user_id` UUID — expect `404`
+- [ ] **GET /feed/home** with unknown user (valid token, no profile) — expect `404`
 - [ ] **GET /feed/home** with invalid `cursor` string (not JSON) — expect `400`
-- [ ] **GET /feed/home** without `user_id` — expect `422`
+- [ ] **GET /feed/home** without `Authorization` header — expect `401`
 
 ### Runner Script
 
@@ -573,11 +573,11 @@ python scripts/test_feed.py --user-id <uuid>
 
 ## Integration Notes for Frontend
 
-1. **First load**: Call `GET /feed/home?user_id=<uuid>` without `cursor`. Store the returned `cursor` object.
+1. **First load**: Call `GET /feed/home` (no `cursor`) with `Authorization: Bearer <token>`. Store the returned `cursor` object.
 
-2. **Scroll to bottom (load more)**: Call `GET /feed/home?user_id=<uuid>&cursor=<json_encoded_cursor>`. Replace the stored cursor with the new one from the response.
+2. **Scroll to bottom (load more)**: Call `GET /feed/home?cursor=<json_encoded_cursor>` with the same token. Replace the stored cursor with the new one.
 
-3. **Pull-to-refresh**: Discard the cursor and call `GET /feed/home?user_id=<uuid>` again (no cursor). This re-runs the priority pin resolution.
+3. **Pull-to-refresh**: Discard the cursor and call `GET /feed/home` again (no cursor). This re-runs the priority pin resolution.
 
 4. **Rendering by type**:
    - `item_type: "post"` / `content_type_label: "post"` → render as a post card

@@ -40,22 +40,23 @@ The groups module handles:
 
 ## 2. How User Identity Works
 
-**No auth token is required** for any groups API. The acting user is identified by passing `user_id` as a required `?user_id=<uuid>` query parameter.
+All groups endpoints require `Authorization: Bearer <token>`. The acting user's identity is derived from the JWT — **never** from a `?user_id=` query parameter.
 
 ```
-POST /api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff
-GET  /api/v1/groups/{group_id}?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff
+POST /api/v1/groups/
+Authorization: Bearer <access_token>
+
+GET  /api/v1/groups/{group_id}
+Authorization: Bearer <access_token>
 ```
 
-The `user_id` is the UUID returned during onboarding from `POST /profile/user`.
-
-> **Exception:** `GET /api/v1/groups/suggestions/{user_id}` passes user_id in the path (consistent with the recommendations pattern).
+> **Migration note (2026-05-12):** The old `?user_id=<uuid>` query parameter has been removed from every endpoint. The old `GET /api/v1/groups/suggestions/{user_id}` path parameter has also been removed — use `GET /api/v1/groups/suggestions` with a Bearer token instead.
 
 ---
 
 ## 3. Verification Gate — Who Can Create Groups
 
-`POST /api/v1/groups/?user_id=<uuid>` checks that the user's profile has `is_verified: true`. If not:
+`POST /api/v1/groups/` checks that the user's profile has `is_verified: true`. If not:
 
 ```json
 { "detail": "Only verified users can create groups. Complete profile verification first." }

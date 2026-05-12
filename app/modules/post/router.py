@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_profile_id, get_db
 from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate
 from app.modules.post import service
 from app.shared.utils.response import ok
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/posts", tags=["Posts"])
 
 @router.post("/upload-image")
 async def get_post_upload_url_api(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     content_type: str = Query(..., description="image/jpeg | image/png | image/webp"),
 ):
     """
@@ -37,7 +37,7 @@ async def get_post_upload_url_api(
 @router.post("/", status_code=201)
 async def create_post_api(
     payload: PostCreate,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -51,7 +51,7 @@ async def create_post_api(
 
 @router.get("/")
 def get_feed_api(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -62,7 +62,7 @@ def get_feed_api(
 
 @router.get("/mine")
 def get_my_posts_api(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -73,7 +73,7 @@ def get_my_posts_api(
 
 @router.get("/following")
 def get_following_feed_api(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -84,7 +84,7 @@ def get_following_feed_api(
 
 @router.get("/saved")
 def get_saved_posts_api(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -96,7 +96,7 @@ def get_saved_posts_api(
 @router.get("/{post_id}")
 def get_post_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -110,7 +110,7 @@ def get_post_api(
 def update_post_api(
     post_id: int,
     payload: PostUpdate,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -125,7 +125,7 @@ def update_post_api(
 @router.delete("/{post_id}", status_code=204)
 async def delete_post_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -143,7 +143,7 @@ async def delete_post_api(
 @router.post("/{post_id}/like")
 def toggle_like_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -160,7 +160,7 @@ def toggle_like_api(
 @router.get("/{post_id}/comments")
 def get_comments_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -176,7 +176,7 @@ def get_comments_api(
 def add_comment_api(
     post_id: int,
     payload: CommentCreate,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -192,7 +192,7 @@ def add_comment_api(
 def delete_comment_api(
     post_id: int,
     comment_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -210,7 +210,7 @@ def delete_comment_api(
 @router.post("/{post_id}/share")
 def record_share_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:
@@ -227,7 +227,7 @@ def record_share_api(
 @router.post("/{post_id}/save")
 def toggle_save_api(
     post_id: int,
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:

@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user_id, get_db
 from app.modules.feed.schemas import EngagementBatch, FeedCursor
 from app.modules.feed.service import (
     ProfileNotFoundError,
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/feed", tags=["Home Feed"])
 
 @router.get("/home")
 def home_feed(
-    user_id: UUID = Query(..., description="Caller's user UUID (from auth token)"),
+    user_id: UUID = Depends(get_current_user_id),
     cursor: Optional[str] = Query(None, description="JSON-encoded FeedCursor from previous page"),
     db: Session = Depends(get_db),
 ):
@@ -52,10 +52,10 @@ def home_feed(
     return ok(result.model_dump(), "Feed fetched successfully")
 
 
-@router.post("/engagement")
+@router.post("/engagement", status_code=201)
 def record_engagement(
     body: EngagementBatch,
-    user_id: UUID = Query(..., description="Caller's user UUID"),
+    user_id: UUID = Depends(get_current_user_id),
 ):
     """
     Accepts a batch of engagement signals (dwell, like, save, skip, etc.).

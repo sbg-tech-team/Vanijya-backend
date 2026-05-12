@@ -11,8 +11,9 @@
 }
 ```
 
-**All endpoints require `profile_id` as a query parameter.**  
-> `profile_id` is the integer ID returned when a profile is created. It is NOT the user UUID.
+**All endpoints require `Authorization: Bearer <token>` header.**  
+> The `profile_id` is derived from the JWT token — do not pass it as a query parameter.  
+> See [auth_and_access_control.md](auth_and_access_control.md) for the full auth model.
 
 ---
 
