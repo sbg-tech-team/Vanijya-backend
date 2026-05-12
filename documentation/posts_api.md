@@ -114,23 +114,24 @@ Every endpoint that returns a post will include this shape inside `data`:
 
 ## 1. Upload Post Image
 
-**`POST /posts/upload-image?profile_id={profile_id}&content_type={content_type}`**
+**`POST /posts/upload-image?content_type={content_type}`**
 
 Generates a short-lived signed upload URL for storing a post image in Supabase Storage. Use this **before** creating the post. Images are uploaded directly from the client to Supabase — the backend never receives the file bytes.
+
+**Auth:** `Authorization: Bearer <access_token>` — `profile_id` is resolved from the token.
 
 ### 3-Step Flow
 
 ```
-Step 1 — POST /posts/upload-image   → get { upload_url, image_url }
-Step 2 — PUT {upload_url}           → upload image bytes directly (Content-Type must match)
-Step 3 — POST /posts/              → create post with image_url from Step 1
+Step 1 — POST /posts/upload-image?content_type=image/jpeg   → get { upload_url, image_url }
+Step 2 — PUT {upload_url}                                   → upload image bytes directly (Content-Type must match)
+Step 3 — POST /posts/                                       → create post with image_url from Step 1
 ```
 
 ### Query Parameters
 
 | Param | Type | Required | Notes |
 |-------|------|----------|-------|
-| `profile_id` | int | Yes | Your profile ID |
 | `content_type` | string | Yes | `image/jpeg`, `image/png`, or `image/webp` |
 
 ### Response — `200 OK`
@@ -171,7 +172,7 @@ Content-Type: image/jpeg
 
 ## 2. Create Post
 
-**`POST /posts/?profile_id={profile_id}`**
+**`POST /posts/`** — Auth: `Bearer <access_token>` (`profile_id` from token)
 
 ### Request Body
 
@@ -252,7 +253,8 @@ Content-Type: image/jpeg
     "target_roles": null,
     "allow_comments": true,
     "grain_type_size": null,
-    "commodity_quantity": null,
+    "commodity_quantity_min": null,
+    "commodity_quantity_max": null,
     "price_type": null,
     "other_description": null,
     "view_count": 0,
@@ -276,7 +278,7 @@ Content-Type: image/jpeg
 
 ## 3. Get Feed
 
-**`GET /posts/?profile_id={profile_id}&limit={limit}&offset={offset}`**
+**`GET /posts/`** — Auth: `Bearer <access_token>`
 
 Returns all posts (newest first). View counts are NOT incremented by the feed — only by `GET /posts/{post_id}`.
 
@@ -284,7 +286,6 @@ Returns all posts (newest first). View counts are NOT incremented by the feed �
 
 | Param | Type | Required | Default | Notes |
 |-------|------|----------|---------|-------|
-| `profile_id` | int | Yes | — | Viewer's profile ID |
 | `limit` | int | No | `20` | Max posts to return |
 | `offset` | int | No | `0` | Pagination offset |
 
@@ -306,7 +307,8 @@ Returns all posts (newest first). View counts are NOT incremented by the feed �
       "target_roles": null,
       "allow_comments": true,
       "grain_type_size": null,
-      "commodity_quantity": null,
+      "commodity_quantity_min": null,
+    "commodity_quantity_max": null,
       "price_type": null,
       "other_description": null,
       "view_count": 0,
@@ -327,13 +329,13 @@ Returns all posts (newest first). View counts are NOT incremented by the feed �
 
 ## 4. Get My Posts
 
-**`GET /posts/mine?profile_id={profile_id}&limit={limit}&offset={offset}`**
+**`GET /posts/mine`** — Auth: `Bearer <access_token>`
 
-Returns only posts created by the given `profile_id`, newest first.
+Returns only the authenticated user's own posts, newest first.
 
 ### Query Parameters
 
-Same as [Get Feed](#3-get-feed).
+Same as [Get Feed](#3-get-feed) (`limit`, `offset`).
 
 ### Response — `200 OK`
 
@@ -343,13 +345,13 @@ Same shape as Get Feed. `data` is an array of post objects.
 
 ## 5. Get Following Feed
 
-**`GET /posts/following?profile_id={profile_id}&limit={limit}&offset={offset}`**
+**`GET /posts/following`** — Auth: `Bearer <access_token>`
 
-Returns posts from users that the given profile follows, filtered to the **last 7 days**, newest first. Only shows posts the viewer is allowed to see (`is_public: true` or targeted at viewer's role).
+Returns posts from users that the authenticated profile follows, filtered to the **last 7 days**, newest first. Only shows posts the viewer is allowed to see (`is_public: true` or targeted at viewer's role).
 
 ### Query Parameters
 
-Same as [Get Feed](#3-get-feed).
+Same as [Get Feed](#3-get-feed) (`limit`, `offset`).
 
 ### Response — `200 OK`
 
@@ -359,13 +361,13 @@ Same shape as Get Feed. `data` is an array of post objects (may be `[]` if not f
 
 ## 6. Get Saved Posts
 
-**`GET /posts/saved?profile_id={profile_id}&limit={limit}&offset={offset}`**
+**`GET /posts/saved`** — Auth: `Bearer <access_token>`
 
-Returns posts the profile has saved, ordered by most-recently-saved first.
+Returns posts the authenticated profile has saved, ordered by most-recently-saved first.
 
 ### Query Parameters
 
-Same as [Get Feed](#3-get-feed).
+Same as [Get Feed](#3-get-feed) (`limit`, `offset`).
 
 ### Response — `200 OK`
 
@@ -375,7 +377,7 @@ Same shape as Get Feed. `data` is an array of post objects.
 
 ## 7. Get Single Post
 
-**`GET /posts/{post_id}?profile_id={profile_id}`**
+**`GET /posts/{post_id}`** — Auth: `Bearer <access_token>`
 
 Fetches a single post. **Increments `view_count` by 1** (only once per profile — subsequent views by the same profile are ignored).
 
@@ -427,9 +429,9 @@ Fetches a single post. **Increments `view_count` by 1** (only once per profile �
 
 ## 8. Update Post
 
-**`PATCH /posts/{post_id}?profile_id={profile_id}`**
+**`PATCH /posts/{post_id}`** — Auth: `Bearer <access_token>`
 
-Updates a post. Only the owner (`profile_id` must match `post.profile_id`) can update. All fields are optional — only send what you want to change.
+Updates a post. Only the owner can update. All fields are optional — only send what you want to change.
 
 ### Request Body
 
@@ -477,7 +479,8 @@ Updates a post. Only the owner (`profile_id` must match `post.profile_id`) can u
     "target_roles": null,
     "allow_comments": false,
     "grain_type_size": null,
-    "commodity_quantity": null,
+    "commodity_quantity_min": null,
+    "commodity_quantity_max": null,
     "price_type": null,
     "other_description": null,
     "view_count": 1,
@@ -503,7 +506,7 @@ Updates a post. Only the owner (`profile_id` must match `post.profile_id`) can u
 
 ## 9. Delete Post
 
-**`DELETE /posts/{post_id}?profile_id={profile_id}`**
+**`DELETE /posts/{post_id}`** — Auth: `Bearer <access_token>`
 
 Permanently deletes a post and all its likes, comments, shares, saves (cascade). Only the owner can delete.
 
@@ -522,7 +525,7 @@ No response body.
 
 ## 10. Like / Unlike Post
 
-**`POST /posts/{post_id}/like?profile_id={profile_id}`**
+**`POST /posts/{post_id}/like`** — Auth: `Bearer <access_token>`
 
 Toggles the like state. First call = like, second call = unlike. No request body needed.
 
@@ -567,7 +570,7 @@ Toggles the like state. First call = like, second call = unlike. No request body
 
 ## 11. Get Comments
 
-**`GET /posts/{post_id}/comments?profile_id={profile_id}&limit={limit}&offset={offset}`**
+**`GET /posts/{post_id}/comments`** — Auth: `Bearer <access_token>`
 
 Returns comments on a post, ordered oldest first.
 
@@ -575,7 +578,6 @@ Returns comments on a post, ordered oldest first.
 
 | Param | Type | Required | Default |
 |-------|------|----------|---------|
-| `profile_id` | int | Yes | — |
 | `limit` | int | No | `20` |
 | `offset` | int | No | `0` |
 
@@ -614,7 +616,7 @@ Returns comments on a post, ordered oldest first.
 
 ## 12. Add Comment
 
-**`POST /posts/{post_id}/comments?profile_id={profile_id}`**
+**`POST /posts/{post_id}/comments`** — Auth: `Bearer <access_token>`
 
 Adds a comment to a post.
 
@@ -658,7 +660,7 @@ Adds a comment to a post.
 
 ## 13. Delete Comment
 
-**`DELETE /posts/{post_id}/comments/{comment_id}?profile_id={profile_id}`**
+**`DELETE /posts/{post_id}/comments/{comment_id}`** — Auth: `Bearer <access_token>`
 
 Deletes a comment. Only the comment author can delete their own comment.
 
@@ -677,7 +679,7 @@ No response body.
 
 ## 14. Share Post
 
-**`POST /posts/{post_id}/share?profile_id={profile_id}`**
+**`POST /posts/{post_id}/share`** — Auth: `Bearer <access_token>`
 
 Records a share event (increments `share_count`). No request body needed. Unlike likes, shares are not toggled — each call adds one more share.
 
@@ -707,7 +709,7 @@ Records a share event (increments `share_count`). No request body needed. Unlike
 
 ## 15. Save / Unsave Post
 
-**`POST /posts/{post_id}/save?profile_id={profile_id}`**
+**`POST /posts/{post_id}/save`** — Auth: `Bearer <access_token>`
 
 Toggles the save state. First call = save, second call = unsave. No request body needed.
 
@@ -768,7 +770,7 @@ All errors follow this shape:
 |----------|---------------|
 | Empty caption | `"Caption cannot be empty"` |
 | Invalid price_type | `"price_type must be one of: fixed, negotiable"` |
-| Category 4, missing deal fields | `"Deal/Requirement posts require: grain_type_size, commodity_quantity, price_type"` |
+| Category 4, missing deal fields | `"Deal/Requirement posts require: grain_type_size, commodity_quantity_min, commodity_quantity_max, price_type"` |
 | Category 5, missing description | `"other_description is required when category is 'Other'"` |
 | Empty comment content | `"Comment content cannot be empty"` |
 
@@ -776,23 +778,25 @@ All errors follow this shape:
 
 ## Quick Reference — All Endpoints
 
-| Method | Endpoint | Auth (profile_id) | Description |
-|--------|----------|-------------------|-------------|
-| `POST` | `/posts/upload-image` | Query param | Get signed upload URL for post image |
-| `POST` | `/posts/` | Query param | Create a post |
-| `GET` | `/posts/` | Query param | Get feed (all posts) |
-| `GET` | `/posts/mine` | Query param | Get my posts |
-| `GET` | `/posts/following` | Query param | Get following feed (last 7 days) |
-| `GET` | `/posts/saved` | Query param | Get saved posts |
-| `GET` | `/posts/{post_id}` | Query param | Get single post + record view |
-| `PATCH` | `/posts/{post_id}` | Query param | Update post (owner only) |
-| `DELETE` | `/posts/{post_id}` | Query param | Delete post (owner only) |
-| `POST` | `/posts/{post_id}/like` | Query param | Toggle like |
-| `GET` | `/posts/{post_id}/comments` | Query param | Get comments |
-| `POST` | `/posts/{post_id}/comments` | Query param | Add comment |
-| `DELETE` | `/posts/{post_id}/comments/{comment_id}` | Query param | Delete comment (owner only) |
-| `POST` | `/posts/{post_id}/share` | Query param | Record share |
-| `POST` | `/posts/{post_id}/save` | Query param | Toggle save |
+All endpoints require `Authorization: Bearer <access_token>`. `profile_id` is resolved from the JWT `pid` claim — never passed as a query param.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/posts/upload-image?content_type=...` | Get signed upload URL for post image |
+| `POST` | `/posts/` | Create a post |
+| `GET` | `/posts/` | Get feed (all posts) |
+| `GET` | `/posts/mine` | Get my posts |
+| `GET` | `/posts/following` | Get following feed (last 7 days) |
+| `GET` | `/posts/saved` | Get saved posts |
+| `GET` | `/posts/{post_id}` | Get single post + record view |
+| `PATCH` | `/posts/{post_id}` | Update post (owner only) |
+| `DELETE` | `/posts/{post_id}` | Delete post (owner only) — 204 |
+| `POST` | `/posts/{post_id}/like` | Toggle like |
+| `GET` | `/posts/{post_id}/comments` | Get comments |
+| `POST` | `/posts/{post_id}/comments` | Add comment — 201 |
+| `DELETE` | `/posts/{post_id}/comments/{comment_id}` | Delete comment (owner only) — 204 |
+| `POST` | `/posts/{post_id}/share` | Record share |
+| `POST` | `/posts/{post_id}/save` | Toggle save |
 
 ---
 

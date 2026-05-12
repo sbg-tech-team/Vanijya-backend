@@ -95,49 +95,51 @@ app/modules/connections/
 
 Base prefix: `/connections`
 
-`{user_id}` = acting user's UUID. `{target_id}` = the other party's UUID.
+Mutating endpoints require `Authorization: Bearer <access_token>`. The acting user's identity comes from the JWT — never from a path or query parameter. Public read endpoints are marked below.
 
-No token required on any endpoint.
-
-| Method | Endpoint | What it does |
-|---|---|---|
-| `POST` | `/connections/{user_id}/follow/{target_id}` | Follow a user |
-| `DELETE` | `/connections/{user_id}/follow/{target_id}` | Unfollow a user |
-| `GET` | `/connections/{user_id}/followers` | List everyone who follows user_id |
-| `GET` | `/connections/{user_id}/following` | List everyone user_id follows |
-| `GET` | `/connections/{user_id}/follow/status/{target_id}` | Check if user_id is following target_id |
-| `POST` | `/connections/{user_id}/message-request/{target_id}` | Send a message request |
-| `DELETE` | `/connections/{user_id}/message-request/{target_id}` | Withdraw a pending request |
-| `PATCH` | `/connections/{user_id}/message-request/{request_id}/accept` | Accept a request |
-| `PATCH` | `/connections/{user_id}/message-request/{request_id}/decline` | Decline a request |
-| `GET` | `/connections/{user_id}/message-requests/received` | Pending inbox |
-| `GET` | `/connections/{user_id}/message-requests/sent` | Requests sent |
-| `GET` | `/connections/{user_id}/search` | Search profiles — filters: `q`, `role`, `commodity`, `city`, `verified_only`; pagination: `page`, `limit` |
-| `GET` | `/connections/search/suggestions?q=...` | Name/business suggestions |
+| Method | Endpoint | Auth | What it does |
+|---|---|---|---|
+| `POST` | `/connections/follow/{target_id}` | Bearer token | Follow a user — returns **201** |
+| `DELETE` | `/connections/follow/{target_id}` | Bearer token | Unfollow a user |
+| `GET` | `/connections/follow/status/{target_id}` | Bearer token | Check if I am following target |
+| `GET` | `/connections/{user_id}/followers` | **Public** | List everyone who follows user_id |
+| `GET` | `/connections/{user_id}/following` | **Public** | List everyone user_id follows |
+| `POST` | `/connections/message-request/{target_id}` | Bearer token | Send a message request — returns **201** |
+| `DELETE` | `/connections/message-request/{target_id}` | Bearer token | Withdraw a pending request |
+| `PATCH` | `/connections/message-request/{request_id}/accept` | Bearer token | Accept a request |
+| `PATCH` | `/connections/message-request/{request_id}/decline` | Bearer token | Decline a request |
+| `GET` | `/connections/message-requests/received` | Bearer token | Pending inbox |
+| `GET` | `/connections/message-requests/sent` | Bearer token | Requests sent |
+| `GET` | `/connections/search` | Bearer token | Search profiles — filters: `q`, `role`, `commodity`, `city`, `verified_only`; pagination: `page`, `limit` |
+| `GET` | `/connections/search/suggestions?q=...` | **Public** | Name/business suggestions |
 
 ---
 
 ## 6. Follow APIs
 
-### `POST /connections/{user_id}/follow/{target_id}`
+### `POST /connections/follow/{target_id}`
 
 Follow a user. Instant — no approval required.
 
 | URL Param | Type | Description |
 |---|---|---|
-| `user_id` | UUID | The acting user (who presses Follow) |
 | `target_id` | UUID | The user to follow |
 
-No request body. No token required.
+No request body. Acting user identity comes from `Authorization: Bearer <access_token>`.
 
 **Example:**
 ```
-POST /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+POST /connections/follow/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Authorization: Bearer <access_token>
 ```
 
-**Success `200`:**
+**Success `201`:**
 ```json
-{ "status": "following", "following_id": "a1b2c3d4-..." }
+{
+  "success": true,
+  "message": "Now following",
+  "data": { "status": "following", "following_id": "a1b2c3d4-..." }
+}
 ```
 
 **Error `409`** — already following:
@@ -147,18 +149,23 @@ POST /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/a1b2c3d4-e5f6-7890
 
 ---
 
-### `DELETE /connections/{user_id}/follow/{target_id}`
+### `DELETE /connections/follow/{target_id}`
 
 Unfollow a user.
 
 **Example:**
 ```
-DELETE /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+DELETE /connections/follow/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
 ```json
-{ "status": "unfollowed", "following_id": "a1b2c3d4-..." }
+{
+  "success": true,
+  "message": "Unfollowed",
+  "data": { "status": "unfollowed", "following_id": "a1b2c3d4-..." }
+}
 ```
 
 **Error `404`** — not currently following:
@@ -170,7 +177,7 @@ DELETE /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/a1b2c3d4-e5f6-78
 
 ### `GET /connections/{user_id}/followers`
 
-Get everyone who follows this user.
+Get everyone who follows this user. **Public — no token required.**
 
 **Example:**
 ```
@@ -180,20 +187,23 @@ GET /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/followers
 **Success `200`:**
 ```json
 {
-    "user_id": "c37a3257-...",
+  "success": true,
+  "message": "Followers fetched",
+  "data": {
     "total": 1,
     "followers": [
-        {
-            "user_id": "a1b2c3d4-...",
-            "name": "Ravi Traders",
-            "business_name": "Ravi Agro",
-            "role": "trader",
-            "commodity": ["rice", "cotton"],
-            "is_verified": false,
-            "qty_range": "100–500mt",
-            "followed_at": "2026-04-15T08:19:31.248438+00:00"
-        }
+      {
+        "user_id": "a1b2c3d4-...",
+        "name": "Ravi Traders",
+        "business_name": "Ravi Agro",
+        "role": "trader",
+        "commodity": ["rice", "cotton"],
+        "is_verified": false,
+        "qty_range": "100–500mt",
+        "followed_at": "2026-04-15T08:19:31.248438+00:00"
+      }
     ]
+  }
 }
 ```
 
@@ -203,22 +213,27 @@ Results ordered by `followed_at DESC`.
 
 ### `GET /connections/{user_id}/following`
 
-Get everyone this user follows. Same response shape as followers, with `"following"` array key.
+Get everyone this user follows. **Public — no token required.** Same response shape as followers, with `"following"` array key.
 
 ---
 
-### `GET /connections/{user_id}/follow/status/{target_id}`
+### `GET /connections/follow/status/{target_id}`
 
-Check whether `user_id` is currently following `target_id`. Use this to drive the Follow / Unfollow button state.
+Check whether the authenticated user is currently following `target_id`. Use this to drive the Follow / Unfollow button state. Requires `Authorization: Bearer <access_token>`.
 
 **Example:**
 ```
-GET /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/status/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+GET /connections/follow/status/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
 ```json
-{ "me": "c37a3257-...", "target": "a1b2c3d4-...", "following": true }
+{
+  "success": true,
+  "message": "Follow status fetched",
+  "data": { "following": true }
+}
 ```
 
 `following` is always `true` or `false` — never a 404.
@@ -227,20 +242,25 @@ GET /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/follow/status/a1b2c3d4-e5f
 
 ## 7. Message Request APIs
 
-### `POST /connections/{user_id}/message-request/{target_id}`
+### `POST /connections/message-request/{target_id}`
 
 Send a message request. Status is `pending` on creation.
 
-No request body. No token required.
+No request body. Acting user identity comes from `Authorization: Bearer <access_token>`.
 
 **Example:**
 ```
-POST /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/message-request/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+POST /connections/message-request/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Authorization: Bearer <access_token>
 ```
 
-**Success `200`:**
+**Success `201`:**
 ```json
-{ "status": "sent", "id": 4, "sent_at": "2026-04-15T10:00:00.000000+00:00" }
+{
+  "success": true,
+  "message": "Message request sent",
+  "data": { "status": "sent", "id": 4, "sent_at": "2026-04-15T10:00:00.000000+00:00" }
+}
 ```
 
 **Error `409`** — request already exists:
@@ -250,34 +270,44 @@ POST /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/message-request/a1b2c3d4-
 
 ---
 
-### `DELETE /connections/{user_id}/message-request/{target_id}`
+### `DELETE /connections/message-request/{target_id}`
 
 Withdraw a pending request. Only works while status is `pending`.
 
 **Example:**
 ```
-DELETE /connections/c37a3257-dc3f-43be-9fb0-33cf918b11ff/message-request/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+DELETE /connections/message-request/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
 ```json
-{ "status": "withdrawn", "receiver_id": "a1b2c3d4-..." }
+{
+  "success": true,
+  "message": "Request withdrawn",
+  "data": { "status": "withdrawn", "receiver_id": "a1b2c3d4-..." }
+}
 ```
 
 ---
 
-### `PATCH /connections/{user_id}/message-request/{request_id}/accept`
+### `PATCH /connections/message-request/{request_id}/accept`
 
-Accept a message request. `user_id` must be the receiver. Use `request_id` from the received inbox.
+Accept a message request. The authenticated user must be the receiver. Use `request_id` from the received inbox.
 
 **Example:**
 ```
-PATCH /connections/a1b2c3d4-e5f6-7890-abcd-ef1234567890/message-request/4/accept
+PATCH /connections/message-request/4/accept
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
 ```json
-{ "id": 4, "status": "accepted" }
+{
+  "success": true,
+  "message": "Request accepted",
+  "data": { "id": 4, "status": "accepted" }
+}
 ```
 
 **Error `404`** — not found, already acted on, or wrong receiver:
@@ -287,44 +317,52 @@ PATCH /connections/a1b2c3d4-e5f6-7890-abcd-ef1234567890/message-request/4/accept
 
 ---
 
-### `PATCH /connections/{user_id}/message-request/{request_id}/decline`
+### `PATCH /connections/message-request/{request_id}/decline`
 
 Same rules as accept.
 
 **Success `200`:**
 ```json
-{ "id": 4, "status": "declined" }
+{
+  "success": true,
+  "message": "Request declined",
+  "data": { "id": 4, "status": "declined" }
+}
 ```
 
 ---
 
-### `GET /connections/{user_id}/message-requests/received`
+### `GET /connections/message-requests/received`
 
-All pending requests waiting for `user_id` to accept or decline. Only returns `pending` status.
+All pending requests waiting for the authenticated user to accept or decline. Only returns `pending` status.
 
 **Example:**
 ```
-GET /connections/a1b2c3d4-e5f6-7890-abcd-ef1234567890/message-requests/received
+GET /connections/message-requests/received
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
 ```json
 {
-    "user_id": "a1b2c3d4-...",
+  "success": true,
+  "message": "Received requests fetched",
+  "data": {
     "total": 1,
     "requests": [
-        {
-            "request_id": 4,
-            "from": {
-                "user_id": "c37a3257-...",
-                "name": "Ravi Traders",
-                "role": "trader",
-                "commodity": ["rice", "cotton"],
-                "qty_range": "100–500mt"
-            },
-            "sent_at": "2026-04-15T10:00:00.000000+00:00"
-        }
+      {
+        "request_id": 4,
+        "from": {
+          "user_id": "c37a3257-...",
+          "name": "Ravi Traders",
+          "role": "trader",
+          "commodity": ["rice", "cotton"],
+          "qty_range": "100–500mt"
+        },
+        "sent_at": "2026-04-15T10:00:00.000000+00:00"
+      }
     ]
+  }
 }
 ```
 
@@ -332,30 +370,39 @@ Use `request_id` when calling accept or decline.
 
 ---
 
-### `GET /connections/{user_id}/message-requests/sent`
+### `GET /connections/message-requests/sent`
 
-All requests sent by `user_id`, across all statuses.
+All requests sent by the authenticated user, across all statuses.
+
+**Example:**
+```
+GET /connections/message-requests/sent
+Authorization: Bearer <access_token>
+```
 
 **Success `200`:**
 ```json
 {
-    "user_id": "c37a3257-...",
+  "success": true,
+  "message": "Sent requests fetched",
+  "data": {
     "total": 1,
     "requests": [
-        {
-            "request_id": 4,
-            "to": {
-                "user_id": "a1b2c3d4-...",
-                "name": "Anita Shah",
-                "role": "broker",
-                "commodity": ["rice"],
-                "qty_range": "200–800mt"
-            },
-            "status": "pending",
-            "sent_at": "2026-04-15T10:00:00.000000+00:00",
-            "acted_at": null
-        }
+      {
+        "request_id": 4,
+        "to": {
+          "user_id": "a1b2c3d4-...",
+          "name": "Anita Shah",
+          "role": "broker",
+          "commodity": ["rice"],
+          "qty_range": "200–800mt"
+        },
+        "status": "pending",
+        "sent_at": "2026-04-15T10:00:00.000000+00:00",
+        "acted_at": null
+      }
     ]
+  }
 }
 ```
 
@@ -365,9 +412,9 @@ All requests sent by `user_id`, across all statuses.
 
 ## 8. Search APIs
 
-### `GET /connections/{user_id}/search`
+### `GET /connections/search`
 
-Search profiles on the platform. `user_id` is always excluded from results. All filter params optional.
+Search profiles on the platform. The authenticated user is always excluded from results. All filter params optional. Requires `Authorization: Bearer <access_token>`.
 
 | Query Param | Required | Type | Default | Description |
 |---|---|---|---|---|
@@ -381,10 +428,10 @@ Search profiles on the platform. `user_id` is always excluded from results. All 
 
 **Examples:**
 ```
-GET /connections/c37a3257-.../search?q=ravi
-GET /connections/c37a3257-.../search?role=exporter&commodity=rice
-GET /connections/c37a3257-.../search?city=mumbai&verified_only=true
-GET /connections/c37a3257-.../search?page=2&limit=10
+GET /connections/search?q=ravi
+GET /connections/search?role=exporter&commodity=rice
+GET /connections/search?city=mumbai&verified_only=true
+GET /connections/search?page=2&limit=10
 ```
 
 **Success `200`:**
@@ -474,6 +521,7 @@ Some endpoints add extra fields:
 
 | Status | When it happens |
 |---|---|
+| `401` | Missing or invalid Bearer token |
 | `404` | Not following, no pending request found, request already acted on, or wrong receiver |
 | `409` | Already following, message request already exists |
 | `422` | Missing required field or wrong data type |

@@ -354,15 +354,18 @@ Returns one page (20 items) of the blended home feed.
 
 ```
 First request
-  GET /feed/home?user_id=<uuid>
+  GET /feed/home
+  Authorization: Bearer <token>
   → returns items (page 1) + cursor
 
 Second request
-  GET /feed/home?user_id=<uuid>&cursor={"post_cursor":"...","page_num":2,...}
+  GET /feed/home?cursor={"post_cursor":"...","page_num":2,...}
+  Authorization: Bearer <token>
   → returns items (page 2) + updated cursor
 
 Third request
-  GET /feed/home?user_id=<uuid>&cursor={"post_cursor":"...","page_num":3,...}
+  GET /feed/home?cursor={"post_cursor":"...","page_num":3,...}
+  Authorization: Bearer <token>
   → returns items (page 3) + updated cursor
 
 When has_more is false → no more pages.
@@ -460,7 +463,7 @@ Sends a batch of user engagement signals to the backend. Currently the signals a
 | `signals[].action` | string | Yes | See [Engagement Signal Reference](#engagement-signal-reference) |
 | `signals[].dwell_ms` | int | Conditional | Required for `dwell`, `strong_dwell`, `skip` — time in milliseconds |
 
-### Response — `200 OK`
+### Response — `201 Created`
 
 ```json
 {
@@ -517,10 +520,11 @@ All errors follow this shape:
 
 | HTTP Status | Meaning | When it happens |
 |-------------|---------|-----------------|
-| `200` | OK | Feed page or engagement acknowledged |
+| `200` | OK | Feed page returned |
+| `201` | Created | Engagement batch acknowledged |
 | `400` | Bad Request | `cursor` is not valid JSON |
-| `404` | Not Found | No profile exists for the given `user_id` |
-| `422` | Unprocessable Entity | Missing required query parameter (`user_id`) or invalid UUID format |
+| `401` | Unauthorized | Missing or invalid Bearer token |
+| `404` | Not Found | No profile exists for the authenticated user |
 
 ---
 
@@ -542,7 +546,7 @@ All errors follow this shape:
 - [ ] At least a few posts and news articles exist in the DB
 
 ### First Load
-- [ ] **GET /feed/home** with a valid `user_id` — expect `200`, `items` array, `cursor`, `has_more`
+- [ ] **GET /feed/home** with a valid `Authorization: Bearer <token>` — expect `200`, `items` array, `cursor`, `has_more`
 - [ ] Verify `items` contains a mix of content types (post / news / group / connection)
 - [ ] Verify priority items have `is_priority: true` and appear at the top
 - [ ] Verify `weights_used` sums to ~1.0

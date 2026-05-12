@@ -151,30 +151,30 @@ app/modules/groups/
 
 ## 6. API Quick Reference
 
-All endpoints are under `/api/v1/groups`. No token required.
+All endpoints are under `/api/v1/groups`. All require `Authorization: Bearer <access_token>`.
 
-`?user_id=<uuid>` = the acting user's UUID (required query param on most endpoints).
+The acting user's identity comes from the JWT — no `?user_id=` query parameter.
 
 | Method | Endpoint | Access level | What it does |
 |---|---|---|---|
-| `GET` | `/api/v1/groups/suggestions/{user_id}` | Any user | Personalised group recommendations |
-| `GET` | `/api/v1/groups/?user_id=<uuid>` | Any user | List groups with optional filters |
-| `POST` | `/api/v1/groups/?user_id=<uuid>` | **Verified only** | Create a new group |
-| `POST` | `/api/v1/groups/join-by-link/{token}?user_id=<uuid>` | Any user | Join a group via invite token |
-| `GET` | `/api/v1/groups/{group_id}?user_id=<uuid>` | Any user | Get group details |
-| `PATCH` | `/api/v1/groups/{group_id}?user_id=<uuid>` | **Admin** | Update group name/description/etc |
-| `PATCH` | `/api/v1/groups/{group_id}/permissions?user_id=<uuid>` | **Admin** | Update accessibility/posting/chat rules |
-| `POST` | `/api/v1/groups/{group_id}/join?user_id=<uuid>` | Any user | Join a public group |
-| `DELETE` | `/api/v1/groups/{group_id}/leave?user_id=<uuid>` | Member | Leave the group |
-| `GET` | `/api/v1/groups/{group_id}/members?user_id=<uuid>&page=1&limit=20` | Any user | List members (paginated) |
-| `POST` | `/api/v1/groups/{group_id}/members/add?user_id=<uuid>` | **Admin** | Add members by user ID |
-| `DELETE` | `/api/v1/groups/{group_id}/members/{target_user_id}?user_id=<uuid>` | **Admin** | Remove a member |
-| `POST` | `/api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>` | **Admin** | Freeze a member |
-| `DELETE` | `/api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>` | **Admin** | Unfreeze a member |
-| `POST` | `/api/v1/groups/{group_id}/mute?user_id=<uuid>` | Member | Toggle mute notifications |
-| `POST` | `/api/v1/groups/{group_id}/favorite?user_id=<uuid>` | Member | Toggle favorite bookmark |
-| `GET` | `/api/v1/groups/{group_id}/invite-link?user_id=<uuid>` | **Admin** | Get/generate invite link token |
-| `POST` | `/api/v1/groups/{group_id}/report?user_id=<uuid>` | Any user | Report group to moderation |
+| `GET` | `/api/v1/groups/suggestions` | Any user | Personalised group recommendations |
+| `GET` | `/api/v1/groups/` | Any user | List groups with optional filters |
+| `POST` | `/api/v1/groups/` | **Verified only** | Create a new group |
+| `POST` | `/api/v1/groups/join-by-link/{token}` | Any user | Join a group via invite token |
+| `GET` | `/api/v1/groups/{group_id}` | Any user | Get group details |
+| `PATCH` | `/api/v1/groups/{group_id}` | **Admin** | Update group name/description/etc |
+| `PATCH` | `/api/v1/groups/{group_id}/permissions` | **Admin** | Update accessibility/posting/chat rules |
+| `POST` | `/api/v1/groups/{group_id}/join` | Any user | Join a public group |
+| `DELETE` | `/api/v1/groups/{group_id}/leave` | Member | Leave the group |
+| `GET` | `/api/v1/groups/{group_id}/members` | Any user | List members (paginated) |
+| `POST` | `/api/v1/groups/{group_id}/members/add` | **Admin** | Add members by user ID |
+| `DELETE` | `/api/v1/groups/{group_id}/members/{target_user_id}` | **Admin** | Remove a member |
+| `POST` | `/api/v1/groups/{group_id}/members/{target_user_id}/freeze` | **Admin** | Freeze a member |
+| `DELETE` | `/api/v1/groups/{group_id}/members/{target_user_id}/freeze` | **Admin** | Unfreeze a member |
+| `POST` | `/api/v1/groups/{group_id}/mute` | Member | Toggle mute notifications |
+| `POST` | `/api/v1/groups/{group_id}/favorite` | Member | Toggle favorite bookmark |
+| `GET` | `/api/v1/groups/{group_id}/invite-link` | **Admin** | Get/generate invite link token |
+| `POST` | `/api/v1/groups/{group_id}/report` | Any user | Report group to moderation |
 
 ---
 
@@ -185,7 +185,8 @@ All endpoints are under `/api/v1/groups`. No token required.
 Only verified users (`profile.is_verified == true`) can create groups.
 
 ```
-POST /api/v1/groups/?user_id=<uuid>
+POST /api/v1/groups/
+Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
@@ -209,7 +210,8 @@ Content-Type: application/json
 
 **Example:**
 ```
-POST https://vanijyaa-backend.onrender.com/api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff
+POST https://vanijyaa-backend.onrender.com/api/v1/groups/
+Authorization: Bearer <access_token>
 ```
 
 **Success `201`:**
@@ -242,12 +244,12 @@ POST https://vanijyaa-backend.onrender.com/api/v1/groups/?user_id=c37a3257-dc3f-
 ### List Groups
 
 ```
-GET /api/v1/groups/?user_id=<uuid>&page=1&per_page=20
+GET /api/v1/groups/
+Authorization: Bearer <access_token>
 ```
 
 | Query Param | Required | Type | Description |
 |---|---|---|---|
-| `user_id` | Yes | UUID | Acting user — populates `is_member`, `is_muted`, `is_favorite` per group |
 | `commodity` | No | string | Filter groups where commodity array contains this value |
 | `accessibility` | No | string | Filter by `public`, `private`, or `invite_only` |
 | `page` | No | int | Default `1` |
@@ -255,9 +257,9 @@ GET /api/v1/groups/?user_id=<uuid>&page=1&per_page=20
 
 **Examples:**
 ```
-GET /api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff
-GET /api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff&commodity=sugar
-GET /api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff&accessibility=public&page=2
+GET /api/v1/groups/
+GET /api/v1/groups/?commodity=sugar
+GET /api/v1/groups/?accessibility=public&page=2
 ```
 
 ---
@@ -265,12 +267,14 @@ GET /api/v1/groups/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff&accessibility=p
 ### Get Group Details
 
 ```
-GET /api/v1/groups/{group_id}?user_id=<uuid>
+GET /api/v1/groups/{group_id}
+Authorization: Bearer <access_token>
 ```
 
 **Example:**
 ```
-GET /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff?user_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+GET /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:** Returns full `GroupOut` object.
@@ -280,7 +284,8 @@ GET /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff?user_id=a1b2c3d4-e5f6-78
 ### Update Group (Admin only)
 
 ```
-PATCH /api/v1/groups/{group_id}?user_id=<uuid>
+PATCH /api/v1/groups/{group_id}
+Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
@@ -303,7 +308,8 @@ Content-Type: application/json
 ### Update Permissions (Admin only)
 
 ```
-PATCH /api/v1/groups/{group_id}/permissions?user_id=<uuid>
+PATCH /api/v1/groups/{group_id}/permissions
+Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
@@ -325,14 +331,16 @@ Content-Type: application/json
 ### Join a Group
 
 ```
-POST /api/v1/groups/{group_id}/join?user_id=<uuid>
+POST /api/v1/groups/{group_id}/join
+Authorization: Bearer <access_token>
 ```
 
 No request body. Works for `public` and `private` groups. `invite_only` groups require the invite link endpoint.
 
 **Example:**
 ```
-POST /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff/join?user_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+POST /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff/join
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -359,7 +367,8 @@ POST /api/v1/groups/c37a3257-dc3f-43be-9fb0-33cf918b11ff/join?user_id=a1b2c3d4-e
 ### Leave a Group
 
 ```
-DELETE /api/v1/groups/{group_id}/leave?user_id=<uuid>
+DELETE /api/v1/groups/{group_id}/leave
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -377,19 +386,19 @@ DELETE /api/v1/groups/{group_id}/leave?user_id=<uuid>
 ### List Members
 
 ```
-GET /api/v1/groups/{group_id}/members?user_id=<uuid>&page=1&limit=20
+GET /api/v1/groups/{group_id}/members
+Authorization: Bearer <access_token>
 ```
 
 | Query Param | Required | Type | Description |
 |---|---|---|---|
-| `user_id` | Yes | UUID | Acting user's UUID |
 | `page` | No | int | Default `1` |
 | `limit` | No | int | Default `20`, max `100` |
 
 **Examples:**
 ```
-GET /api/v1/groups/{group_id}/members?user_id=<uuid>
-GET /api/v1/groups/{group_id}/members?user_id=<uuid>&page=2&limit=20
+GET /api/v1/groups/{group_id}/members
+GET /api/v1/groups/{group_id}/members?page=2&limit=20
 ```
 
 **Success `200`:**
@@ -426,7 +435,8 @@ GET /api/v1/groups/{group_id}/members?user_id=<uuid>&page=2&limit=20
 ### Add Members (Admin only)
 
 ```
-POST /api/v1/groups/{group_id}/members/add?user_id=<uuid>
+POST /api/v1/groups/{group_id}/members/add
+Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
@@ -454,13 +464,13 @@ Content-Type: application/json
 ### Remove a Member (Admin only)
 
 ```
-DELETE /api/v1/groups/{group_id}/members/{target_user_id}?user_id=<uuid>
+DELETE /api/v1/groups/{group_id}/members/{target_user_id}
+Authorization: Bearer <access_token>
 ```
 
 | Param | Description |
 |---|---|
 | `target_user_id` (path) | UUID of the member to remove |
-| `user_id` (query) | UUID of the admin performing the action |
 
 **Success `200`:**
 ```json
@@ -472,7 +482,8 @@ DELETE /api/v1/groups/{group_id}/members/{target_user_id}?user_id=<uuid>
 ### Freeze a Member (Admin only)
 
 ```
-POST /api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>
+POST /api/v1/groups/{group_id}/members/{target_user_id}/freeze
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -489,7 +500,8 @@ POST /api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>
 ### Unfreeze a Member (Admin only)
 
 ```
-DELETE /api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>
+DELETE /api/v1/groups/{group_id}/members/{target_user_id}/freeze
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -506,7 +518,8 @@ DELETE /api/v1/groups/{group_id}/members/{target_user_id}/freeze?user_id=<uuid>
 ### Toggle Mute Notifications
 
 ```
-POST /api/v1/groups/{group_id}/mute?user_id=<uuid>
+POST /api/v1/groups/{group_id}/mute
+Authorization: Bearer <access_token>
 ```
 
 Each call toggles the state.
@@ -521,7 +534,8 @@ Each call toggles the state.
 ### Toggle Favorite
 
 ```
-POST /api/v1/groups/{group_id}/favorite?user_id=<uuid>
+POST /api/v1/groups/{group_id}/favorite
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -534,7 +548,8 @@ POST /api/v1/groups/{group_id}/favorite?user_id=<uuid>
 ### Report a Group
 
 ```
-POST /api/v1/groups/{group_id}/report?user_id=<uuid>
+POST /api/v1/groups/{group_id}/report
+Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
@@ -559,7 +574,8 @@ Content-Type: application/json
 ### Get / Generate Invite Link (Admin only)
 
 ```
-GET /api/v1/groups/{group_id}/invite-link?user_id=<uuid>
+GET /api/v1/groups/{group_id}/invite-link
+Authorization: Bearer <access_token>
 ```
 
 If no invite token exists for the group, one is generated on first call.
@@ -580,17 +596,18 @@ If no invite token exists for the group, one is generated on first call.
 ### Join via Invite Link
 
 ```
-POST /api/v1/groups/join-by-link/{token}?user_id=<uuid>
+POST /api/v1/groups/join-by-link/{token}
+Authorization: Bearer <access_token>
 ```
 
 | Param | Description |
 |---|---|
 | `token` (path) | The `invite_link_token` value |
-| `user_id` (query) | UUID of the user joining |
 
 **Example:**
 ```
-POST /api/v1/groups/join-by-link/abc123xyz456def7?user_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+POST /api/v1/groups/join-by-link/abc123xyz456def7
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -611,9 +628,16 @@ POST /api/v1/groups/join-by-link/abc123xyz456def7?user_id=a1b2c3d4-e5f6-7890-abc
 
 ## 10. Group Recommendations
 
-### `GET /api/v1/groups/suggestions/{user_id}`
+### `GET /api/v1/groups/suggestions`
 
-Returns top 20 group suggestions ranked by semantic similarity (75%) + activity score (25%). Excludes groups the user is already in and `private` groups.
+Returns top 20 group suggestions ranked by semantic similarity (75%) + activity score (25%). Excludes groups the user is already in and `private` groups. Identity comes from the Bearer token.
+
+**Auth:** `Authorization: Bearer <access_token>`
+
+| Query Param | Required | Type | Default | Description |
+|---|---|---|---|---|
+| `page` | No | int | `1` | Page number |
+| `limit` | No | int | `20` | Results per page (max 100) |
 
 **Two-stage pipeline:**
 
@@ -638,7 +662,8 @@ Stage 2 — Activity reranking (Python, cheap)
 
 **Example:**
 ```
-GET https://vanijyaa-backend.onrender.com/api/v1/groups/suggestions/c37a3257-dc3f-43be-9fb0-33cf918b11ff
+GET https://vanijyaa-backend.onrender.com/api/v1/groups/suggestions
+Authorization: Bearer <access_token>
 ```
 
 **Success `200`:**
@@ -750,7 +775,7 @@ GET https://vanijyaa-backend.onrender.com/api/v1/groups/suggestions/c37a3257-dc3
 | `member_role` | `admin`, `member` |
 
 **Accessibility rules:**
-- `public` — anyone can join via `POST /{group_id}/join?user_id=`
+- `public` — anyone can join via `POST /{group_id}/join` with a Bearer token
 - `private` — visible in list but join only if added by admin
 - `invite_only` — join only via invite link token
 
@@ -774,23 +799,25 @@ All errors follow FastAPI's shape:
 
 ## Quick Testing Flow
 
+All requests require `Authorization: Bearer <access_token>` (obtained from step 4).
+
 ```
-1.  POST /auth/send-otp                                                       → get OTP
-2.  POST /auth/verify-otp                                                     → get onboarding_token
-3.  POST /profile/user              ← onboarding_token                        → create user, save UUID
-4.  POST /profile/                  ← onboarding_token                        → create profile
+1.  POST /auth/firebase-verify                  ← firebase_id_token   → get onboarding_token
+2.  POST /profile/user                          ← onboarding_token    → create user
+3.  POST /profile/                              ← onboarding_token    → create profile + get access_token
+    # Save access_token from step 3 response — use it as Bearer token for all steps below
 
     # Mark user as verified for testing:
     # UPDATE profile SET is_verified=true WHERE users_id='<your-uuid>';
 
-5.  POST /api/v1/groups/?user_id=<uuid>                                       → create group
-6.  GET  /api/v1/groups/suggestions/{user_id}                                 → see suggestions
-7.  POST /api/v1/groups/{group_id}/join?user_id=<uuid_2>                      → 2nd user joins
-8.  GET  /api/v1/groups/{group_id}/members?user_id=<uuid>&page=1&limit=20     → list members (paginated)
-9.  GET  /api/v1/groups/{group_id}/invite-link?user_id=<uuid>                 → get invite token
-10. POST /api/v1/groups/join-by-link/{token}?user_id=<uuid_3>                 → join via link
-11. POST /api/v1/groups/{group_id}/members/{uid}/freeze?user_id=<admin_uuid>  → freeze member
-12. POST /api/v1/groups/{group_id}/mute?user_id=<uuid>                        → toggle mute
-13. POST /api/v1/groups/{group_id}/favorite?user_id=<uuid>                    → toggle favorite
-14. DELETE /api/v1/groups/{group_id}/leave?user_id=<uuid>                     → leave group
+4.  POST /api/v1/groups/                        ← Bearer token        → create group
+5.  GET  /api/v1/groups/suggestions             ← Bearer token        → see suggestions
+6.  POST /api/v1/groups/{group_id}/join         ← Bearer token (user2)→ 2nd user joins
+7.  GET  /api/v1/groups/{group_id}/members      ← Bearer token        → list members (add ?page=1&limit=20)
+8.  GET  /api/v1/groups/{group_id}/invite-link  ← Bearer token        → get invite token
+9.  POST /api/v1/groups/join-by-link/{token}    ← Bearer token (user3)→ join via link
+10. POST /api/v1/groups/{group_id}/members/{uid}/freeze ← Bearer token (admin) → freeze member
+11. POST /api/v1/groups/{group_id}/mute         ← Bearer token        → toggle mute
+12. POST /api/v1/groups/{group_id}/favorite     ← Bearer token        → toggle favorite
+13. DELETE /api/v1/groups/{group_id}/leave      ← Bearer token        → leave group
 ```
