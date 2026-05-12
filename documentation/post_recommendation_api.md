@@ -11,7 +11,7 @@
 }
 ```
 
-> **Auth note:** All endpoints use `profile_id` as a query parameter — no JWT required. This matches the rest of the posts module. The `profile_id` is the integer returned after profile creation.
+> **Auth note:** All endpoints require `Authorization: Bearer <access_token>`. The `profile_id` is read from the JWT's `pid` claim automatically — no query parameter needed.
 
 ---
 
@@ -119,17 +119,13 @@ Each item in the feed response contains only the **post ID and its score**. The 
 
 ## 1. Get Recommended Feed
 
-**`GET /posts/recommendation/feed?profile_id={profile_id}`**
+**`GET /posts/recommendation/feed`**
 
-Returns up to 25 personalised post recommendations for the given profile. The response contains only `post_id` + `score` — no post content is hydrated here.
+Returns up to 25 personalised post recommendations for the authenticated user. The response contains only `post_id` + `score` — no post content is hydrated here.
 
-> **Seen deduplication:** Post IDs returned are recorded in `seen_posts`. The same post will not be served again for 30 days. Call with different profiles to get independent feeds.
+> **Seen deduplication:** Post IDs returned are recorded in `seen_posts`. The same post will not be served again for 30 days.
 
-### Query Parameters
-
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `profile_id` | int | Yes | Your profile ID (integer, not user UUID) |
+**Auth:** `Authorization: Bearer <access_token>` — `profile_id` is resolved from the token automatically.
 
 ### Response — `200 OK`
 
@@ -163,8 +159,8 @@ Returns up to 25 personalised post recommendations for the given profile. The re
 
 | Status | Reason |
 |--------|--------|
-| `404` | No profile found for this `profile_id` |
-| `422` | `profile_id` query param missing or not an integer |
+| `401` | Missing or invalid Bearer token |
+| `404` | No profile found for the authenticated user |
 
 ---
 
@@ -277,13 +273,13 @@ Use this to verify the recommendation module end-to-end.
 
 ### Feed
 
-- [ ] `GET /posts/recommendation/feed` with valid JWT → `200`, array of `{post_id, score}`
+- [ ] `GET /posts/recommendation/feed` with valid `Authorization: Bearer <token>` → `200`, array of `{post_id, score}`
 - [ ] Scores are floats between 0 and ~3 (composite, not clamped to 1)
 - [ ] Array has at most 25 items
-- [ ] Call feed again with the same JWT → same posts **not** returned (seen deduplication)
-- [ ] `GET /posts/recommendation/feed` without JWT → `401`
+- [ ] Call feed again with the same token → same posts **not** returned (seen deduplication)
+- [ ] `GET /posts/recommendation/feed` without Authorization header → `401`
 - [ ] `GET /posts/recommendation/feed` for a user with no profile → `404`
-- [ ] Fetch a returned `post_id` via `GET /posts/{post_id}?profile_id={id}` → full post card loads correctly
+- [ ] Fetch a returned `post_id` via `GET /posts/{post_id}` with the same Bearer token → full post card loads correctly
 
 ### Scoring behaviour
 
@@ -342,7 +338,7 @@ Running recommendation test for 2 profile(s)…
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/posts/recommendation/feed` | Query param | Get personalised feed (up to 25 posts) |
+| `GET` | `/posts/recommendation/feed` | Bearer access token | Get personalised feed (up to 25 posts) |
 | `POST` | `/posts/recommendation/jobs/expiry` | None | Run expiry + partition migration job |
 | `POST` | `/posts/recommendation/jobs/popular-sync` | None | Run popular-posts velocity sync |
 
@@ -354,9 +350,9 @@ Running recommendation test for 2 profile(s)…
 
 ```
 Home screen loads
-  └─► GET /posts/recommendation/feed   (JWT in header)
+  └─► GET /posts/recommendation/feed   (Authorization: Bearer <token>)
         └─► for each post_id in response (in order):
-              GET /posts/{post_id}?profile_id={profile_id}
+              GET /posts/{post_id}      (same Bearer token)
               → render post card
 ```
 
@@ -369,7 +365,7 @@ The recommendation feed does **not** use `limit`/`offset`. It returns up to 25 p
 If `data` is `[]`:
 - The user may have seen all available posts in the last 30 days
 - There may be no posts indexed yet (run `POST /posts/recommendation/jobs/popular-sync` to prime the pool)
-- Fall back to `GET /posts/?profile_id={id}` (chronological feed) as a graceful degradation
+- Fall back to `GET /posts/` with the same Bearer token (chronological feed) as a graceful degradation
 
 ### Post Object Fields Changed from Old Posts API
 

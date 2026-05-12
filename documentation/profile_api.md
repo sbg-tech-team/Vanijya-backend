@@ -43,21 +43,23 @@ DATABASE_STORAGE_BUCKET=avatars
 
 ## 2. How Auth Works
 
-The profile module uses **two different auth mechanisms** depending on the stage:
+The profile module uses **two different token types** depending on the stage:
 
 | Stage | Endpoints | Auth mechanism |
 |---|---|---|
 | **Onboarding (new users)** | `POST /profile/user` and `POST /profile/` | `Authorization: Bearer <onboarding_token>` |
-| **Post-registration** | All other endpoints | Query parameter `?user_id=<uuid>` — no token |
+| **Post-registration** | All other endpoints | `Authorization: Bearer <access_token>` |
 
 ### Onboarding token
 - Issued by `POST /auth/firebase-verify` for new users
 - JWT signed with HS256, expires in 15 minutes
 - Contains: `user_id`, `phone_number`, `country_code`, `token_type: "onboarding"`
 
-### Post-registration auth
-- After registration, pass `user_id` as a query parameter — no Bearer token required
-- Example: `GET /profile/me?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff`
+### Access token
+- Issued by `POST /profile/` (onboarding Step 2) inside the response body
+- Contains: `user_id` (`sub`), `profile_id` (`pid`), `session_id` (`jti`), `type: "access"`
+- The acting user's identity is derived exclusively from this token — **never** from a query or path parameter
+- Example: `GET /profile/me` with `Authorization: Bearer <access_token>`
 
 ---
 
@@ -152,14 +154,15 @@ Authorization: Bearer <onboarding_token>
 | Method | Endpoint | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/profile/user` | Bearer onboarding token | Create user row |
-| `POST` | `/profile/` | Bearer onboarding token | Create profile (step 2 of onboarding) |
-| `GET` | `/profile/me` | `?user_id=<uuid>` | Fetch your own full profile |
-| `PATCH` | `/profile/` | `?user_id=<uuid>` | Update your profile |
-| `PATCH` | `/profile/avatar` | `?user_id=<uuid>` | Upload / replace profile avatar |
-| `PATCH` | `/profile/user/fcm-token` | `?user_id=<uuid>` | Register / update FCM push token |
-| `POST` | `/profile/verify` | `?user_id=<uuid>` | Submit verification documents |
-| `DELETE` | `/profile/` | `?user_id=<uuid>` | Hard delete profile row only |
-| `DELETE` | `/profile/user` | `?user_id=<uuid>` | Permanently delete user and all associated data |
+| `POST` | `/profile/` | Bearer onboarding token | Create profile → returns access + refresh tokens |
+| `GET` | `/profile/me` | Bearer access token | Fetch your own full profile |
+| `PATCH` | `/profile/` | Bearer access token | Update your profile |
+| `GET` | `/profile/avatar-upload-url` | Bearer access token | Get signed URL to upload avatar to Supabase |
+| `PATCH` | `/profile/avatar` | Bearer access token | Persist avatar URL after Supabase upload |
+| `PATCH` | `/profile/user/fcm-token` | Bearer access token | Register / update FCM push token |
+| `POST` | `/profile/verify` | Bearer access token | Submit verification documents |
+| `DELETE` | `/profile/` | Bearer access token | Hard delete profile row only |
+| `DELETE` | `/profile/user` | Bearer access token | Permanently delete user and all associated data |
 | `GET` | `/profile/{profile_id}` | None (public) | Public view of any profile |
 
 ---
@@ -253,11 +256,11 @@ Creates the profile. Call immediately after Step 1 with the same token.
 | `latitude` | float | Yes | Business location latitude |
 | `longitude` | float | Yes | Business location longitude |
 
-**Success `200`:**
+**Success `201`:**
 ```json
 {
     "success": true,
-    "message": "Profile created successfully",
+    "message": "Profile created successfully.",
     "data": {
         "profile": {
             "id": 1,
@@ -281,10 +284,16 @@ Creates the profile. Call immediately after Step 1 with the same token.
             "latitude": 19.076,
             "longitude": 72.877,
             "avatar_url": null
-        }
+        },
+        "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+        "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+        "token_type": "bearer",
+        "expires_in": 1800
     }
 }
 ```
+
+> **Save the `access_token`** — use it as `Authorization: Bearer <access_token>` for all subsequent profile, post, feed, news, groups, and connections calls.
 
 **Error `409`** — profile already exists:
 ```json
@@ -300,7 +309,7 @@ Creates the profile. Call immediately after Step 1 with the same token.
 
 ## 7. Profile APIs
 
-All endpoints in this section authenticate via the `user_id` **query parameter** — no Bearer token.
+All endpoints in this section require `Authorization: Bearer <access_token>`. The acting user's identity is read from the token — no `user_id` query parameter needed or accepted.
 
 ---
 
@@ -310,7 +319,8 @@ Fetch your own full profile.
 
 **Example:**
 ```bash
-curl "http://localhost:8000/profile/me?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff"
+curl "http://localhost:8000/profile/me" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Success `200`:**
@@ -344,16 +354,61 @@ curl "http://localhost:8000/profile/me?user_id=c37a3257-dc3f-43be-9fb0-33cf918b1
 
 ---
 
-### `PATCH /profile/avatar`
+### Avatar Upload — Two-Step Flow
 
-Upload or replace the profile avatar. Accepts `jpeg`, `png`, or `webp`.
+Uploading an avatar is a two-step process: get a signed URL, upload the file directly to Supabase, then persist the URL.
 
-**Content-Type:** `multipart/form-data`
+#### Step 1 — `GET /profile/avatar-upload-url`
+
+Get a short-lived signed upload URL from Supabase Storage.
+
+**Query params:**
+
+| Param | Type | Required | Values |
+|---|---|---|---|
+| `content_type` | string | Yes | `image/jpeg`, `image/png`, `image/webp` |
 
 **Example:**
 ```bash
-curl -X PATCH "http://localhost:8000/profile/avatar?user_id=<USER_ID>" \
-  -F "avatar=@/path/to/photo.jpg"
+curl "http://localhost:8000/profile/avatar-upload-url?content_type=image/jpeg" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+**Success `200`:**
+```json
+{
+  "success": true,
+  "message": "Upload URL generated",
+  "data": {
+    "upload_url": "https://<project>.supabase.co/storage/v1/object/sign/avatars/...",
+    "public_url": "https://<project>.supabase.co/storage/v1/object/public/avatars/<uuid>.jpg"
+  }
+}
+```
+
+#### Step 2a — Upload file to Supabase
+
+```bash
+curl -X PUT "<upload_url>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @/path/to/photo.jpg
+```
+
+#### Step 2b — `PATCH /profile/avatar`
+
+Persist the public URL to the profile after upload.
+
+**Request body:**
+```json
+{ "avatar_url": "<public_url from step 1>" }
+```
+
+**Example:**
+```bash
+curl -X PATCH "http://localhost:8000/profile/avatar" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "avatar_url": "https://<project>.supabase.co/storage/v1/object/public/avatars/<uuid>.jpg" }'
 ```
 
 **Success `200`:**
@@ -377,6 +432,8 @@ curl -X PATCH "http://localhost:8000/profile/avatar?user_id=<USER_ID>" \
 ### `PATCH /profile/`
 
 Update your profile. All fields are optional — only send what you want to change.
+
+**Auth:** `Authorization: Bearer <ACCESS_TOKEN>`
 
 **Request body:**
 ```json
@@ -427,7 +484,8 @@ Register or update the device FCM push token. Call this after login and whenever
 
 **Example:**
 ```bash
-curl -X PATCH "http://localhost:8000/profile/user/fcm-token?user_id=<USER_ID>" \
+curl -X PATCH "http://localhost:8000/profile/user/fcm-token" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{ "fcm_token": "<FIREBASE_FCM_TOKEN>" }'
 ```
@@ -451,13 +509,14 @@ curl -X PATCH "http://localhost:8000/profile/user/fcm-token?user_id=<USER_ID>" \
 
 ### `POST /profile/verify`
 
-Submit identity or business verification documents for admin review. Documents are uploaded as file attachments (multipart/form-data).
+Submit identity or business verification documents for admin review.
 
 **Content-Type:** `multipart/form-data`
 
 **Example:**
 ```bash
-curl -X POST "http://localhost:8000/profile/verify?user_id=<USER_ID>" \
+curl -X POST "http://localhost:8000/profile/verify" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
   -F "identity_proof=@/path/to/aadhaar.jpg" \
   -F "business_proof=@/path/to/gst_cert.pdf"
 ```
@@ -492,7 +551,8 @@ At least one document must be provided.
 Hard deletes the user row from the database. All associated data is removed immediately via `ON DELETE CASCADE` — profile, embeddings, group memberships, news engagement, and cluster taste records are all gone. This is **not reversible**. If the same phone number registers again afterwards, it is treated as a completely new user.
 
 ```bash
-curl -X DELETE "http://localhost:8000/profile/user?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff"
+curl -X DELETE "http://localhost:8000/profile/user" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Success `200`:**
@@ -510,7 +570,8 @@ curl -X DELETE "http://localhost:8000/profile/user?user_id=c37a3257-dc3f-43be-9f
 Hard deletes the profile row (commodities, interests, documents cascade). The `users` row remains intact.
 
 ```bash
-curl -X DELETE "http://localhost:8000/profile/?user_id=c37a3257-dc3f-43be-9fb0-33cf918b11ff"
+curl -X DELETE "http://localhost:8000/profile/" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Success `200`:**
@@ -606,9 +667,9 @@ alembic current
 | Status | When it happens |
 |---|---|
 | `400` | Invalid IDs (role/commodity/interest not in DB), `quantity_min > quantity_max`, unsupported avatar type |
-| `401` | Missing, expired, or wrong token type (onboarding token required but not provided) |
+| `401` | Missing, expired, or wrong token type (onboarding token required on step 1-2; access token required everywhere else) |
 | `404` | User or profile not found |
-| `409` | Active account already registered with this phone number |
+| `409` | Active account already registered with this phone number, or profile already exists |
 | `422` | Missing required field or wrong data type (FastAPI validation) |
 
 All errors follow FastAPI's default shape:
@@ -639,6 +700,7 @@ curl -X POST http://localhost:8000/profile/user \
   -H "Authorization: Bearer <ONBOARDING_TOKEN>"
 
 # 5. Create profile (same ONBOARDING_TOKEN from step 3)
+#    → response contains access_token and refresh_token — save access_token for steps 6+
 curl -X POST http://localhost:8000/profile/ \
   -H "Authorization: Bearer <ONBOARDING_TOKEN>" \
   -H "Content-Type: application/json" \
@@ -656,15 +718,28 @@ curl -X POST http://localhost:8000/profile/ \
     "longitude": 72.877
   }'
 
-# 6. Fetch your profile (replace USER_ID with the UUID from step 4 response)
-curl "http://localhost:8000/profile/me?user_id=<USER_ID>"
+# 6. Fetch your profile (use ACCESS_TOKEN from step 5 response)
+curl "http://localhost:8000/profile/me" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 
-# 7. Upload avatar
-curl -X PATCH "http://localhost:8000/profile/avatar?user_id=<USER_ID>" \
-  -F "avatar=@/path/to/photo.jpg"
+# 7. Get a signed upload URL for avatar
+curl "http://localhost:8000/profile/avatar-upload-url?content_type=image/jpeg" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# 7b. Upload file directly to Supabase using the upload_url from step 7
+curl -X PUT "<UPLOAD_URL>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @/path/to/photo.jpg
+
+# 7c. Persist the public_url from step 7 to the profile
+curl -X PATCH "http://localhost:8000/profile/avatar" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "avatar_url": "<PUBLIC_URL>" }'
 
 # 8. Update name and city only
-curl -X PATCH "http://localhost:8000/profile/?user_id=<USER_ID>" \
+curl -X PATCH "http://localhost:8000/profile/" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{ "name": "Ravi Global Traders", "city": "Pune" }'
 
@@ -672,5 +747,6 @@ curl -X PATCH "http://localhost:8000/profile/?user_id=<USER_ID>" \
 curl http://localhost:8000/profile/<PROFILE_ID>
 
 # 10. Permanently delete account (removes user row and all data via CASCADE)
-curl -X DELETE "http://localhost:8000/profile/user?user_id=<USER_ID>"
+curl -X DELETE "http://localhost:8000/profile/user" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```

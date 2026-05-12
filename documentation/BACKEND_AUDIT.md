@@ -3,7 +3,8 @@
 > **Audit date:** 2026-04-23  
 > **Auditor role:** Senior Backend Architect + QA + Reliability Engineer  
 > **Scope:** Every Python file in `backend/` — models, schemas, routers, services, core, tasks, migrations  
-> **Status:** PHASE 1 COMPLETE — listing only, no fixes applied yet
+> **Status:** PHASE 1 COMPLETE — listing only, no fixes applied yet  
+> **Phase 2 (2026-05-12):** BUG-001, BUG-002, BUG-003, BUG-005 resolved — see fix notes inline below.
 
 ---
 
@@ -25,33 +26,36 @@ The most dangerous issues are a **system-wide authentication bypass** (every end
 
 ---
 
-### BUG-001
+### BUG-001 ✅ FIXED (2026-05-12)
 **Category:** Authentication / Authorization  
 **File:** `app/modules/profile/router.py` — all endpoints except `POST /profile/user` and `POST /profile/`  
 **Severity:** CRITICAL  
 **Short explanation:** Every authenticated profile action (`GET /me`, `PATCH /`, `PATCH /avatar`, `POST /verify`, `PATCH /user/fcm-token`, `DELETE /user`, `DELETE /`) accepts `user_id` as a plain `Query(...)` parameter with zero token validation. Any caller who knows another user's UUID can read, modify, or delete their profile.  
 **Root cause:** Auth dependency (`get_current_user_id`) exists in `dependencies.py` but is only wired up for the two onboarding endpoints. Every other endpoint uses `user_id: UUID = Query(...)` directly.  
-**User impact:** Complete account takeover — read PII, change avatar, delete any account, hijack FCM token for notification spoofing.
+**User impact:** Complete account takeover — read PII, change avatar, delete any account, hijack FCM token for notification spoofing.  
+**Fix:** All post-registration profile endpoints now use `cu: CurrentUser = Depends(get_current_user)`. Identity comes from JWT `sub`+`pid` claims — no query param accepted.
 
 ---
 
-### BUG-002
+### BUG-002 ✅ FIXED (2026-05-12)
 **Category:** Authentication / Authorization  
 **File:** `app/modules/post/router.py` — ALL endpoints  
 **Severity:** CRITICAL  
 **Short explanation:** Every post endpoint (`POST /posts/`, `PATCH /posts/{id}`, `DELETE /posts/{id}`, likes, comments, saves, shares) accepts `profile_id: int = Query(...)` with no verification that the caller owns that profile. Any user can post, like, comment, or delete as any other user.  
 **Root cause:** No auth dependency wired in the post router. `profile_id` is treated as trusted input.  
-**User impact:** Content fraud, impersonation, mass deletion of any user's posts.
+**User impact:** Content fraud, impersonation, mass deletion of any user's posts.  
+**Fix:** All 15 post router endpoints now use `profile_id: int = Depends(get_current_profile_id)`. `profile_id` is read from the JWT `pid` claim — client cannot pass a different value.
 
 ---
 
-### BUG-003
+### BUG-003 ✅ FIXED (2026-05-12)
 **Category:** Authentication / Authorization  
 **File:** `app/modules/connections/router.py` — ALL endpoints  
 **Severity:** CRITICAL  
 **Short explanation:** Follow, unfollow, send message request, withdraw, accept, decline, search — all accept `user_id` from the URL path without validating a token. Anyone can follow/unfollow or accept message requests on behalf of any user.  
 **Root cause:** Router docstring explicitly states: _"No auth token required — user_id is passed in the URL path."_  
-**User impact:** Social graph manipulation, unwanted follows, accepting/declining requests on behalf of victims.
+**User impact:** Social graph manipulation, unwanted follows, accepting/declining requests on behalf of victims.  
+**Fix:** Full router rewrite. Old `/{user_id}/follow/{target_id}` path pattern removed. New paths: `/follow/{target_id}`, `/message-request/{target_id}`, etc. Acting user derived from `me: UUID = Depends(get_current_user_id)` in every mutating endpoint. Public read endpoints (`/{user_id}/followers`, `/search/suggestions`) remain open.
 
 ---
 
@@ -65,13 +69,14 @@ The most dangerous issues are a **system-wide authentication bypass** (every end
 
 ---
 
-### BUG-005
+### BUG-005 ✅ FIXED (2026-05-12)
 **Category:** Authentication / Authorization  
 **File:** `app/modules/groups/router.py` — ALL endpoints  
 **Severity:** CRITICAL  
 **Short explanation:** All group management endpoints accept `user_id: UUID = Query(...)`. An attacker can create groups as another user, add/remove members, freeze users, or delete groups they don't own.  
 **Root cause:** Router comment: _"No auth token required — caller passes ?user_id=<uuid>"_  
-**User impact:** Group hijacking, unauthorized member management, reputation damage.
+**User impact:** Group hijacking, unauthorized member management, reputation damage.  
+**Fix:** All group endpoints use `user_id: UUID = Depends(get_current_user_id)`. `GET /suggestions/{user_id}` (path param) removed and replaced with `GET /suggestions` (identity from token). Feed/news routers similarly updated.
 
 ---
 
