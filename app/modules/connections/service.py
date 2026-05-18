@@ -68,17 +68,17 @@ def _load_profiles_bulk(db: Session, user_ids: list[UUID]) -> dict[UUID, Profile
 
 
 def _fmt_profile(profile: Profile) -> dict:
-    """Serialize a Profile into a flat dict for API responses."""
+    """Serialize a Profile into a flat dict for connection list responses."""
     return {
-        "user_id":       str(profile.users_id),
-        "name":          profile.name,
-        "business_name": profile.business.business_name,
-        "role":          profile.role.name.lower() if profile.role else None,
-        "commodity":     [pc.commodity.name.lower() for pc in profile.commodities],
-        "is_verified":   profile.is_verified,
-        "qty_range":     f"{int(profile.quantity_min)}–{int(profile.quantity_max)}mt",
-        "latitude":      profile.business.latitude,
-        "longitude":     profile.business.longitude,
+        "user_id":              str(profile.users_id),
+        "name":                 profile.name,
+        "avatar_url":           profile.avatar_url,
+        "role":                 profile.role.name.lower() if profile.role else None,
+        "commodity":            [pc.commodity.name.lower() for pc in profile.commodities],
+        "is_user_verified":     profile.is_user_verified,
+        "is_business_verified": profile.is_business_verified,
+        "city":                 profile.business.city,
+        "business_name":        profile.business.business_name,
     }
 
 
