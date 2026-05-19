@@ -194,9 +194,11 @@ recommendations_router = APIRouter(prefix="/recommendations", tags=["recommendat
 def get_recommendations(
     me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
+    page:  int = Query(default=1,  ge=1,             description="Page number (1-based)"),
+    limit: int = Query(default=20, ge=1, le=100,     description="Results per page"),
 ):
-    """Top-20 user matches based on my profile (commodity, role, location, quantity)."""
-    result = service.get_recommendations(db, user_id=me)
+    """Paginated user matches based on my profile (commodity, role, location, quantity)."""
+    result = service.get_recommendations(db, user_id=me, page=page, limit=limit)
     return ok(result, "Recommendations fetched")
 
 

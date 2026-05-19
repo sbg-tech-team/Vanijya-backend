@@ -77,8 +77,11 @@ def _fmt_profile(profile: Profile) -> dict:
         "commodity":            [pc.commodity.name.lower() for pc in profile.commodities],
         "is_user_verified":     profile.is_user_verified,
         "is_business_verified": profile.is_business_verified,
-        "city":                 profile.business.city,
+        "quantity_min":         int(profile.quantity_min),
+        "quantity_max":         int(profile.quantity_max),
         "business_name":        profile.business.business_name,
+        "city":                 profile.business.city,
+        "state":                profile.business.state,
     }
 
 
@@ -374,12 +377,17 @@ def search_suggestions(db: Session, q: str) -> list[dict]:
 # D. Recommendations  (pgvector HNSW cosine ANN via <=>)
 # ---------------------------------------------------------------------------
 
-def get_recommendations(db: Session, user_id: UUID) -> dict:
+def get_recommendations(
+    db: Session,
+    user_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+) -> dict:
     """
-    Top-K user matches for the calling user.
+    Paginated user matches for the calling user.
     1. Builds WANT vector from their profile.
     2. Runs pgvector HNSW ANN search against user_embeddings.
-    3. Returns top-20 with full profile info.
+    3. Returns `limit` results starting at `(page-1)*limit`.
     """
     profile = _load_profile(db, user_id)
     if not profile:
@@ -399,6 +407,24 @@ def get_recommendations(db: Session, user_id: UUID) -> dict:
         qty_max=int(profile.quantity_max),
     )
 
+    offset = (page - 1) * limit
+
+    total_row = db.execute(
+        text("""
+            SELECT COUNT(*) AS cnt
+            FROM user_embeddings
+            WHERE user_id != CAST(:uid AS uuid)
+              AND is_vector IS NOT NULL
+              AND user_id NOT IN (
+                  SELECT following_id
+                  FROM user_connections
+                  WHERE follower_id = CAST(:uid AS uuid)
+              )
+        """),
+        {"uid": str(user_id)},
+    ).mappings().one()
+    total_available = int(total_row["cnt"])
+
     rows = db.execute(
         text("""
             SELECT user_id,
@@ -412,9 +438,9 @@ def get_recommendations(db: Session, user_id: UUID) -> dict:
                   WHERE follower_id = CAST(:uid AS uuid)
               )
             ORDER BY is_vector <=> CAST(:vec AS vector)
-            LIMIT :k
+            LIMIT :lim OFFSET :off
         """),
-        {"vec": _to_pgvec(want_vec), "uid": str(user_id), "k": TOP_K},
+        {"vec": _to_pgvec(want_vec), "uid": str(user_id), "lim": limit, "off": offset},
     ).mappings().all()
 
     top = [(round(float(r["similarity"]), 4), r["user_id"]) for r in rows]
@@ -427,12 +453,16 @@ def get_recommendations(db: Session, user_id: UUID) -> dict:
     ]
 
     return {
-        "user_id":   str(user_id),
-        "role":      role_str,
-        "commodity": commodity_names,
-        "qty_range": f"{int(profile.quantity_min)}–{int(profile.quantity_max)}mt",
-        "total":     len(results),
-        "results":   results,
+        "user_id":         str(user_id),
+        "role":            role_str,
+        "commodity":       commodity_names,
+        "qty_range":       f"{int(profile.quantity_min)}–{int(profile.quantity_max)}mt",
+        "page":            page,
+        "limit":           limit,
+        "total_available": total_available,
+        "has_more":        (offset + len(results)) < total_available,
+        "total":           len(results),
+        "results":         results,
     }
 
 
