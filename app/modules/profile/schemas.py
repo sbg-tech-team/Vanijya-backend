@@ -86,7 +86,6 @@ class ProfileResponse(BaseModel):
     country_code: str
     commodities: List[CommodityOut]
     interests: List[InterestOut]
-    is_verified: bool
     is_user_verified: bool
     is_business_verified: bool
     followers_count: int
@@ -106,7 +105,8 @@ class ProfilePublicResponse(BaseModel):
     id: int
     name: str
     role_id: int
-    is_verified: bool
+    is_user_verified: bool
+    is_business_verified: bool
     commodities: List[CommodityOut]
     followers_count: int
     following_count: int
@@ -136,19 +136,3 @@ class ProfileUpdate(BaseModel):
     longitude: Optional[float] = None
 
 
-# ---------------------------------------------------------------------------
-# Profile verification — Screen 6 (optional)
-# ---------------------------------------------------------------------------
-
-VALID_IDENTITY_TYPES = {"pan_card", "aadhaar_card"}
-VALID_BUSINESS_TYPES = {"gst_certificate", "trade_license"}
-
-
-class DocumentSubmit(BaseModel):
-    document_type: str    # pan_card | aadhaar_card | gst_certificate | trade_license
-    document_number: str
-
-
-class VerifyProfileRequest(BaseModel):
-    identity_proof: Optional[DocumentSubmit] = None   # PAN or Aadhaar
-    business_proof: Optional[DocumentSubmit] = None   # GST or Trade License

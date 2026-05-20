@@ -26,7 +26,6 @@ from app.modules.profile.models import (
     Interest,
     Profile,
     Profile_Commodity,
-    Profile_Document,
     Profile_Interest,
     Role,
     User,
@@ -42,9 +41,6 @@ from app.modules.profile.schemas import (
     ProfileUpdate,
     UserCreate,
     UserResponse,
-    VerifyProfileRequest,
-    VALID_IDENTITY_TYPES,
-    VALID_BUSINESS_TYPES,
 )
 from app.modules.connections.encoding.vector import build_candidate_vector
 
@@ -190,7 +186,6 @@ def _to_response(profile: Profile, posts_count: int = 0) -> ProfileResponse:
         role_id=profile.role_id,
         phone_number=profile.user.phone_number,
         country_code=profile.user.country_code,
-        is_verified=profile.is_verified,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
         followers_count=profile.followers_count,
@@ -429,7 +424,8 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
         id=profile.id,
         name=profile.name,
         role_id=profile.role_id,
-        is_verified=profile.is_verified,
+        is_user_verified=profile.is_user_verified,
+        is_business_verified=profile.is_business_verified,
         commodities=[CommodityOut.model_validate(pc.commodity) for pc in profile.commodities],
         followers_count=profile.followers_count,
         following_count=profile.following_count,
@@ -444,48 +440,6 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
 
 
 # ---------------------------------------------------------------------------
-# Verification — Screen 6 (optional)
-# ---------------------------------------------------------------------------
-
-def submit_verification(db: Session, user_id: UUID, payload: VerifyProfileRequest) -> dict:
-    profile = db.query(Profile).filter(Profile.users_id == user_id).first()
-    if not profile:
-        raise ProfileNotFoundError("Create a profile before submitting verification documents")
-
-    if not payload.identity_proof and not payload.business_proof:
-        raise ProfileValidationError("Provide at least one document")
-
-    submitted = []
-
-    def _upsert_doc(doc, valid_types: set):
-        if doc.document_type not in valid_types:
-            raise ProfileValidationError(
-                f"Invalid document_type '{doc.document_type}'. Valid: {sorted(valid_types)}"
-            )
-        existing = db.query(Profile_Document).filter(
-            Profile_Document.profile_id == profile.id,
-            Profile_Document.document_type == doc.document_type,
-        ).first()
-        if existing:
-            existing.document_number = doc.document_number
-            existing.verification_status = "pending"
-        else:
-            db.add(Profile_Document(
-                profile_id=profile.id,
-                document_type=doc.document_type,
-                document_number=doc.document_number,
-            ))
-        submitted.append(doc.document_type)
-
-    if payload.identity_proof:
-        _upsert_doc(payload.identity_proof, VALID_IDENTITY_TYPES)
-    if payload.business_proof:
-        _upsert_doc(payload.business_proof, VALID_BUSINESS_TYPES)
-
-    db.commit()
-    return {"submitted": submitted, "status": "pending_review"}
-
-
 # ---------------------------------------------------------------------------
 # Avatar upload
 # ---------------------------------------------------------------------------

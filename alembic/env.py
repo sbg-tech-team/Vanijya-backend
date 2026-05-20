@@ -15,8 +15,8 @@ from app.modules.profile.models import (  # noqa: F401
     Interest,
     Profile_Commodity,
     Profile_Interest,
-    Profile_Document,
 )
+from app.modules.verification.models import VerificationRecord  # noqa: F401
 from app.modules.post.models import (  # noqa: F401
     Post,
     PostCategory,

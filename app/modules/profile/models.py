@@ -85,7 +85,6 @@ class Profile(Base):
 
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
-    is_verified: Mapped[bool] = mapped_column(default=False)
     is_user_verified: Mapped[bool] = mapped_column(default=False)
     is_business_verified: Mapped[bool] = mapped_column(default=False)
     followers_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -102,7 +101,6 @@ class Profile(Base):
     role: Mapped["Role"] = relationship("Role", back_populates="profiles")
     commodities: Mapped[list["Profile_Commodity"]] = relationship("Profile_Commodity", back_populates="profile", cascade="all, delete-orphan")
     interests: Mapped[list["Profile_Interest"]] = relationship("Profile_Interest", back_populates="profile", cascade="all, delete-orphan")
-    documents: Mapped[list["Profile_Document"]] = relationship("Profile_Document", back_populates="profile", cascade="all, delete-orphan")
     business: Mapped["Business"] = relationship("Business", back_populates="profile", uselist=False, cascade="all, delete-orphan")
 
 
@@ -153,24 +151,6 @@ class Profile_Interest(Base):
 
     profile: Mapped["Profile"] = relationship("Profile", back_populates="interests")
     interest: Mapped["Interest"] = relationship("Interest", back_populates="profile_interests")
-
-# ---------------------------------------------------------------------------
-# Profile documents — for optional verification (Screen 6)
-# ---------------------------------------------------------------------------
-
-class Profile_Document(Base):
-    __tablename__ = "profile_documents"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    profile_id: Mapped[int] = mapped_column(Integer, ForeignKey("profile.id", ondelete="CASCADE"))
-    # pan_card | aadhaar_card | gst_certificate | trade_license
-    document_type: Mapped[str] = mapped_column(String(30))
-    document_number: Mapped[str] = mapped_column(String(100))
-    verification_status: Mapped[str] = mapped_column(String(20), default="pending")
-    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-    profile: Mapped["Profile"] = relationship("Profile", back_populates="documents")
-
 
 # ---------------------------------------------------------------------------
 # User embeddings — 11-dim IS vector, rebuilt on profile create/update

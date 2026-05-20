@@ -15,12 +15,13 @@
 | GET | `/profile/me` | Access token | Get own full profile |
 | PATCH | `/profile/` | Access token | Update profile fields |
 | PATCH | `/profile/user/fcm-token` | Access token | Save FCM push token |
-| POST | `/profile/verify` | Access token | Submit KYC documents |
 | GET | `/profile/avatar-upload-url` | Access token | Step 1 of avatar upload — get signed URL |
 | PATCH | `/profile/avatar` | Access token | Step 2 of avatar upload — save URL to DB |
 | DELETE | `/profile/` | Access token | Delete profile only |
-| DELETE | `/profile/user` | Access token | Delete account + all data |--- do this while doing the delete account 
+| DELETE | `/profile/user` | Access token | Delete account + all data |
 | GET | `/profile/{profile_id}` | None | Public profile view |
+
+> **KYC / KYB verification** has its own module. See `verification_module.md`.
 
 ---
 
@@ -120,7 +121,7 @@ Content-Type: application/json
 | `quantity_min` | float | Yes | Minimum quantity the user deals in |
 | `quantity_max` | float | Yes | Maximum quantity — must be ≥ `quantity_min` |
 | `business_name` | string | No | Company / firm name |
-| `city` | string | No | City text (you geocode, we just store the string) |
+| `city` | string | No | City text |
 | `state` | string | No | State text |
 | `latitude` | float | Yes | Decimal degrees — use device GPS or geocoding |
 | `longitude` | float | Yes | Decimal degrees |
@@ -142,7 +143,6 @@ Content-Type: application/json
       { "id": 1, "name": "Connections" },
       { "id": 3, "name": "News" }
     ],
-    "is_verified": false,
     "is_user_verified": false,
     "is_business_verified": false,
     "followers_count": 0,
@@ -204,7 +204,6 @@ Authorization: Bearer <access_token>
   "interests": [
     { "id": 1, "name": "Connections" }
   ],
-  "is_verified": false,
   "is_user_verified": false,
   "is_business_verified": false,
   "followers_count": 47,
@@ -220,11 +219,13 @@ Authorization: Bearer <access_token>
 ```
 
 **Verification flags:**
-| Field | Meaning |
-|-------|---------|
-| `is_verified` | Either identity OR business is verified (overall badge) |
-| `is_user_verified` | PAN or Aadhaar was verified |
-| `is_business_verified` | GST or Trade License was verified |
+
+| Field | Meaning | Set by |
+|-------|---------|--------|
+| `is_user_verified` | PAN or Aadhaar verified (KYC) | `POST /verification/kyc/pan` |
+| `is_business_verified` | GST or IEC verified (KYB) | `POST /verification/kyb/gst` or `/kyb/iec` |
+
+Both flags start as `false` and are set to `true` by the verification module upon successful document verification. See `verification_module.md` for the full verification flow.
 
 **Errors:**
 
@@ -239,7 +240,7 @@ Authorization: Bearer <access_token>
 ## Update Profile
 
 > All fields are optional — send only what changed.  
-> Role is **not** editable after creation (not in this schema).
+> Role is **not** editable after creation.
 
 ```
 PATCH /profile/
@@ -295,56 +296,6 @@ Content-Type: application/json
 ```
 
 **Response `data`:** `null` (message: "FCM token updated")
-
----
-
-## Submit Verification Documents (KYC)
-
-> Screen 6 of onboarding (optional). User can submit identity proof and/or business proof.
-
-```
-POST /profile/verify
-Authorization: Bearer <access_token>
-Content-Type: application/json
-```
-
-**Request body:**
-```json
-{
-  "identity_proof": {
-    "document_type": "pan_card",
-    "document_number": "ABCDE1234F"
-  },
-  "business_proof": {
-    "document_type": "gst_certificate",
-    "document_number": "27AAPFU0939F1ZV"
-  }
-}
-```
-
-| Field | Valid values |
-|-------|-------------|
-| `identity_proof.document_type` | `pan_card` or `aadhaar_card` |
-| `business_proof.document_type` | `gst_certificate` or `trade_license` |
-
-> At least one of `identity_proof` or `business_proof` must be present.  
-> Both are optional — user can submit only one if they want.
-
-**Response `data`:**
-```json
-{
-  "submitted": ["pan_card", "gst_certificate"],
-  "status": "pending_review"
-}
-```
-
-**Errors:**
-
-| Status | Detail | When |
-|--------|--------|------|
-| 400 | Provide at least one document | Both fields null |
-| 400 | Invalid document_type '...' | Typo in document type string |
-| 404 | Create a profile before submitting verification documents | — |
 
 ---
 
@@ -452,7 +403,8 @@ GET /profile/{profile_id}
   "id": 42,
   "name": "Sanket Suryawanshi",
   "role_id": 1,
-  "is_verified": true,
+  "is_user_verified": true,
+  "is_business_verified": false,
   "commodities": [
     { "id": 1, "name": "Rice" }
   ],
@@ -468,7 +420,7 @@ GET /profile/{profile_id}
 }
 ```
 
-> Note: `phone_number`, `country_code`, and `interests` are **not** included in the public view — only the authenticated user can see their own phone and interests.
+> `phone_number`, `country_code`, and `interests` are **not** included in the public view.
 
 **Errors:**
 
@@ -522,47 +474,48 @@ Authorization: Bearer <access_token>
 
 ## Data Model Cheat Sheet
 
-### `ProfileResponse` (returned by `/profile/me`, `/profile/`, `PATCH /profile/`)
+### `ProfileResponse` (returned by `GET /profile/me`, `POST /profile/`, `PATCH /profile/`)
 ```
-id               int           — profile_id (use for public profile nav, avatar path)
-name             string
-role_id          int           — 1=Trader 2=Broker 3=Exporter
-phone_number     string        — read-only, shown on Edit Profile screen
-country_code     string        — e.g. "+91"
-commodities      Commodity[]   — [{id, name}]
-interests        Interest[]    — [{id, name}]
-is_verified      bool          — true if identity OR business is verified
-is_user_verified bool          — PAN/Aadhaar verified
-is_business_verified bool      — GST/Trade License verified
-followers_count  int           — number of users following this profile (live count)
-following_count  int           — number of users this profile follows (live count)
-posts_count      int
-business_name    string|null
-city             string|null
-state            string|null
-latitude         float
-longitude        float
-avatar_url       string|null
+id                   int           — profile_id
+name                 string
+role_id              int           — 1=Trader  2=Broker  3=Exporter
+phone_number         string        — read-only
+country_code         string        — e.g. "+91"
+commodities          Commodity[]   — [{id, name}]
+interests            Interest[]    — [{id, name}]
+is_user_verified     bool          — true after KYC (PAN/Aadhaar) passes
+is_business_verified bool          — true after KYB (GST/IEC) passes
+followers_count      int
+following_count      int
+posts_count          int
+business_name        string|null
+city                 string|null
+state                string|null
+latitude             float
+longitude            float
+avatar_url           string|null
 ```
 
 ### `ProfilePublicResponse` (returned by `GET /profile/{id}`)
 ```
-id               int
-name             string
-role_id          int
-is_verified      bool
-commodities      Commodity[]
-followers_count  int           — number of users following this profile (live count)
-following_count  int           — number of users this profile follows (live count)
-posts_count      int
-business_name    string|null
-city             string|null
-state            string|null
-latitude         float
-longitude        float
-avatar_url       string|null
+id                   int
+name                 string
+role_id              int
+is_user_verified     bool          — KYC badge
+is_business_verified bool          — KYB badge
+commodities          Commodity[]
+followers_count      int
+following_count      int
+posts_count          int
+business_name        string|null
+city                 string|null
+state                string|null
+latitude             float
+longitude            float
+avatar_url           string|null
 ```
-> `phone_number`, `country_code`, `interests`, and verification detail flags are **not** exposed publicly.
+
+> `phone_number`, `country_code`, and `interests` are not exposed on the public profile.
 
 ---
 
@@ -574,6 +527,6 @@ avatar_url       string|null
 | New user detected | `POST /profile/user` | Onboarding token (30 min) |
 | Name + Role + Commodities + Interests + Quantity | `POST /profile/` | Onboarding token |
 | Done → Home Screen | — | Access token (received in Step 2 response) |
-| KYC (optional, anytime later) | `POST /profile/verify` | Access token |
+| KYC / KYB verification (post-onboarding) | See `verification_module.md` | Access token |
 | Edit profile | `PATCH /profile/` | Access token |
 | Change avatar | `GET /profile/avatar-upload-url` → PUT → `PATCH /profile/avatar` | Access token |

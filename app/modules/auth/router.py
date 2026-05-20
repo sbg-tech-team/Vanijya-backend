@@ -10,8 +10,6 @@ from app.modules.auth.schemas import (
     RefreshTokenRequest,
     TokenPairResponse,
     VerifyOTPResponse,
-    PanVerificationRequest,
-    GstVerificationRequest
 )
 from app.modules.auth.service import (
     create_session,
@@ -19,8 +17,6 @@ from app.modules.auth.service import (
     refresh_session,
     revoke_session_by_jti,
     verify_firebase_token,
-    _verify_pan_card,
-    _verify_gst_number   
 )
 from app.modules.profile.models import User
 from app.shared.utils.response import ok
@@ -138,29 +134,3 @@ def logout(
     revoke_session_by_jti(db, session_id)
     return ok(None, "Logged out successfully.")
 
-
-
-# ---------------------------------------------------------------------------
-# Additional endpoints for KYC (PAN and GST verification) can be added here, following a similar pattern: define a request schema, implement the logic in service.py, and create a route handler that calls the service function and returns an appropriate response.       
-
-@router.post("/verify-pan", status_code=200)
-def verify_pan_card(payload: PanVerificationRequest) -> dict:
-    """Endpoint to verify PAN card details using the sandbox API."""
-    try:
-        pan_details = _verify_pan_card(payload.pan_number, payload.user_name, payload.date_of_birth, payload.consent)
-        # print(pan_details)
-        return ok(pan_details, "PAN card verified successfully.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-
-
-@router.post("/get-gst-details",status_code=200)
-def verify_gst_number(payload:GstVerificationRequest)-> dict:
-    """Endpoint to verify the gst no and get details of the buissness using the sandbox API."""
-    try:
-        gst_details=_verify_gst_number(payload.gstin)
-        # print(gst_details)
-        return ok(gst_details,"GST number verified successfully.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) 

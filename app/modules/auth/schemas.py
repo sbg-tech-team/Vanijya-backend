@@ -10,15 +10,6 @@ class FirebaseVerifyRequest(BaseModel):
     device_info: Optional[str] = None  # e.g. "iPhone 15 / iOS 17"
 
 
-class PanVerificationRequest(BaseModel):
-    pan_number: str 
-    user_name:str
-    date_of_birth:str
-    consent:str
-
-class GstVerificationRequest(BaseModel):
-    gstin: str
-
 class VerifyOTPResponse(BaseModel):
     is_new_user: bool
     token_type: str = "bearer"

@@ -10,7 +10,6 @@ from app.modules.profile.schemas import (
     ProfileCreate,
     ProfileUpdate,
     UserCreate,
-    VerifyProfileRequest,
     FcmTokenUpdate,
 )
 from app.modules.profile.service import (
@@ -24,7 +23,6 @@ from app.modules.profile.service import (
     get_avatar_upload_url,
     save_avatar_url,
     update_fcm_token,
-    submit_verification,
     ProfileConflictError,
     ProfileNotFoundError,
     ProfileStorageUnavailableError,
@@ -143,25 +141,6 @@ def update_fcm_token_api(
         return ok(message="FCM token updated")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Verification documents — JWT protected
-# ---------------------------------------------------------------------------
-
-@router.post("/verify", status_code=201)
-def verify_profile_api(
-    payload: VerifyProfileRequest,
-    db: Session = Depends(get_db),
-    cu: CurrentUser = Depends(get_current_user),
-):
-    try:
-        result = submit_verification(db, cu.user_id, payload)
-        return ok(result, "Documents submitted for verification")
-    except ProfileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ProfileValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

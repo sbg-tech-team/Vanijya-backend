@@ -274,7 +274,6 @@ Authorization: Bearer <onboarding_token>
         { "id": 1, "name": "Connections" },
         { "id": 3, "name": "News" }
       ],
-      "is_verified": false,
       "is_user_verified": false,
       "is_business_verified": false,
       "followers_count": 0,

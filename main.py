@@ -20,6 +20,7 @@ from app.modules.chat.presentation.router import router as chat_router
 from app.modules.chat.presentation.ws_router import ws_router as chat_ws_router
 from app.modules.deeplink.router import router as deeplink_router
 from app.modules.safety.router import router as safety_router
+from app.modules.verification.router import router as verification_router
 from app.modules.news.tasks import ingest
 from app.core import scheduler as _scheduler
 
@@ -56,3 +57,4 @@ app.include_router(chat_router)
 app.include_router(chat_ws_router)
 app.include_router(deeplink_router)
 app.include_router(safety_router)
+app.include_router(verification_router)
