@@ -530,12 +530,23 @@ Future<void> checkAuthOnStartup() async {
 | GET | `/profile/me` | `access_token` | Get your own full profile |
 | PATCH | `/profile/` | `access_token` | Update your profile |
 | PATCH | `/profile/user/fcm-token` | `access_token` | Update push notification token |
-| POST | `/profile/verify` | `access_token` | Submit verification documents |
 | GET | `/profile/avatar-upload-url` | `access_token` | Get signed URL to upload avatar |
 | PATCH | `/profile/avatar` | `access_token` | Save avatar URL after upload |
 | DELETE | `/profile/` | `access_token` | Delete your profile |
 | DELETE | `/profile/user` | `access_token` | Delete your account entirely |
 | GET | `/profile/{profile_id}` | None | View any user's public profile |
+
+### Verification Endpoints
+
+> KYC / KYB document verification has its own module. See `verification_module.md`.
+
+| Method | Endpoint | Auth Required | Purpose |
+|--------|----------|---------------|---------|
+| POST | `/verification/kyc/pan` | `access_token` | Verify PAN card (KYC) |
+| POST | `/verification/kyc/aadhaar` | `access_token` | Verify Aadhaar — 501, not yet available |
+| POST | `/verification/kyb/gst` | `access_token` | Verify GST — Traders & Brokers only |
+| POST | `/verification/kyb/iec` | `access_token` | Verify IEC — Exporters only |
+| GET | `/verification/status` | `access_token` | Get current KYC + KYB status |
 
 > **No query params for identity.** Every protected endpoint reads `user_id` and `profile_id` directly
 > from the JWT — you never pass them in the URL. The only thing you send is the `Authorization: Bearer` header.
