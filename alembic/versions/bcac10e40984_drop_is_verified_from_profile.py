@@ -8,7 +8,6 @@ Create Date: 2026-05-20 15:54:58.329249
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
@@ -19,8 +18,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_column('profile', 'is_verified')
+    op.execute("ALTER TABLE profile DROP COLUMN IF EXISTS is_verified")
 
 
 def downgrade() -> None:
-    op.add_column('profile', sa.Column('is_verified', sa.BOOLEAN(), autoincrement=False, nullable=False, server_default='false'))
+    op.execute("ALTER TABLE profile ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT false")
