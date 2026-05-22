@@ -112,7 +112,7 @@ Mutating endpoints require `Authorization: Bearer <access_token>`. The acting us
 | `PATCH` | `/connections/message-request/{request_id}/decline` | Bearer token | Decline a request |
 | `GET` | `/connections/message-requests/received` | Bearer token | Pending inbox |
 | `GET` | `/connections/message-requests/sent` | Bearer token | Requests sent |
-| `GET` | `/connections/search` | Bearer token | Search profiles — filters: `q`, `role`, `commodity`, `city`, `verified_only`; pagination: `page`, `limit` |
+| `GET` | `/connections/search` | Bearer token | Search profiles — filters: `q`, `role`, `commodity`, `city`, `user_verified_only`, `business_verified_only`; pagination: `page`, `limit` |
 | `GET` | `/connections/search/suggestions?q=...` | **Public** | Name/business suggestions |
 | `GET` | `/recommendations/` | Bearer token | Paginated vector-matched users — `page`, `limit` (default 20, max 100) |
 | `POST` | `/recommendations/search` | **Public** | Ad-hoc vector search with custom payload — no account needed |
@@ -445,15 +445,19 @@ Search profiles on the platform. The authenticated user is always excluded from 
 | `role` | No | string | — | Exact: `trader`, `broker`, `exporter` |
 | `commodity` | No | string | — | Partial match on commodity name |
 | `city` | No | string | — | Partial match on city name |
-| `verified_only` | No | bool | `false` | When `true`, return only verified users |
+| `user_verified_only` | No | bool | `false` | When `true`, return only KYC-verified users (`is_user_verified = true`) |
+| `business_verified_only` | No | bool | `false` | When `true`, return only KYB-verified users (`is_business_verified = true`) |
 | `page` | No | int | `1` | Page number (1-based) |
 | `limit` | No | int | `20` | Results per page (max 100) |
+
+Both filters can be combined — `user_verified_only=true&business_verified_only=true` returns only users who have passed both KYC and KYB.
 
 **Examples:**
 ```
 GET /connections/search?q=ravi
 GET /connections/search?role=exporter&commodity=rice
-GET /connections/search?city=mumbai&verified_only=true
+GET /connections/search?city=mumbai&user_verified_only=true
+GET /connections/search?user_verified_only=true&business_verified_only=true
 GET /connections/search?page=2&limit=10
 ```
 
@@ -512,10 +516,16 @@ GET /connections/search/suggestions?q=rav
       {
         "user_id": "c37a3257-...",
         "name": "Ravi Traders",
-        "business_name": "Ravi Agro Pvt Ltd",
+        "avatar_url": null,
         "role": "trader",
         "commodity": ["rice", "cotton"],
-        "is_verified": false
+        "is_user_verified": false,
+        "is_business_verified": false,
+        "quantity_min": 100,
+        "quantity_max": 500,
+        "business_name": "Ravi Agro Pvt Ltd",
+        "city": "Mumbai",
+        "state": "Maharashtra"
       }
     ]
   }

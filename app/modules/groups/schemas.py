@@ -94,7 +94,8 @@ class GroupMemberOut(BaseModel):
     role: str               # Trader / Broker / Exporter
     avatar_url: Optional[str] = None
     is_admin: bool
-    is_verified: bool
+    is_user_verified: bool
+    is_business_verified: bool
     member_role: str        # admin | member
     is_frozen: bool
     is_muted: bool

@@ -171,14 +171,16 @@ def search(
     role:          str | None = Query(default=None, description="trader | broker | exporter"),
     commodity:     str | None = Query(default=None, description="Partial match on commodity name"),
     city:          str | None = Query(default=None, description="Partial match on city"),
-    verified_only: bool       = Query(default=False, description="Only return verified users"),
+    user_verified_only:     bool       = Query(default=False, description="Only return KYC-verified users"),
+    business_verified_only: bool       = Query(default=False, description="Only return KYB-verified users"),
     page:          int        = Query(default=1, ge=1),
     limit:         int        = Query(default=20, ge=1, le=100),
 ):
     """Filtered user search. Me is excluded from results. All query params optional."""
     result = service.search_users(
         db, me=me, q=q, role=role, commodity=commodity,
-        city=city, verified_only=verified_only, page=page, limit=limit,
+        city=city, user_verified_only=user_verified_only,
+        business_verified_only=business_verified_only, page=page, limit=limit,
     )
     return ok(result, "Search results fetched")
 

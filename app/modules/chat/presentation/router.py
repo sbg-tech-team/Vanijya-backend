@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
 
 def _snap(u: UserSnap) -> dict:
-    return {"user_id": str(u.user_id), "profile_id": u.profile_id, "name": u.name, "is_verified": u.is_verified}
+    return {"user_id": str(u.user_id), "profile_id": u.profile_id, "name": u.name, "is_user_verified": u.is_user_verified, "is_business_verified": u.is_business_verified}
 
 
 def _last_msg(lm: Optional[LastMessage]) -> Optional[dict]:

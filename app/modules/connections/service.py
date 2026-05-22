@@ -279,17 +279,19 @@ def search_users(
     role: str | None = None,
     commodity: str | None = None,
     city: str | None = None,
-    verified_only: bool = False,
+    user_verified_only: bool = False,
+    business_verified_only: bool = False,
     page: int = 1,
     limit: int = 20,
 ) -> dict:
     """
     Filtered user search against the real profile table.
-    q             — partial match on name / business_name
-    role          — exact match: trader | broker | exporter
-    commodity     — partial match on commodity name
-    city          — partial match on city
-    verified_only — only return profiles where is_verified=True
+    q                     — partial match on name / business_name
+    role                  — exact match: trader | broker | exporter
+    commodity             — partial match on commodity name
+    city                  — partial match on city
+    user_verified_only    — only return profiles where is_user_verified=True (KYC)
+    business_verified_only— only return profiles where is_business_verified=True (KYB)
     Excludes the calling user. Supports pagination via page/limit.
     """
     query = (
@@ -335,8 +337,10 @@ def search_users(
             )
         )
 
-    if verified_only:
-        query = query.filter(Profile.is_verified == True)  # noqa: E712
+    if user_verified_only:
+        query = query.filter(Profile.is_user_verified == True)  # noqa: E712
+    if business_verified_only:
+        query = query.filter(Profile.is_business_verified == True)  # noqa: E712
 
     total = query.count()
     profiles = query.offset((page - 1) * limit).limit(limit).all()

@@ -19,7 +19,8 @@ def _profile_snap(profile: Profile) -> UserSnap:
         user_id=profile.users_id,
         profile_id=profile.id,
         name=profile.name,
-        is_verified=profile.is_verified,
+        is_user_verified=profile.is_user_verified,
+        is_business_verified=profile.is_business_verified,
     )
 
 
@@ -84,7 +85,7 @@ def _build_message(db: Session, msg: Message) -> MessageEntity:
     sender_snap = (
         _profile_snap(sender_profile)
         if sender_profile
-        else UserSnap(user_id=msg.sender_id, profile_id=0, name="Unknown", is_verified=False)
+        else UserSnap(user_id=msg.sender_id, profile_id=0, name="Unknown", is_user_verified=False, is_business_verified=False)
     )
     return MessageEntity(
         id=msg.id,
@@ -274,7 +275,8 @@ class ChatRepository(IChatRepository):
                 cm_receiver.user_id.label("receiver_id"),
                 Profile.id.label("profile_id"),
                 Profile.name,
-                Profile.is_verified,
+                Profile.is_user_verified,
+                Profile.is_business_verified,
             )
             .join(cm_sender,   and_(cm_sender.conversation_id   == Conversation.id, cm_sender.user_id   == sender_id))
             .join(cm_receiver, and_(cm_receiver.conversation_id == Conversation.id, cm_receiver.user_id != sender_id))
@@ -294,7 +296,8 @@ class ChatRepository(IChatRepository):
                 user_id=sender_id,
                 profile_id=row.profile_id,
                 name=row.name,
-                is_verified=row.is_verified,
+                is_user_verified=row.is_user_verified,
+                is_business_verified=row.is_business_verified,
             ),
         )
 

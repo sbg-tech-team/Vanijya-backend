@@ -9,7 +9,8 @@ class UserSnap:
     user_id: UUID
     profile_id: int
     name: str
-    is_verified: bool
+    is_user_verified: bool
+    is_business_verified: bool
 
 
 @dataclass

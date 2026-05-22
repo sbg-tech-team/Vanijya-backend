@@ -169,9 +169,9 @@ def create_group(db: Session, user_id: UUID, payload: GroupCreate) -> GroupOut:
     """
     profile = _get_profile_or_raise(db, user_id)
 
-    if not profile.is_verified:
+    if not (profile.is_user_verified and profile.is_business_verified):
         raise GroupPermissionError(
-            "Only verified users can create groups. "
+            "Only fully verified users (KYC + KYB) can create groups. "
             "Complete profile verification first."
         )
 
@@ -406,7 +406,8 @@ def get_members(
                 role=p.role.name if p and p.role else "Unknown",
                 avatar_url=p.avatar_url if p else None,
                 is_admin=(m.role == "admin"),
-                is_verified=p.is_verified if p else False,
+                is_user_verified=p.is_user_verified if p else False,
+                is_business_verified=p.is_business_verified if p else False,
                 member_role=m.role,
                 is_frozen=m.is_frozen,
                 is_muted=m.is_muted,
