@@ -424,6 +424,11 @@ def get_recommendations(
                   FROM user_connections
                   WHERE follower_id = CAST(:uid AS uuid)
               )
+              AND user_id NOT IN (
+                  SELECT receiver_id
+                  FROM message_requests
+                  WHERE sender_id = CAST(:uid AS uuid)
+              )
         """),
         {"uid": str(user_id)},
     ).mappings().one()
@@ -440,6 +445,11 @@ def get_recommendations(
                   SELECT following_id
                   FROM user_connections
                   WHERE follower_id = CAST(:uid AS uuid)
+              )
+              AND user_id NOT IN (
+                  SELECT receiver_id
+                  FROM message_requests
+                  WHERE sender_id = CAST(:uid AS uuid)
               )
             ORDER BY is_vector <=> CAST(:vec AS vector)
             LIMIT :lim OFFSET :off
