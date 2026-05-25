@@ -56,8 +56,7 @@ def index_post(
     lat: float,
     lon: float,
     category_id: int,
-    qty_min_mt: float | None = None,
-    qty_max_mt: float | None = None,
+    commodity_quantity: float | None = None,
 ) -> None:
     category = CATEGORY_NAMES[category_id]
     now = datetime.now(timezone.utc)
@@ -71,21 +70,29 @@ def index_post(
         lat=lat,
         lon=lon,
         is_deal=is_deal,
-        qty_min_mt=qty_min_mt,
-        qty_max_mt=qty_max_mt,
+        commodity_quantity=commodity_quantity,
     )
 
-    embedding = PostEmbedding(
-        post_id=post_id,
-        vector=vector,
-        partition="hot",
-        is_active=True,
-        expires_at=expires_at,
-        category=category,
-        commodity_idx=commodity_idx,
-        created_at=now,
-    )
-    db.add(embedding)
+    existing = db.query(PostEmbedding).filter(PostEmbedding.post_id == post_id).first()
+    if existing:
+        existing.vector = vector
+        existing.partition = "hot"
+        existing.is_active = True
+        existing.expires_at = expires_at
+        existing.category = category
+        existing.commodity_idx = commodity_idx
+        existing.created_at = now
+    else:
+        db.add(PostEmbedding(
+            post_id=post_id,
+            vector=vector,
+            partition="hot",
+            is_active=True,
+            expires_at=expires_at,
+            category=category,
+            commodity_idx=commodity_idx,
+            created_at=now,
+        ))
     db.commit()
 
 
@@ -110,7 +117,6 @@ def record_interaction(db: Session, profile_id: int, category_id: int) -> None:
         "deal_req": "deal_req_count",
         "discussion": "discussion_count",
         "knowledge": "knowledge_count",
-        "other": "other_count",
     }
     col = col_map.get(category)
     if not col:
@@ -131,7 +137,6 @@ def record_interaction(db: Session, profile_id: int, category_id: int) -> None:
             deal_req_count=defaults["deal_req"],
             discussion_count=defaults["discussion"],
             knowledge_count=defaults["knowledge"],
-            other_count=defaults["other"],
             total_events=0,
         )
         db.add(taste)
@@ -156,7 +161,6 @@ def _get_or_seed_taste(db: Session, profile_id: int, role_id: int) -> dict[str, 
             "deal_req":      taste.deal_req_count,
             "discussion":    taste.discussion_count,
             "knowledge":     taste.knowledge_count,
-            "other":         taste.other_count,
         }
     return DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
 
@@ -346,8 +350,7 @@ def get_recommended_posts(db: Session, profile_id: int, dry_run: bool = False) -
         role_id=profile.role_id,
         lat=float(profile.business.latitude),
         lon=float(profile.business.longitude),
-        qty_min_mt=float(profile.quantity_min),
-        qty_max_mt=float(profile.quantity_max),
+        commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
     )
 
     taste_counts = _get_or_seed_taste(db, profile_id, profile.role_id)

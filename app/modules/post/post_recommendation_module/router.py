@@ -5,10 +5,10 @@ GET  /posts/recommendation/feed
 POST /posts/recommendation/jobs/expiry
 POST /posts/recommendation/jobs/popular-sync
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_profile_id, get_db
 from app.modules.post.post_recommendation_module import service, jobs
 from app.modules.post.post_recommendation_module.schemas import JobResult, RecommendedPost
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/posts/recommendation", tags=["post-recommendation"])
 
 @router.get("/feed", response_model=list[RecommendedPost])
 def get_feed(
-    profile_id: int = Query(..., description="Your profile ID"),
+    profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
     try:

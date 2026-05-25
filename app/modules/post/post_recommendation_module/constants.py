@@ -1,13 +1,12 @@
 # ---------------------------------------------------------------------------
 # Category mapping (must match post_categories seed: 1=Market Update,
-# 2=Knowledge, 3=Discussion, 4=Deal/Req, 5=Other)
+# 2=Knowledge, 3=Discussion, 4=Deal/Req)
 # ---------------------------------------------------------------------------
 CATEGORY_NAMES: dict[int, str] = {
     1: "market_update",
     2: "knowledge",
     3: "discussion",
     4: "deal_req",
-    5: "other",
 }
 
 CATEGORY_EXPIRY_DAYS: dict[str, int] = {
@@ -15,7 +14,6 @@ CATEGORY_EXPIRY_DAYS: dict[str, int] = {
     "deal_req": 7,
     "discussion": 14,
     "knowledge": 90,
-    "other": 7,
 }
 
 # ---------------------------------------------------------------------------
@@ -27,22 +25,22 @@ COLD_MAX_HOURS = 720     # 5 – 30 days
 
 # Categories allowed in each partition (market_update expires before reaching warm)
 PARTITION_ALLOWED: dict[str, set[str]] = {
-    "hot":  {"market_update", "deal_req", "knowledge", "discussion", "other"},
-    "warm": {"deal_req", "knowledge", "discussion", "other"},
+    "hot":  {"market_update", "deal_req", "knowledge", "discussion"},
+    "warm": {"deal_req", "knowledge", "discussion"},
     "cold": {"knowledge"},
 }
 
 # ---------------------------------------------------------------------------
-# Vector layout: 11 dims
-# [0:3] commodity  [3:6] role  [6:9] geo  [9:11] qty
+# Vector layout: 10 dims
+# [0:3] commodity  [3:6] role  [6:9] geo  [9] qty
 # ---------------------------------------------------------------------------
-VECTOR_DIM = 11
+VECTOR_DIM = 10
 
 # Weights applied before cosine similarity (commodity dominates, qty is soft)
 FEED_WEIGHTS = [3.0, 3.0, 3.0,   # commodity dims 0-2
                 2.0, 2.0, 2.0,   # role dims 3-5
                 1.5, 1.5, 1.5,   # geo dims 6-8
-                1.0, 1.0]        # qty dims 9-10
+                1.0]             # qty dim 9
 
 # ---------------------------------------------------------------------------
 # Commodity ID → vector index
@@ -65,9 +63,9 @@ QTY_SCALE_MT = 5000.0
 # Default taste profiles seeded by role (used until 20 interactions logged)
 # ---------------------------------------------------------------------------
 DEFAULT_TASTE: dict[int, dict[str, int]] = {
-    1: {"deal_req": 100, "market_update": 80, "discussion": 20, "knowledge": 20, "other": 20},
-    2: {"deal_req": 100, "market_update": 60, "discussion": 50, "knowledge": 30, "other": 20},
-    3: {"deal_req": 60,  "market_update": 100, "knowledge": 50, "discussion": 20, "other": 10},
+    1: {"deal_req": 100, "market_update": 80, "discussion": 20, "knowledge": 20},
+    2: {"deal_req": 100, "market_update": 60, "discussion": 50, "knowledge": 30},
+    3: {"deal_req": 60,  "market_update": 100, "knowledge": 50, "discussion": 20},
 }
 
 # ---------------------------------------------------------------------------

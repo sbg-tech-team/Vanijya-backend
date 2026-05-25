@@ -184,7 +184,7 @@ def add_comment_api(
         return ok(result, "Comment added successfully")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except service.PostForbiddenError as e:
+    except service.CommentsDisabledError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
 
@@ -235,3 +235,22 @@ def toggle_save_api(
         return ok(result, "Save toggled")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ----------------------------------------------------------------------------
+# Deal close / reopen
+# ----------------------------------------------------------------------------
+
+@router.post("/{post_id}/close")
+def toggle_deal_closed_api(
+    post_id: int,
+    profile_id: int = Depends(get_current_profile_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = service.toggle_deal_closed(db, post_id, profile_id)
+        return ok(result, "Deal status toggled")
+    except service.PostNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except service.PostForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))

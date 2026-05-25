@@ -7,13 +7,13 @@ from sqlalchemy.exc import IntegrityError
 
 from datetime import datetime, timezone, timedelta
 
-from app.modules.post.models import Post, PostView, PostLike, PostComment, PostShare, PostSave
+from app.modules.post.models import CATEGORY_DEAL, Post, PostDealDetails, PostView, PostLike, PostComment, PostShare, PostSave
 from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
-    PostCreate, PostUpdate, PostResponse,
+    PostCreate, PostUpdate, PostResponse, PostDealResponse,
     CommentCreate, CommentResponse,
-    LikeResponse, SaveResponse, ShareResponse,
+    LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
 from app.shared.utils.storage import (
@@ -82,6 +82,10 @@ class CommentForbiddenError(Exception):
     pass
 
 
+class CommentsDisabledError(Exception):
+    pass
+
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -110,16 +114,13 @@ def _to_post_response(db: Session, post: Post, viewer_profile_id: int) -> PostRe
         profile_id=post.profile_id,
         category_id=post.category_id,
         commodity_id=post.commodity_id,
+        title=post.title,
         caption=post.caption,
         image_url=post.image_url,
         is_public=post.is_public,
         target_roles=post.target_roles,
         allow_comments=post.allow_comments,
-        grain_type_size=post.grain_type_size,
-        commodity_quantity_min=post.commodity_quantity_min,
-        commodity_quantity_max=post.commodity_quantity_max,
-        price_type=post.price_type,
-        other_description=post.other_description,
+        deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
         created_at=post.created_at,
         is_liked=_is_liked(db, post.id, viewer_profile_id),
         is_saved=_is_saved(db, post.id, viewer_profile_id),
@@ -127,6 +128,7 @@ def _to_post_response(db: Session, post: Post, viewer_profile_id: int) -> PostRe
         like_count=post.like_count,
         comment_count=post.comment_count,
         share_count=post.share_count,
+        save_count=post.save_count,
     )
 
 
@@ -188,20 +190,23 @@ async def create_post(db: Session, profile_id: int, payload: PostCreate) -> Post
         profile_id=profile_id,
         category_id=payload.category_id,
         commodity_id=payload.commodity_id,
+        title=payload.title,
         caption=payload.caption,
         image_url=payload.image_url,
         is_public=payload.is_public,
         target_roles=payload.target_roles,
         allow_comments=payload.allow_comments,
-        grain_type_size=payload.grain_type_size,
-        commodity_quantity_min=payload.commodity_quantity_min,
-        commodity_quantity_max=payload.commodity_quantity_max,
-        price_type=payload.price_type,
-        other_description=payload.other_description,
     )
     db.add(post)
     db.commit()
     db.refresh(post)
+
+    deal = None
+    if payload.category_id == CATEGORY_DEAL and payload.deal_details:
+        deal = PostDealDetails(post_id=post.id, **payload.deal_details.model_dump())
+        db.add(deal)
+        db.commit()
+        db.refresh(post)
 
     lat, lon = _profile_location(db, profile_id)
     try:
@@ -213,8 +218,7 @@ async def create_post(db: Session, profile_id: int, payload: PostCreate) -> Post
             lat=lat,
             lon=lon,
             category_id=post.category_id,
-            qty_min_mt=float(post.commodity_quantity_min) if post.commodity_quantity_min is not None else None,
-            qty_max_mt=float(post.commodity_quantity_max) if post.commodity_quantity_max is not None else None,
+            commodity_quantity=float(deal.commodity_quantity) if deal else None,
         )
     except Exception:
         pass  # embedding failure must never break post creation
@@ -234,8 +238,13 @@ def update_post(db: Session, post_id: int, profile_id: int, payload: PostUpdate)
     if post.profile_id != profile_id:
         raise PostForbiddenError("You can only edit your own posts")
 
-    for field, value in payload.model_dump(exclude_none=True).items():
+    top_level = payload.model_dump(exclude_none=True, exclude={"deal_details"})
+    for field, value in top_level.items():
         setattr(post, field, value)
+
+    if payload.deal_details and post.deal_details:
+        for field, value in payload.deal_details.model_dump(exclude_none=True).items():
+            setattr(post.deal_details, field, value)
 
     db.commit()
     db.refresh(post)
@@ -351,7 +360,7 @@ def add_comment(db: Session, post_id: int, profile_id: int, payload: CommentCrea
     post = _get_post_or_raise(db, post_id)
 
     if not post.allow_comments:
-        raise PostForbiddenError("Comments are disabled on this post")
+        raise CommentsDisabledError("Comments are disabled on this post")
 
     comment = PostComment(post_id=post_id, profile_id=profile_id, content=payload.content)
     db.add(comment)
@@ -465,6 +474,45 @@ def toggle_save(db: Session, post_id: int, profile_id: int) -> SaveResponse:
         except Exception:
             pass
         return SaveResponse(saved=True)
+
+
+# ----------------------------------------------------------------------------
+# Deal close / reopen
+# ----------------------------------------------------------------------------
+
+def toggle_deal_closed(db: Session, post_id: int, profile_id: int) -> DealClosedResponse:
+    post = _get_post_or_raise(db, post_id)
+    if post.profile_id != profile_id:
+        raise PostForbiddenError("You can only close your own posts")
+    if post.category_id != CATEGORY_DEAL:
+        raise PostForbiddenError("Only Deal/Requirement posts can be closed")
+
+    deal = post.deal_details
+    deal.is_closed = not deal.is_closed
+    db.commit()
+
+    if deal.is_closed:
+        try:
+            rec_service.remove_post_index(db, post_id)
+        except Exception:
+            pass
+    else:
+        lat, lon = _profile_location(db, post.profile_id)
+        try:
+            rec_service.index_post(
+                db=db,
+                post_id=post.id,
+                commodity_id=post.commodity_id,
+                target_role_ids=post.target_roles,
+                lat=lat,
+                lon=lon,
+                category_id=post.category_id,
+                commodity_quantity=float(deal.commodity_quantity),
+            )
+        except Exception:
+            pass
+
+    return DealClosedResponse(is_closed=deal.is_closed)
 
 
 def get_following_feed(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:

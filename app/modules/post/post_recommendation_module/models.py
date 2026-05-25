@@ -13,7 +13,7 @@ class PostEmbedding(Base):
     post_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True
     )
-    vector: Mapped[list] = mapped_column(Vector(11), nullable=False)
+    vector: Mapped[list] = mapped_column(Vector(10), nullable=False)
     partition: Mapped[str] = mapped_column(String(10), nullable=False, default="hot")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -58,7 +58,6 @@ class UserTasteProfile(Base):
     deal_req_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     discussion_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     knowledge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    other_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

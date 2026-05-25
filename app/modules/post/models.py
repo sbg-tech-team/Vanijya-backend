@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import ARRAY, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ARRAY, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database.base import Base
@@ -14,16 +14,14 @@ from app.core.database.base import Base
 # 2 = Knowledge
 # 3 = Discussion
 # 4 = Deal / Requirement
-# 5 = Other
 
 CATEGORY_DEAL = 4
-CATEGORY_OTHER = 5
 
 
 class PostCategory(Base):
     __tablename__ = "post_categories"
 
-    # No autoincrement – IDs are fixed and seeded (1-5)
+    # No autoincrement – IDs are fixed and seeded (1-4)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
 
@@ -39,6 +37,7 @@ class Post(Base):
     commodity_id: Mapped[int] = mapped_column(Integer, ForeignKey("commodities.id"))
 
     # Content
+    title: Mapped[str] = mapped_column(String(200))
     image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     caption: Mapped[str] = mapped_column(Text)
 
@@ -48,15 +47,6 @@ class Post(Base):
 
     # Interaction controls
     allow_comments: Mapped[bool] = mapped_column(default=True)
-
-    # Deal / Requirement fields (only used when category_id == CATEGORY_DEAL)
-    grain_type_size: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    commodity_quantity_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    commodity_quantity_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    price_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'fixed' | 'negotiable'
-
-    # Other category (only used when category_id == CATEGORY_OTHER)
-    other_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Counters
     like_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -68,11 +58,31 @@ class Post(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     post_category: Mapped["PostCategory"] = relationship("PostCategory", back_populates="posts")
+    deal_details: Mapped[Optional["PostDealDetails"]] = relationship(
+        "PostDealDetails", back_populates="post", uselist=False, cascade="all, delete-orphan"
+    )
     views: Mapped[list["PostView"]] = relationship("PostView", back_populates="post", cascade="all, delete-orphan")
     likes: Mapped[list["PostLike"]] = relationship("PostLike", back_populates="post", cascade="all, delete-orphan")
     comments: Mapped[list["PostComment"]] = relationship("PostComment", back_populates="post", cascade="all, delete-orphan")
     shares: Mapped[list["PostShare"]] = relationship("PostShare", back_populates="post", cascade="all, delete-orphan")
     saves: Mapped[list["PostSave"]] = relationship("PostSave", back_populates="post", cascade="all, delete-orphan")
+
+
+class PostDealDetails(Base):
+    __tablename__ = "post_deal_details"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), unique=True)
+
+    grain_type: Mapped[str] = mapped_column(String(100))
+    grain_size: Mapped[str] = mapped_column(String(50))
+    commodity_quantity: Mapped[float] = mapped_column(Float)
+    quantity_unit: Mapped[str] = mapped_column(String(20))   # MT | quintal
+    commodity_price: Mapped[float] = mapped_column(Float)
+    price_type: Mapped[str] = mapped_column(String(20))      # fixed | negotiable
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    post: Mapped["Post"] = relationship("Post", back_populates="deal_details")
 
 
 class PostView(Base):

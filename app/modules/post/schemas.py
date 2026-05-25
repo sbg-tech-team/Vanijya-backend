@@ -5,9 +5,72 @@ from pydantic import BaseModel, field_validator, model_validator
 
 # Fixed category IDs (matches DB seed)
 CATEGORY_DEAL = 4
-CATEGORY_OTHER = 5
 
 VALID_PRICE_TYPES = {"fixed", "negotiable"}
+VALID_QUANTITY_UNITS = {"MT", "quintal"}
+
+
+# ----------------------------------------------------------------------------
+# Deal / Requirement nested schemas
+# ----------------------------------------------------------------------------
+
+class PostDealCreate(BaseModel):
+    grain_type: str
+    grain_size: str
+    commodity_quantity: float
+    quantity_unit: str
+    commodity_price: float
+    price_type: str  # fixed | negotiable
+
+    @field_validator("price_type")
+    @classmethod
+    def price_type_valid(cls, v: str) -> str:
+        if v not in VALID_PRICE_TYPES:
+            raise ValueError(f"price_type must be one of: {', '.join(VALID_PRICE_TYPES)}")
+        return v
+
+    @field_validator("quantity_unit")
+    @classmethod
+    def quantity_unit_valid(cls, v: str) -> str:
+        if v not in VALID_QUANTITY_UNITS:
+            raise ValueError(f"quantity_unit must be one of: {', '.join(VALID_QUANTITY_UNITS)}")
+        return v
+
+
+class PostDealUpdate(BaseModel):
+    grain_type: Optional[str] = None
+    grain_size: Optional[str] = None
+    commodity_quantity: Optional[float] = None
+    quantity_unit: Optional[str] = None
+    commodity_price: Optional[float] = None
+    price_type: Optional[str] = None
+
+    @field_validator("price_type")
+    @classmethod
+    def price_type_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_PRICE_TYPES:
+            raise ValueError(f"price_type must be one of: {', '.join(VALID_PRICE_TYPES)}")
+        return v
+
+    @field_validator("quantity_unit")
+    @classmethod
+    def quantity_unit_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_QUANTITY_UNITS:
+            raise ValueError(f"quantity_unit must be one of: {', '.join(VALID_QUANTITY_UNITS)}")
+        return v
+
+
+class PostDealResponse(BaseModel):
+    grain_type: str
+    grain_size: str
+    commodity_quantity: float
+    quantity_unit: str
+    commodity_price: float
+    price_type: str
+    is_closed: bool
+
+    class Config:
+        from_attributes = True
 
 
 # ----------------------------------------------------------------------------
@@ -16,8 +79,9 @@ VALID_PRICE_TYPES = {"fixed", "negotiable"}
 
 class PostCreate(BaseModel):
     # Required
-    category_id: int        # 1=Market Update 2=Knowledge 3=Discussion 4=Deal/Requirement 5=Other
+    category_id: int        # 1=Market Update 2=Knowledge 3=Discussion 4=Deal/Requirement
     commodity_id: int       # 1=Rice 2=Cotton 3=Sugar
+    title: str
     caption: str
 
     # Visibility
@@ -30,21 +94,15 @@ class PostCreate(BaseModel):
     # Optional media
     image_url: Optional[str] = None
 
-    # --- Deal / Requirement fields (required when category_id == 4) ----------
-    grain_type_size: Optional[str] = None
-    commodity_quantity_min: Optional[float] = None
-    commodity_quantity_max: Optional[float] = None
-    price_type: Optional[str] = None
+    # Deal / Requirement (required when category_id == 4)
+    deal_details: Optional[PostDealCreate] = None
 
-    # --- Other category (required when category_id == 5) --------------------
-    other_description: Optional[str] = None
-
-    @field_validator("price_type")
+    @field_validator("title")
     @classmethod
-    def price_type_valid(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_PRICE_TYPES:
-            raise ValueError(f"price_type must be one of: {', '.join(VALID_PRICE_TYPES)}")
-        return v
+    def title_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Title cannot be empty")
+        return v.strip()
 
     @field_validator("caption")
     @classmethod
@@ -55,26 +113,8 @@ class PostCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_category_fields(self) -> "PostCreate":
-        if self.category_id == CATEGORY_DEAL:
-            missing = [
-                f for f, v in [
-                    ("grain_type_size", self.grain_type_size),
-                    ("commodity_quantity_min", self.commodity_quantity_min),
-                    ("commodity_quantity_max", self.commodity_quantity_max),
-                    ("price_type", self.price_type),
-                ]
-                if not v
-            ]
-            if missing:
-                raise ValueError(
-                    f"Deal/Requirement posts require: {', '.join(missing)}"
-                )
-
-        if self.category_id == CATEGORY_OTHER:
-            if not self.other_description or not self.other_description.strip():
-                raise ValueError("other_description is required when category is 'Other'")
-            self.other_description = self.other_description.strip()
-
+        if self.category_id == CATEGORY_DEAL and not self.deal_details:
+            raise ValueError("deal_details is required for Deal/Requirement posts")
         return self
 
 
@@ -83,16 +123,20 @@ class PostCreate(BaseModel):
 # ----------------------------------------------------------------------------
 
 class PostUpdate(BaseModel):
+    title: Optional[str] = None
     caption: Optional[str] = None
     image_url: Optional[str] = None
     is_public: Optional[bool] = None
     target_roles: Optional[List[int]] = None
     allow_comments: Optional[bool] = None
-    grain_type_size: Optional[str] = None
-    commodity_quantity_min: Optional[float] = None
-    commodity_quantity_max: Optional[float] = None
-    price_type: Optional[str] = None
-    other_description: Optional[str] = None
+    deal_details: Optional[PostDealUpdate] = None
+
+    @field_validator("title")
+    @classmethod
+    def title_not_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("Title cannot be empty")
+        return v.strip() if v else v
 
     @field_validator("caption")
     @classmethod
@@ -100,13 +144,6 @@ class PostUpdate(BaseModel):
         if v is not None and not v.strip():
             raise ValueError("Caption cannot be empty")
         return v.strip() if v else v
-
-    @field_validator("price_type")
-    @classmethod
-    def price_type_valid(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_PRICE_TYPES:
-            raise ValueError(f"price_type must be one of: {', '.join(VALID_PRICE_TYPES)}")
-        return v
 
 
 # ----------------------------------------------------------------------------
@@ -118,26 +155,21 @@ class PostResponse(BaseModel):
     profile_id: int
     category_id: int
     commodity_id: int
+    title: str
     caption: str
     image_url: Optional[str]
     is_public: bool
     target_roles: Optional[List[int]]
     allow_comments: bool
 
-    # Deal / Requirement
-    grain_type_size: Optional[str]
-    commodity_quantity_min: Optional[float]
-    commodity_quantity_max: Optional[float]
-    price_type: Optional[str]
-
-    # Other
-    other_description: Optional[str]
+    deal_details: Optional[PostDealResponse]
 
     # Counters + viewer state
     view_count: int
     like_count: int
     comment_count: int
     share_count: int
+    save_count: int
     is_liked: bool
     is_saved: bool
 
@@ -188,3 +220,7 @@ class SaveResponse(BaseModel):
 
 class ShareResponse(BaseModel):
     share_count: int
+
+
+class DealClosedResponse(BaseModel):
+    is_closed: bool
