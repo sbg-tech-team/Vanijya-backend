@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
+import redis as redis_lib
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
@@ -27,6 +28,7 @@ from app.modules.profile.models import (
 from app.modules.connections.encoding.vector import build_query_vector
 
 TOP_K = 20
+_SEEN_TTL = 172_800  # 48 hours — set once at key creation, never reset
 
 # role_id (int) → lowercase string used by the vector encoder
 _ROLE_ID_TO_NAME = {1: "trader", 2: "broker", 3: "exporter"}
@@ -381,8 +383,39 @@ def search_suggestions(db: Session, q: str) -> list[dict]:
 # D. Recommendations  (pgvector HNSW cosine ANN via <=>)
 # ---------------------------------------------------------------------------
 
+def mark_recommendations_seen(
+    r: redis_lib.Redis,
+    user_id: UUID,
+    seen_user_ids: list[UUID],
+) -> None:
+    """
+    Best-effort. Stores seen recommendation user IDs in a Redis Set with a
+    48-hour TTL that is set ONCE at key creation and never reset on updates.
+    """
+    if not seen_user_ids:
+        return
+    key = f"rec:seen:{user_id}"
+    try:
+        existed = r.exists(key)
+        r.sadd(key, *[str(uid) for uid in seen_user_ids])
+        if not existed:
+            r.expire(key, _SEEN_TTL)
+    except Exception:
+        pass  # best-effort — frontend does not retry on failure
+
+
+def _get_seen_ids(r: redis_lib.Redis, user_id: UUID) -> list[str]:
+    """Fetch the seen set from Redis. Returns [] if Redis is unavailable."""
+    try:
+        raw = r.smembers(f"rec:seen:{user_id}")
+        return [s.decode() if isinstance(s, bytes) else s for s in raw]
+    except Exception:
+        return []
+
+
 def get_recommendations(
     db: Session,
+    r: redis_lib.Redis,
     user_id: UUID,
     page: int = 1,
     limit: int = 20,
@@ -413,12 +446,14 @@ def get_recommendations(
 
     offset = (page - 1) * limit
 
-    total_row = db.execute(
-        text("""
-            SELECT COUNT(*) AS cnt
-            FROM user_embeddings
-            WHERE user_id != CAST(:uid AS uuid)
-              AND is_vector IS NOT NULL
+    seen_ids = _get_seen_ids(r, user_id)
+    seen_filter = ""
+    seen_params: dict = {}
+    if seen_ids:
+        seen_filter = "AND user_id != ALL(string_to_array(:seen_csv, ',')::uuid[])"
+        seen_params["seen_csv"] = ",".join(seen_ids)
+
+    base_exclusions = """
               AND user_id NOT IN (
                   SELECT following_id
                   FROM user_connections
@@ -429,32 +464,34 @@ def get_recommendations(
                   FROM message_requests
                   WHERE sender_id = CAST(:uid AS uuid)
               )
+    """
+
+    total_row = db.execute(
+        text(f"""
+            SELECT COUNT(*) AS cnt
+            FROM user_embeddings
+            WHERE user_id != CAST(:uid AS uuid)
+              AND is_vector IS NOT NULL
+              {base_exclusions}
+              {seen_filter}
         """),
-        {"uid": str(user_id)},
+        {"uid": str(user_id), **seen_params},
     ).mappings().one()
     total_available = int(total_row["cnt"])
 
     rows = db.execute(
-        text("""
+        text(f"""
             SELECT user_id,
                    1 - (is_vector <=> CAST(:vec AS vector)) AS similarity
             FROM user_embeddings
             WHERE user_id != CAST(:uid AS uuid)
               AND is_vector IS NOT NULL
-              AND user_id NOT IN (
-                  SELECT following_id
-                  FROM user_connections
-                  WHERE follower_id = CAST(:uid AS uuid)
-              )
-              AND user_id NOT IN (
-                  SELECT receiver_id
-                  FROM message_requests
-                  WHERE sender_id = CAST(:uid AS uuid)
-              )
+              {base_exclusions}
+              {seen_filter}
             ORDER BY is_vector <=> CAST(:vec AS vector)
             LIMIT :lim OFFSET :off
         """),
-        {"vec": _to_pgvec(want_vec), "uid": str(user_id), "lim": limit, "off": offset},
+        {"vec": _to_pgvec(want_vec), "uid": str(user_id), "lim": limit, "off": offset, **seen_params},
     ).mappings().all()
 
     top = [(round(float(r["similarity"]), 4), r["user_id"]) for r in rows]

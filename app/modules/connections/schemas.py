@@ -5,7 +5,8 @@ Legacy UserCreate / UserUpdate (old "Users" table) have been removed.
 The acting user is now always identified via JWT (get_current_user_id dependency).
 """
 from __future__ import annotations
-from pydantic import BaseModel
+from uuid import UUID
+from pydantic import BaseModel, field_validator
 
 
 class SearchPayload(BaseModel):
@@ -16,3 +17,15 @@ class SearchPayload(BaseModel):
     longitude_raw: float
     qty_min_mt:    int
     qty_max_mt:    int
+
+
+class SeenPayload(BaseModel):
+    """User IDs of recommendation cards the client has shown to the user."""
+    user_ids: list[UUID]
+
+    @field_validator("user_ids")
+    @classmethod
+    def max_fifty(cls, v: list[UUID]) -> list[UUID]:
+        if len(v) > 50:
+            raise ValueError("Maximum 50 user IDs per call")
+        return v

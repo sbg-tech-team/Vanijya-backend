@@ -10,11 +10,13 @@ from client-supplied path or query params.
 """
 from uuid import UUID
 
+import redis as redis_lib
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.core.redis_client import get_redis
 from app.dependencies import get_current_user_id, get_db
-from app.modules.connections.schemas import SearchPayload
+from app.modules.connections.schemas import SearchPayload, SeenPayload
 from app.modules.connections import service
 from app.shared.utils.response import ok
 
@@ -196,12 +198,27 @@ recommendations_router = APIRouter(prefix="/recommendations", tags=["recommendat
 def get_recommendations(
     me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
-    page:  int = Query(default=1,  ge=1,             description="Page number (1-based)"),
-    limit: int = Query(default=20, ge=1, le=100,     description="Results per page"),
+    r: redis_lib.Redis = Depends(get_redis),
+    page:  int = Query(default=1,  ge=1,         description="Page number (1-based)"),
+    limit: int = Query(default=20, ge=1, le=100, description="Results per page"),
 ):
     """Paginated user matches based on my profile (commodity, role, location, quantity)."""
-    result = service.get_recommendations(db, user_id=me, page=page, limit=limit)
+    result = service.get_recommendations(db, r, user_id=me, page=page, limit=limit)
     return ok(result, "Recommendations fetched")
+
+
+@recommendations_router.post("/seen", status_code=204)
+def mark_seen(
+    payload: SeenPayload,
+    me: UUID = Depends(get_current_user_id),
+    r: redis_lib.Redis = Depends(get_redis),
+):
+    """
+    Mark recommendation cards as seen. Excluded from future GET /recommendations
+    for 48 hours from the first call, then the seen set auto-expires.
+    Best-effort — client does not retry on failure.
+    """
+    service.mark_recommendations_seen(r, user_id=me, seen_user_ids=payload.user_ids)
 
 
 @recommendations_router.post("/search")

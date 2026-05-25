@@ -11,7 +11,7 @@ A concise reference for anyone working on the vector-based matching engine.
 3. [Encoding Details](#3-encoding-details)
 4. [IS vs WANT Vectors](#4-is-vs-want-vectors)
 5. [Boost Weights](#5-boost-weights)
-6. [Database Layer](#6-database-layer)
+6. [Database & Cache Layer](#6-database--cache-layer)
 7. [API Endpoints](#7-api-endpoints)
 8. [Migration Script](#8-migration-script)
 9. [Extending the System](#9-extending-the-system)
@@ -28,8 +28,22 @@ User profile  ──encode──►  vector(11)  ──stored in──►  user_
                                                               │
 Search request ──encode──►  WANT vector  ──HNSW ANN (<=>)───►│
                                                               ▼
-                                                     top-20 ranked matches
+                                                     top-N ranked matches
+                                                              │
+                                              filter: already-following
+                                              filter: already-requested
+                                              filter: seen set (Redis, 48h TTL)
+                                                              ▼
+                                                     final paginated results
 ```
+
+**Exclusion layers** (applied on every `GET /recommendations/`):
+
+| Layer | Source | Persistence |
+|---|---|---|
+| Already following | `user_connections` table | Permanent |
+| Already sent message request | `message_requests` table | Until withdrawn/resolved |
+| Seen cards | Redis Set per user | 48 hours from first seen, then resets |
 
 Every user has **two logical vectors**:
 
@@ -171,7 +185,7 @@ All weights live in `app/modules/connections/weights_config.py`. Changing any of
 
 ---
 
-## 6. Database Layer
+## 6. Database & Cache Layer
 
 ### Schema
 
@@ -203,6 +217,15 @@ Schema setup is handled entirely by **Alembic migrations** — no manual SQL or 
 
 ### Live ANN query (`connections/service.py`)
 
+Before hitting Postgres, the service fetches the user's seen set from Redis:
+
+```python
+seen_ids = redis.smembers(f"rec:seen:{user_id}")   # set of UUID strings
+# passed to SQL as: string_to_array(:seen_csv, ',')::uuid[]
+```
+
+If Redis is unreachable the seen filter is skipped gracefully — recommendations still work, just without seen filtering.
+
 ```sql
 -- Count query (runs first — determines total_available)
 SELECT COUNT(*) AS cnt
@@ -211,7 +234,11 @@ WHERE user_id != :uid
   AND is_vector IS NOT NULL
   AND user_id NOT IN (
       SELECT following_id FROM user_connections WHERE follower_id = :uid
-  );
+  )
+  AND user_id NOT IN (
+      SELECT receiver_id FROM message_requests WHERE sender_id = :uid
+  )
+  AND user_id != ALL(string_to_array(:seen_csv, ',')::uuid[]);  -- omitted when seen set is empty
 
 -- Page query
 SELECT user_id,
@@ -222,11 +249,26 @@ WHERE user_id != :uid
   AND user_id NOT IN (
       SELECT following_id FROM user_connections WHERE follower_id = :uid
   )
+  AND user_id NOT IN (
+      SELECT receiver_id FROM message_requests WHERE sender_id = :uid
+  )
+  AND user_id != ALL(string_to_array(:seen_csv, ',')::uuid[])   -- omitted when seen set is empty
 ORDER BY is_vector <=> CAST(:vec AS vector)   -- HNSW walks the graph
 LIMIT :lim OFFSET :off
 ```
 
 `<=>` is pgvector's cosine distance operator. `1 - distance = similarity`. Results are returned best-first. The HNSW index makes this O(log N). `OFFSET` shifts the window per page — page 1 = offset 0, page 2 = offset 20, etc.
+
+### Redis seen set
+
+```
+Key:    rec:seen:{user_id}
+Type:   Redis Set
+Values: UUID strings of users the client has shown as recommendation cards
+TTL:    172 800 s (48 hours) — set ONCE when the key is first created, never reset on updates
+```
+
+The TTL starts at first write and counts down regardless of further activity. After 48 hours Redis auto-deletes the key and the user's seen set resets — those people will reappear in recommendations. **No Alembic migration and no scheduled cleanup job are needed.**
 
 ---
 
@@ -238,10 +280,13 @@ All recommendation endpoints live under the connections router (`/recommendation
 
 Fetch paginated matches for the authenticated user. Requires `Authorization: Bearer <token>`.
 
-1. Loads the user's profile (role + commodities) from DB.
+1. Loads the user's profile (role + commodities + location + quantity) from Postgres.
 2. Builds their WANT vector using `build_query_vector()`.
-3. Runs HNSW ANN cosine search via pgvector `<=>`, excluding the user themselves.
-4. **Filters out users the requesting user is already following** — results only contain users not yet connected.
+3. Fetches the user's seen set from Redis (`rec:seen:{user_id}`).
+4. Runs HNSW ANN cosine search via pgvector `<=>` with three exclusion filters:
+   - Users the caller is already **following**
+   - Users the caller has already **sent a message request to**
+   - Users in the caller's **seen set** (Redis, 48-hour window)
 5. Returns one page of results with full profile info and similarity score.
 
 | Query Param | Required | Type | Default | Description |
@@ -281,9 +326,37 @@ Fetch paginated matches for the authenticated user. Requires `Authorization: Bea
 }
 ```
 
-- `total_available` — total candidates in the pool (excluding the caller and already-followed users). Use this to show "X people found".
+- `total_available` — total candidates remaining after all exclusions. Use this to show "X people found".
 - `has_more` — `false` when the last page is reached. Stop infinite scroll when this is `false`.
 - `total` — count of items in this specific page response.
+
+---
+
+### `POST /recommendations/seen`
+
+Mark recommendation cards as seen. Excluded from future `GET /recommendations/` responses for 48 hours. Requires `Authorization: Bearer <token>`.
+
+**Request body:**
+```json
+{
+  "user_ids": ["uuid1", "uuid2", "uuid3"]
+}
+```
+
+| Field | Required | Type | Constraint |
+|---|---|---|---|
+| `user_ids` | Yes | list of UUID | Max 50 per call |
+
+**Response:** `204 No Content` — no body.
+
+**When to call (frontend):**
+- When 10 seen IDs accumulate in the local buffer
+- When the app goes to background (`AppLifecycleState.paused`)
+
+**Behaviour:**
+- Best-effort — no retry on failure, backend silently ignores Redis errors.
+- The seen set TTL (48 h) is set **once at first write** and never reset by subsequent calls. After 48 hours the set auto-expires in Redis and those users reappear in recommendations.
+- No Postgres writes — stored entirely in Redis.
 
 ---
 
