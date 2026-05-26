@@ -441,25 +441,62 @@ Search profiles on the platform. The authenticated user is always excluded from 
 
 | Query Param | Required | Type | Default | Description |
 |---|---|---|---|---|
-| `q` | No | string | — | Partial match on name or business name |
-| `role` | No | string | — | Exact: `trader`, `broker`, `exporter` |
-| `commodity` | No | string | — | Partial match on commodity name |
+| `q` | No | string | — | Free-text query — smart-parsed when used alone (see below), or name/business name match when used alongside explicit filters |
+| `role` | No | string | — | Explicit role filter: `trader`, `broker`, `exporter` |
+| `commodity` | No | string | — | Explicit commodity filter: `cotton`, `rice`, `sugar` |
 | `city` | No | string | — | Partial match on city name |
 | `user_verified_only` | No | bool | `false` | When `true`, return only KYC-verified users (`is_user_verified = true`) |
 | `business_verified_only` | No | bool | `false` | When `true`, return only KYB-verified users (`is_business_verified = true`) |
 | `page` | No | int | `1` | Page number (1-based) |
 | `limit` | No | int | `20` | Results per page (max 100) |
 
-Both filters can be combined — `user_verified_only=true&business_verified_only=true` returns only users who have passed both KYC and KYB.
+---
 
-**Examples:**
+#### Smart query parsing (single search box)
+
+When `q` is provided **and none of `role`, `commodity`, `city` are explicitly set**, the backend parses intent from the free text automatically:
+
+| What it detects | How |
+|---|---|
+| Role | Token matches `trader`, `broker`, `exporter` (or plural: `traders`, `brokers`, `exporters`) |
+| Commodity | Token matches a known commodity: `cotton`, `rice`, `sugar` |
+| City | Looks for `in <word>` or `from <word>` pattern in the query |
+| Name | Any remaining tokens become a name / business name ILIKE filter |
+
+**Explicit params always take priority** — if `role=broker` is passed alongside `q`, the role inside `q` is ignored and `role=broker` is used.
+
+**Parsed query examples:**
+
+| `q` value | Resolved as |
+|---|---|
+| `ravi` | name ILIKE `%ravi%` |
+| `cotton` | commodity = cotton |
+| `broker` | role = broker |
+| `rice exporters` | role = exporter, commodity = rice |
+| `ravi broker` | role = broker, name ILIKE `%ravi%` |
+| `cotton traders in mumbai` | role = trader, commodity = cotton, city = mumbai |
+| `exporters in delhi` | role = exporter, city = delhi |
+
+---
+
+**Single-box examples (smart parsed):**
 ```
 GET /connections/search?q=ravi
+GET /connections/search?q=cotton
+GET /connections/search?q=broker
+GET /connections/search?q=rice exporters
+GET /connections/search?q=cotton traders in mumbai
+```
+
+**Explicit filter examples:**
+```
 GET /connections/search?role=exporter&commodity=rice
 GET /connections/search?city=mumbai&user_verified_only=true
 GET /connections/search?user_verified_only=true&business_verified_only=true
 GET /connections/search?page=2&limit=10
 ```
+
+Both `user_verified_only` and `business_verified_only` can be combined with any search mode.
 
 **Success `200`:**
 ```json
@@ -483,7 +520,9 @@ GET /connections/search?page=2&limit=10
         "quantity_max": 5000,
         "business_name": "Shah Exports",
         "city": "Mumbai",
-        "state": "Maharashtra"
+        "state": "Maharashtra",
+        "msg_req_status": null,
+        "follow_status": false
       }
     ]
   }
@@ -582,15 +621,18 @@ Authorization: Bearer <access_token>
       {
         "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
         "name": "Ravi Kumar",
-        "business_name": "Ravi Agro Pvt Ltd",
+        "avatar_url": null,
         "role": "exporter",
         "commodity": ["rice"],
         "is_user_verified": true,
         "is_business_verified": false,
         "quantity_min": 200,
         "quantity_max": 800,
+        "business_name": "Ravi Agro Pvt Ltd",
         "city": "Mumbai",
         "state": "Maharashtra",
+        "msg_req_status": null,
+        "follow_status": false,
         "similarity": 0.9312
       }
     ]
@@ -656,7 +698,7 @@ Ad-hoc vector search with a custom payload. No account or token required. Useful
 
 ## 10. Shared User Object  
 
-Every profile object across all endpoints has this shape:
+Every profile object across all endpoints has this base shape:
 
 ```json
 {
@@ -671,11 +713,35 @@ Every profile object across all endpoints has this shape:
     "quantity_max": 500,
     "business_name": "Ravi Agro Pvt Ltd",
     "city": "Mumbai",
-    "state": "Maharashtra"
+    "state": "Maharashtra",
+    "msg_req_status": null,
+    "follow_status": false
 }
 ```
 
-Some endpoints add extra fields:
+### `msg_req_status`
+
+Status of the message request the **authenticated user sent** to this profile. `null` means no request has been sent.
+
+| Value | Meaning |
+|---|---|
+| `null` | No message request sent |
+| `"pending"` | Request sent, waiting for the other user to accept or decline |
+| `"accepted"` | Request accepted — messaging is open |
+| `"declined"` | Request declined |
+
+### `follow_status`
+
+Whether the **authenticated user is currently following** this profile.
+
+| Value | Meaning |
+|---|---|
+| `false` | Not following |
+| `true` | Currently following |
+
+> **Availability:** `msg_req_status` and `follow_status` are computed from the authenticated user's perspective. They are present in **search** and **recommendations** results. Endpoints that are public or that already encode the relationship differently (followers list, following list, message-request inbox/sent) do not include these fields.
+
+Some endpoints also add extra fields on top of the base shape:
 
 | Endpoint | Extra fields |
 |---|---|

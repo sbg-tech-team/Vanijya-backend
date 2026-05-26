@@ -9,6 +9,7 @@ Sections:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -26,12 +27,56 @@ from app.modules.profile.models import (
     Role,
 )
 from app.modules.connections.encoding.vector import build_query_vector
+from app.modules.connections.weights_config import ALL_COMMODITIES
 
 TOP_K = 20
 _SEEN_TTL = 172_800  # 48 hours — set once at key creation, never reset
 
 # role_id (int) → lowercase string used by the vector encoder
 _ROLE_ID_TO_NAME = {1: "trader", 2: "broker", 3: "exporter"}
+
+# ── Search intent parsing ────────────────────────────────────────────────────
+_KNOWN_ROLES = {"trader", "broker", "exporter"}
+_ROLE_PLURAL = {"traders": "trader", "brokers": "broker", "exporters": "exporter"}
+_KNOWN_COMMODITIES = set(ALL_COMMODITIES)
+_CITY_PATTERN = re.compile(r'\b(?:in|from)\s+(\w+)', re.IGNORECASE)
+
+
+def _parse_search_intent(q: str) -> dict:
+    """
+    Extracts role, commodity, city from free-text q so the frontend only needs
+    one search box. Explicit params passed by the caller always take priority.
+
+    "rice exporters in mumbai" → role="exporter", commodity="rice", city="mumbai", name_q=None
+    "ravi broker"              → role="broker", commodity=None, city=None, name_q="ravi"
+    """
+    tokens = q.lower().split()
+    role, commodity, city = None, None, None
+    skip: set[str] = set()
+
+    city_match = _CITY_PATTERN.search(q)
+    if city_match:
+        city = city_match.group(1).lower()
+        skip.update(city_match.group(0).lower().split())
+
+    remaining = []
+    for token in tokens:
+        if token in skip:
+            continue
+        normalized = _ROLE_PLURAL.get(token, token)
+        if normalized in _KNOWN_ROLES:
+            role = normalized
+        elif token in _KNOWN_COMMODITIES:
+            commodity = token
+        else:
+            remaining.append(token)
+
+    return {
+        "role":      role,
+        "commodity": commodity,
+        "city":      city,
+        "name_q":    " ".join(remaining) or None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +114,12 @@ def _load_profiles_bulk(db: Session, user_ids: list[UUID]) -> dict[UUID, Profile
     return {p.users_id: p for p in rows}
 
 
-def _fmt_profile(profile: Profile) -> dict:
+def _fmt_profile(
+    profile: Profile,
+    *,
+    msg_req_status: str | None = None,
+    follow_status: bool = False,
+) -> dict:
     """Serialize a Profile into a flat dict for connection list responses."""
     return {
         "user_id":              str(profile.users_id),
@@ -84,6 +134,36 @@ def _fmt_profile(profile: Profile) -> dict:
         "business_name":        profile.business.business_name,
         "city":                 profile.business.city,
         "state":                profile.business.state,
+        "msg_req_status":       msg_req_status,
+        "follow_status":        follow_status,
+    }
+
+
+def _bulk_statuses(db: Session, me: UUID, target_ids: list[UUID]) -> dict:
+    """
+    Returns {uid: {"msg_req_status": str|None, "follow_status": bool}}
+    for each target in two queries (one for msg requests, one for follows).
+    """
+    if not target_ids:
+        return {}
+    msg_reqs = db.query(MessageRequest).filter(
+        MessageRequest.sender_id == me,
+        MessageRequest.receiver_id.in_(target_ids),
+    ).all()
+    msg_req_map = {r.receiver_id: r.status for r in msg_reqs}
+
+    follows = db.query(UserConnection).filter(
+        UserConnection.follower_id == me,
+        UserConnection.following_id.in_(target_ids),
+    ).all()
+    follow_set = {f.following_id for f in follows}
+
+    return {
+        uid: {
+            "msg_req_status": msg_req_map.get(uid),
+            "follow_status":  uid in follow_set,
+        }
+        for uid in target_ids
     }
 
 
@@ -296,6 +376,13 @@ def search_users(
     business_verified_only— only return profiles where is_business_verified=True (KYB)
     Excludes the calling user. Supports pagination via page/limit.
     """
+    if q and not any([role, commodity, city]):
+        intent = _parse_search_intent(q)
+        role      = role      or intent["role"]
+        commodity = commodity or intent["commodity"]
+        city      = city      or intent["city"]
+        q         = intent["name_q"]
+
     query = (
         db.query(Profile)
         .options(
@@ -346,11 +433,19 @@ def search_users(
 
     total = query.count()
     profiles = query.offset((page - 1) * limit).limit(limit).all()
+    statuses = _bulk_statuses(db, me, [p.users_id for p in profiles])
     return {
         "total": total,
         "page": page,
         "limit": limit,
-        "results": [_fmt_profile(p) for p in profiles],
+        "results": [
+            _fmt_profile(
+                p,
+                msg_req_status=statuses.get(p.users_id, {}).get("msg_req_status"),
+                follow_status=statuses.get(p.users_id, {}).get("follow_status", False),
+            )
+            for p in profiles
+        ],
     }
 
 
@@ -504,9 +599,18 @@ def get_recommendations(
 
     top = [(round(float(r["similarity"]), 4), r["user_id"]) for r in rows]
 
-    match_profiles = _load_profiles_bulk(db, [uid for _, uid in top])
+    match_ids = [uid for _, uid in top]
+    match_profiles = _load_profiles_bulk(db, match_ids)
+    statuses = _bulk_statuses(db, user_id, match_ids)
     results = [
-        {**_fmt_profile(match_profiles[uid]), "similarity": sim}
+        {
+            **_fmt_profile(
+                match_profiles[uid],
+                msg_req_status=statuses.get(uid, {}).get("msg_req_status"),
+                follow_status=statuses.get(uid, {}).get("follow_status", False),
+            ),
+            "similarity": sim,
+        }
         for sim, uid in top
         if uid in match_profiles
     ]
