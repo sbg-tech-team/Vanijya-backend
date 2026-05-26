@@ -20,6 +20,8 @@ from app.shared.utils.storage import (
 
 _STORAGE_BUCKET = os.environ.get("DATABASE_STORAGE_BUCKET", "avatars")
 
+from app.modules.connections.models import UserConnection, MessageRequest
+
 from app.modules.profile.models import (
     Business,
     Commodity,
@@ -404,7 +406,9 @@ def delete_user(db: Session, user_id: UUID) -> None:
         raise
 
 
-def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
+def get_profile_by_id(
+    db: Session, profile_id: int, viewer_user_id: UUID | None = None
+) -> ProfilePublicResponse:
     profile = (
         db.query(Profile)
         .options(
@@ -420,6 +424,27 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
     posts_count = (
         db.query(func.count(Post.id)).filter(Post.profile_id == profile_id).scalar() or 0
     )
+
+    is_following = False
+    message_request_status = None
+    if viewer_user_id and viewer_user_id != profile.users_id:
+        is_following = db.query(UserConnection).filter(
+            UserConnection.follower_id == viewer_user_id,
+            UserConnection.following_id == profile.users_id,
+        ).first() is not None
+
+        msg_req = db.query(MessageRequest).filter(
+            (
+                (MessageRequest.sender_id == viewer_user_id) &
+                (MessageRequest.receiver_id == profile.users_id)
+            ) | (
+                (MessageRequest.sender_id == profile.users_id) &
+                (MessageRequest.receiver_id == viewer_user_id)
+            )
+        ).first()
+        if msg_req:
+            message_request_status = msg_req.status
+
     return ProfilePublicResponse(
         id=profile.id,
         name=profile.name,
@@ -436,6 +461,8 @@ def get_profile_by_id(db: Session, profile_id: int) -> ProfilePublicResponse:
         latitude=profile.business.latitude,
         longitude=profile.business.longitude,
         avatar_url=profile.avatar_url,
+        is_following=is_following,
+        message_request_status=message_request_status,
     )
 
 

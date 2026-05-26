@@ -117,6 +117,8 @@ class ProfilePublicResponse(BaseModel):
     latitude: float
     longitude: float
     avatar_url: Optional[str] = None
+    is_following: bool = False
+    message_request_status: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
