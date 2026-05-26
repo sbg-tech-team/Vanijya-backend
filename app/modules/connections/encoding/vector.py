@@ -75,6 +75,7 @@ def encode_quantity(qty_min: int, qty_max: int) -> np.ndarray:
     log_ref = np.log1p(QTY_REF_MAX)
     return np.log1p([qty_min, qty_max]) / log_ref * QTY_BOOST
 
+
 # ─── Final Vector Assembly ────────────────────────────────────────────────────
 
 def build_candidate_vector(

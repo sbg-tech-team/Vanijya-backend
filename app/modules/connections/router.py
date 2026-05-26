@@ -207,6 +207,15 @@ def get_recommendations(
     return ok(result, "Recommendations fetched")
 
 
+@recommendations_router.delete("/seen", status_code=204)
+def clear_seen(
+    me: UUID = Depends(get_current_user_id),
+    r: redis_lib.Redis = Depends(get_redis),
+):
+    """Clear the calling user's seen set — all recommendations resurface immediately."""
+    service.clear_recommendations_seen(r, user_id=me)
+
+
 @recommendations_router.post("/seen", status_code=204)
 def mark_seen(
     payload: SeenPayload,

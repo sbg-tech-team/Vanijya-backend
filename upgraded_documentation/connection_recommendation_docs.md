@@ -12,7 +12,7 @@ A concise reference for anyone working on the vector-based matching engine.
 4. [IS vs WANT Vectors](#4-is-vs-want-vectors)
 5. [Boost Weights](#5-boost-weights)
 6. [Database & Cache Layer](#6-database--cache-layer)
-7. [API Endpoints](#7-api-endpoints)
+7. [API Endpoints](#7-api-endpoints) — GET · POST seen · DELETE seen · POST search
 8. [Migration Script](#8-migration-script)
 9. [Extending the System](#9-extending-the-system)
 10. [Tuning Guide](#10-tuning-guide)
@@ -326,9 +326,25 @@ Fetch paginated matches for the authenticated user. Requires `Authorization: Bea
 }
 ```
 
-- `total_available` — total candidates remaining after all exclusions. Use this to show "X people found".
+- `total_available` — total candidates remaining after all exclusions (following + requested + seen). **When this is `0`, the user has seen everyone in the pool — show the empty state screen.**
 - `has_more` — `false` when the last page is reached. Stop infinite scroll when this is `false`.
 - `total` — count of items in this specific page response.
+
+**Empty state / pool exhaustion:**
+
+When `total_available == 0` the frontend should show an empty state and offer a reset:
+
+```
+total_available == 0
+       ↓
+Show: "You've seen everyone! Tap to start over."
+       ↓  [Start Over] button
+DELETE /recommendations/seen        ← clears seen set
+       ↓
+GET /recommendations/?page=1        ← fresh results
+```
+
+Use `total_available == 0` as the trigger, not `results` being empty — a high page number can return an empty `results` array while `total_available` is still > 0.
 
 ---
 
@@ -357,6 +373,24 @@ Mark recommendation cards as seen. Excluded from future `GET /recommendations/` 
 - Best-effort — no retry on failure, backend silently ignores Redis errors.
 - The seen set TTL (48 h) is set **once at first write** and never reset by subsequent calls. After 48 hours the set auto-expires in Redis and those users reappear in recommendations.
 - No Postgres writes — stored entirely in Redis.
+
+---
+
+### `DELETE /recommendations/seen`
+
+Clear the calling user's entire seen set. All previously seen users resurface immediately in the next `GET /recommendations/` call. Requires `Authorization: Bearer <token>`.
+
+**Request body:** none.
+
+**Response:** `204 No Content` — no body.
+
+**When to call (frontend):**
+- User taps "Start Over" / "Reset" on the empty-state screen (when `total_available == 0`).
+
+**Behaviour:**
+- Deletes the Redis key `rec:seen:{user_id}` instantly.
+- The next `GET /recommendations/` returns the full pool sorted by relevance as if the user is new.
+- Best-effort — if Redis is unavailable the key may not be deleted, but the endpoint still returns 204.
 
 ---
 

@@ -383,6 +383,14 @@ def search_suggestions(db: Session, q: str) -> list[dict]:
 # D. Recommendations  (pgvector HNSW cosine ANN via <=>)
 # ---------------------------------------------------------------------------
 
+def clear_recommendations_seen(r: redis_lib.Redis, user_id: UUID) -> None:
+    """Delete the user's seen set so all recommendations resurface immediately."""
+    try:
+        r.delete(f"rec:seen:{user_id}")
+    except Exception:
+        pass
+
+
 def mark_recommendations_seen(
     r: redis_lib.Redis,
     user_id: UUID,
