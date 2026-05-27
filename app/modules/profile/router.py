@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -215,16 +216,20 @@ def delete_user_api(
 
 
 # ---------------------------------------------------------------------------
-# Public profile view — no auth, profile_id in path
+# Public profile view — JWT protected, profile_id in path
+# Self-view redirects to /profile/me
 # ---------------------------------------------------------------------------
 
 @router.get("/{profile_id}")
 def get_profile_api(
     profile_id: int,
     db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
 ):
+    if cu.profile_id == profile_id:
+        return RedirectResponse(url="/profile/me", status_code=307)
     try:
-        result = get_profile_by_id(db, profile_id)
+        result = get_profile_by_id(db, profile_id, viewer_user_id=cu.user_id)
         return ok(result, "Profile fetched successfully")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
