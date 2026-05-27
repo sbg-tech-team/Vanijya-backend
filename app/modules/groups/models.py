@@ -19,7 +19,8 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     group_rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    icon_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    # Group image stored in the group-image Supabase bucket
+    image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # JSONB arrays — e.g. ["sugar", "rice"]
     commodity: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
@@ -60,6 +61,9 @@ class Group(Base):
     embedding: Mapped[Optional["GroupEmbedding"]] = relationship(
         "GroupEmbedding", back_populates="group", uselist=False,
         cascade="all, delete-orphan",
+    )
+    media: Mapped[List["GroupMedia"]] = relationship(
+        "GroupMedia", back_populates="group", cascade="all, delete-orphan"
     )
 
 
@@ -115,3 +119,30 @@ class GroupEmbedding(Base):
     )
 
     group: Mapped["Group"] = relationship("Group", back_populates="embedding")
+
+
+class GroupMedia(Base):
+    """
+    Media files uploaded to a group — stored in the group-media Supabase bucket.
+    Supported types: image (JPEG/PNG/WebP) and video (MP4/MOV/WebM).
+    """
+    __tablename__ = "group_media"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False
+    )
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    media_url: Mapped[str] = mapped_column(String(500))
+    # image | video
+    media_type: Mapped[str] = mapped_column(String(20), default="image")
+    storage_path: Mapped[str] = mapped_column(String(500))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+    group: Mapped["Group"] = relationship("Group", back_populates="media")

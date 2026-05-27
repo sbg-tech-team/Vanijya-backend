@@ -15,6 +15,8 @@ class GroupCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=200)
     description: Optional[str] = None
     group_rules: Optional[str] = None
+    # Group image URL — client uploads to group-image bucket first, then passes URL here
+    image_url: Optional[str] = None
     commodities: Optional[List[str]] = Field(default_factory=list)
     region_market: Optional[str] = None
     region_lat: Optional[float] = None
@@ -34,7 +36,7 @@ class GroupUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=200)
     description: Optional[str] = None
     group_rules: Optional[str] = None
-    icon_url: Optional[str] = None
+    image_url: Optional[str] = None
     commodities: Optional[List[str]] = None
     region_market: Optional[str] = None
     region_lat: Optional[float] = None
@@ -65,7 +67,7 @@ class GroupOut(BaseModel):
     id: UUID
     name: str
     description: Optional[str] = None
-    icon_url: Optional[str] = None
+    image_url: Optional[str] = None
     commodity: Optional[List[str]] = None
     target_roles: Optional[List[str]] = None
     region_market: Optional[str] = None
@@ -125,3 +127,23 @@ class GroupMembersPageOut(BaseModel):
     total: int
     page: int
     limit: int
+
+
+class GroupMediaOut(BaseModel):
+    id: UUID
+    group_id: UUID
+    uploaded_by: UUID
+    media_url: str
+    media_type: str
+    uploaded_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GroupMediaUploadOut(BaseModel):
+    media_id: UUID
+    upload_url: str
+    media_url: str
+    media_type: str
+    expires_at: str

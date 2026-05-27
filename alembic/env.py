@@ -31,6 +31,7 @@ from app.modules.groups.models import (  # noqa: F401
     GroupMember,
     GroupActivityCache,
     GroupEmbedding,
+    GroupMedia,
 )
 from app.modules.news.models import (  # noqa: F401
     NewsSource,

@@ -11,7 +11,9 @@ Role mapping (matches existing lookup table seeds):
 """
 from __future__ import annotations
 
+import os
 import secrets
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -24,11 +26,14 @@ from app.modules.groups.models import (
     Group,
     GroupActivityCache,
     GroupEmbedding,
+    GroupMedia,
     GroupMember,
 )
 from app.modules.groups.schemas import (
     GroupCreate,
     GroupListOut,
+    GroupMediaOut,
+    GroupMediaUploadOut,
     GroupMemberOut,
     GroupOut,
     GroupPermissionsUpdate,
@@ -36,6 +41,36 @@ from app.modules.groups.schemas import (
     GroupUpdate,
     InviteLinkOut,
 )
+from app.shared.utils.storage import (
+    ALLOWED_IMAGE_TYPES,
+    StorageError,
+    delete_object,
+    ext_for,
+    generate_signed_upload_url,
+    public_url,
+)
+
+_GROUP_IMAGE_BUCKET = os.environ.get("GROUP_IMAGE_BUCKET", "group-image")
+_GROUP_MEDIA_BUCKET = os.environ.get("GROUP_MEDIA_BUCKET", "group-media")
+
+ALLOWED_MEDIA_TYPES = ALLOWED_IMAGE_TYPES | frozenset({
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+})
+
+_MEDIA_TYPE_EXT = {
+    "video/mp4":       ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm":      ".webm",
+}
+
+_MEDIA_CATEGORY = {
+    **{t: "image" for t in ALLOWED_IMAGE_TYPES},
+    "video/mp4": "video",
+    "video/quicktime": "video",
+    "video/webm": "video",
+}
 from app.modules.groups.vector import (
     build_group_vector,
     build_match_reasons,
@@ -62,6 +97,9 @@ class GroupPermissionError(Exception):
     pass
 
 class GroupValidationError(Exception):
+    pass
+
+class GroupStorageError(Exception):
     pass
 
 
@@ -118,7 +156,7 @@ def _build_group_out(group: Group, membership: Optional[GroupMember]) -> GroupOu
         id=group.id,
         name=group.name,
         description=group.description,
-        icon_url=group.icon_url,
+        image_url=group.image_url,
         commodity=group.commodity or [],
         target_roles=group.target_roles or [],
         region_market=group.region_market,
@@ -180,6 +218,7 @@ def create_group(db: Session, user_id: UUID, payload: GroupCreate) -> GroupOut:
             name=payload.name.strip(),
             description=payload.description,
             group_rules=payload.group_rules,
+            image_url=payload.image_url,
             commodity=payload.commodities or [],
             target_roles=payload.target_roles or [],
             region_market=payload.region_market,
@@ -561,6 +600,11 @@ def get_group_suggestions(
     user_commodities = [pc.commodity.name.lower() for pc in profile.commodities]
     user_role = ROLE_ID_TO_NAME.get(profile.role_id, "trader")
 
+    if not profile.business:
+        raise GroupValidationError(
+            "Business profile not set up — complete onboarding to get group suggestions."
+        )
+
     want_vec = build_query_vector(
         commodity_list=user_commodities,
         role=user_role,
@@ -666,3 +710,151 @@ def get_group_suggestions(
         "limit": limit,
         "results": all_results[start : start + limit],
     }
+
+
+# ---------------------------------------------------------------------------
+# Group image upload (group-image bucket)
+# ---------------------------------------------------------------------------
+
+async def get_group_image_upload_url(user_id: UUID, content_type: str) -> dict:
+    """
+    Returns a signed upload URL for the group's cover image.
+    Flow: client PUTs image bytes to upload_url, then passes image_url
+    in GroupCreate.image_url when creating the group (or GroupUpdate.image_url
+    when updating).
+    """
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise GroupValidationError(
+            f"Unsupported type '{content_type}'. Allowed: image/jpeg, image/png, image/webp."
+        )
+
+    ext = ext_for(content_type)
+    path = f"{user_id}/{uuid.uuid4()}{ext}"
+
+    try:
+        result = await generate_signed_upload_url(_GROUP_IMAGE_BUCKET, path)
+    except StorageError as e:
+        raise GroupStorageError(str(e))
+
+    return {
+        **result,
+        "image_url": public_url(_GROUP_IMAGE_BUCKET, path),
+        "content_type": content_type,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group media upload (group-media bucket)
+# ---------------------------------------------------------------------------
+
+async def get_group_media_upload_url(
+    db: Session,
+    group_id: UUID,
+    user_id: UUID,
+    content_type: str,
+) -> GroupMediaUploadOut:
+    """
+    Creates a GroupMedia DB record and returns a signed upload URL.
+    Supported: image/jpeg, image/png, image/webp, video/mp4, video/quicktime, video/webm.
+    Only group members can upload media.
+    """
+    if content_type not in ALLOWED_MEDIA_TYPES:
+        raise GroupValidationError(
+            f"Unsupported type '{content_type}'. "
+            "Allowed: image/jpeg, image/png, image/webp, video/mp4, video/quicktime, video/webm."
+        )
+
+    _require_member(db, group_id, user_id)
+    _get_group_or_raise(db, group_id)
+
+    ext = _MEDIA_TYPE_EXT.get(content_type) or ext_for(content_type)
+    media_id = uuid.uuid4()
+    path = f"{group_id}/{media_id}{ext}"
+    media_category = _MEDIA_CATEGORY[content_type]
+
+    try:
+        result = await generate_signed_upload_url(_GROUP_MEDIA_BUCKET, path)
+    except StorageError as e:
+        raise GroupStorageError(str(e))
+
+    media_url = public_url(_GROUP_MEDIA_BUCKET, path)
+
+    record = GroupMedia(
+        id=media_id,
+        group_id=group_id,
+        uploaded_by=user_id,
+        media_url=media_url,
+        media_type=media_category,
+        storage_path=path,
+    )
+    db.add(record)
+    db.commit()
+
+    return GroupMediaUploadOut(
+        media_id=media_id,
+        upload_url=result["upload_url"],
+        media_url=media_url,
+        media_type=media_category,
+        expires_at=result["expires_at"],
+    )
+
+
+def list_group_media(
+    db: Session,
+    group_id: UUID,
+    user_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+) -> dict:
+    _get_group_or_raise(db, group_id)
+    _require_member(db, group_id, user_id)
+
+    total = db.query(GroupMedia).filter(GroupMedia.group_id == group_id).count()
+    items = (
+        db.query(GroupMedia)
+        .filter(GroupMedia.group_id == group_id)
+        .order_by(GroupMedia.uploaded_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "media": [GroupMediaOut.model_validate(m) for m in items],
+        "total": total,
+        "page": page,
+        "limit": limit,
+    }
+
+
+async def delete_group_media(
+    db: Session,
+    group_id: UUID,
+    media_id: UUID,
+    user_id: UUID,
+) -> None:
+    """Admin or the uploader can delete a media item."""
+    _get_group_or_raise(db, group_id)
+
+    record = (
+        db.query(GroupMedia)
+        .filter(GroupMedia.id == media_id, GroupMedia.group_id == group_id)
+        .first()
+    )
+    if not record:
+        raise GroupNotFoundError("Media not found")
+
+    membership = _get_membership(db, group_id, user_id)
+    is_admin = membership and membership.role == "admin"
+    is_uploader = record.uploaded_by == user_id
+
+    if not (is_admin or is_uploader):
+        raise GroupPermissionError("Only admins or the uploader can delete media")
+
+    try:
+        await delete_object(_GROUP_MEDIA_BUCKET, record.storage_path)
+    except StorageError:
+        pass  # best-effort — remove DB record regardless
+
+    db.delete(record)
+    db.commit()

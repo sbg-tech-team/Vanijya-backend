@@ -1,10 +1,11 @@
 """
-Groups & Management — 18 endpoints
+Groups & Management — 21 endpoints
 Base prefix: /api/v1/groups
 
 Route ordering:  specific paths before parameterised ones to avoid clashes.
-  /suggestions            before  /:id
-  /join-by-link/:token    before  /:id/...
+  /upload-image          before  /:id
+  /suggestions           before  /:id
+  /join-by-link/:token   before  /:id/...
 
 All mutating endpoints require a Bearer token; user identity is derived from
 the JWT via get_current_user_id — never from a client-supplied query param.
@@ -26,17 +27,22 @@ from app.modules.groups.service import (
     GroupConflictError,
     GroupNotFoundError,
     GroupPermissionError,
+    GroupStorageError,
     GroupValidationError,
     add_members,
     create_group,
     delete_group,
+    delete_group_media,
     get_group,
+    get_group_image_upload_url,
+    get_group_media_upload_url,
     get_group_suggestions,
     get_members,
     get_or_create_invite_link,
     join_by_invite_link,
     join_group,
     leave_group,
+    list_group_media,
     list_groups,
     remove_member,
     set_member_frozen,
@@ -66,7 +72,29 @@ def _handle(fn, *args, **kwargs):
         raise HTTPException(status_code=422, detail=str(e))
 
 
-# ── 1. GET /suggestions/:user_id ─────────────────────────────────────────────
+# ── 0a. POST /upload-image — get signed URL for group cover image ─────────────
+# Must be ABOVE /:id routes to prevent UUID path conflict.
+
+@router.post("/upload-image")
+async def group_image_upload_url_api(
+    user_id: UUID = Depends(get_current_user_id),
+    content_type: str = Query(..., description="image/jpeg | image/png | image/webp"),
+):
+    """
+    Step 1 — get a signed upload URL for the group cover image.
+    Step 2: PUT image bytes directly to upload_url (Content-Type must match).
+    Step 3: pass image_url in GroupCreate.image_url when creating the group.
+    """
+    try:
+        result = await get_group_image_upload_url(user_id, content_type)
+        return ok(result, "Group image upload URL generated")
+    except GroupValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except GroupStorageError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── 1. GET /suggestions ───────────────────────────────────────────────────────
 
 @router.get("/suggestions")
 def suggest_groups(
@@ -275,6 +303,68 @@ def favorite_group_api(
 ):
     result = _handle(toggle_favorite, db, group_id, user_id)
     return ok(result, "Favorite toggled")
+
+
+# ── 19. POST /:id/media/upload — get signed URL for group media ───────────────
+
+@router.post("/{group_id}/media/upload")
+async def group_media_upload_url_api(
+    group_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    content_type: str = Query(
+        ...,
+        description="image/jpeg | image/png | image/webp | video/mp4 | video/quicktime | video/webm",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Step 1 — get a signed upload URL for a group media file.
+    Creates the GroupMedia DB record immediately and returns media_id.
+    Step 2: PUT bytes directly to upload_url (Content-Type must match).
+    """
+    try:
+        result = await get_group_media_upload_url(db, group_id, user_id, content_type)
+        return ok(result, "Group media upload URL generated")
+    except GroupPermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except GroupNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except GroupValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except GroupStorageError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── 20. GET /:id/media — list media for a group ───────────────────────────────
+
+@router.get("/{group_id}/media")
+def list_group_media_api(
+    group_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    result = _handle(list_group_media, db, group_id, user_id, page=page, limit=limit)
+    return ok(result, "Group media fetched")
+
+
+# ── 21. DELETE /:id/media/:media_id — delete a media item ────────────────────
+
+@router.delete("/{group_id}/media/{media_id}")
+async def delete_group_media_api(
+    group_id: UUID,
+    media_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        await delete_group_media(db, group_id, media_id, user_id)
+    except GroupPermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except GroupNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ok(message="Media deleted")
 
 
 # ── 16. GET /:id/invite-link — get / generate invite link (admin only) ───────
