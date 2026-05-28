@@ -21,8 +21,9 @@ class GroupCreate(BaseModel):
     region_market: Optional[str] = None
     region_lat: Optional[float] = None
     region_lon: Optional[float] = None
+  
     # commodity_trading | news | network
-    category: Optional[str] = None
+    category: Optional[str] = None # there is no point of category 
     # public | private | invite_only
     accessibility: str = "public"
     # all_members | admins_only
@@ -67,6 +68,7 @@ class GroupOut(BaseModel):
     id: UUID
     name: str
     description: Optional[str] = None
+    group_rules: Optional[str] = None
     image_url: Optional[str] = None
     commodity: Optional[List[str]] = None
     target_roles: Optional[List[str]] = None
@@ -147,3 +149,39 @@ class GroupMediaUploadOut(BaseModel):
     media_url: str
     media_type: str
     expires_at: str
+
+
+class GroupJoinRequestOut(BaseModel):
+    id: UUID
+    group_id: UUID
+    user_id: UUID
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
+
+
+class GroupJoinRequestListOut(BaseModel):
+    requests: List[GroupJoinRequestOut]
+    total: int
+    page: int
+    limit: int
+
+
+class AdminPendingRequestOut(BaseModel):
+    id: UUID
+    group_id: UUID
+    group_name: str
+    user_id: UUID
+    status: str
+    created_at: datetime
+
+
+class AdminPendingRequestsListOut(BaseModel):
+    requests: List[AdminPendingRequestOut]
+    total: int
+    page: int
+    limit: int

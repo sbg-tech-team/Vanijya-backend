@@ -26,11 +26,14 @@ from app.modules.groups.models import (
     Group,
     GroupActivityCache,
     GroupEmbedding,
+    GroupJoinRequest,
     GroupMedia,
     GroupMember,
 )
 from app.modules.groups.schemas import (
     GroupCreate,
+    GroupJoinRequestListOut,
+    GroupJoinRequestOut,
     GroupListOut,
     GroupMediaOut,
     GroupMediaUploadOut,
@@ -149,6 +152,7 @@ def _require_member(db: Session, group_id: UUID, user_id: UUID) -> None:
     membership = _get_membership(db, group_id, user_id)
     if not membership:
         raise GroupPermissionError("Must be a group member")
+    
 
 
 def _build_group_out(group: Group, membership: Optional[GroupMember]) -> GroupOut:
@@ -156,13 +160,14 @@ def _build_group_out(group: Group, membership: Optional[GroupMember]) -> GroupOu
         id=group.id,
         name=group.name,
         description=group.description,
+        group_rules=group.group_rules,
         image_url=group.image_url,
         commodity=group.commodity or [],
         target_roles=group.target_roles or [],
         region_market=group.region_market,
         region_lat=group.region_lat,
         region_lon=group.region_lon,
-        category=group.category,
+        # category=group.category,
         accessibility=group.accessibility,
         posting_perm=group.posting_perm,
         chat_perm=group.chat_perm,
@@ -268,17 +273,28 @@ def list_groups(
     *,
     commodity: Optional[str] = None,
     accessibility: Optional[str] = None,
+    search: Optional[str] = None,
+    region_market: Optional[str] = None,
+    target_role: Optional[str] = None,
     page: int = 1,
     per_page: int = 20,
 ) -> GroupListOut:
     query = db.query(Group)
 
     if commodity:
-        # JSONB array containment: commodity @> '["sugar"]'
         query = query.filter(Group.commodity.contains([commodity]))
 
     if accessibility:
         query = query.filter(Group.accessibility == accessibility)
+
+    if search:
+        query = query.filter(Group.name.ilike(f"%{search}%"))
+
+    if region_market:
+        query = query.filter(Group.region_market.ilike(f"%{region_market}%"))
+
+    if target_role:
+        query = query.filter(Group.target_roles.contains([target_role]))
 
     total = query.count()
     groups = (
@@ -365,6 +381,28 @@ def join_group(db: Session, group_id: UUID, user_id: UUID) -> dict:
     if existing:
         raise GroupConflictError("Already a member of this group")
 
+    if group.accessibility == "private":
+        existing_req = (
+            db.query(GroupJoinRequest)
+            .filter(
+                GroupJoinRequest.group_id == group_id,
+                GroupJoinRequest.user_id == user_id,
+                GroupJoinRequest.status == "pending",
+            )
+            .first()
+        )
+        if existing_req:
+            raise GroupConflictError("Join request already pending for this group")
+
+        try:
+            db.add(GroupJoinRequest(group_id=group_id, user_id=user_id))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        return {"status": "pending", "message": "Join request sent. Waiting for admin approval."}
+
     try:
         db.add(GroupMember(group_id=group_id, user_id=user_id, role="member"))
         group.member_count += 1
@@ -373,7 +411,141 @@ def join_group(db: Session, group_id: UUID, user_id: UUID) -> dict:
         db.rollback()
         raise
 
-    return {"role": "member", "joined_at": datetime.now(timezone.utc).isoformat()}
+    return {"status": "joined", "role": "member", "joined_at": datetime.now(timezone.utc).isoformat()}
+
+
+# ---------------------------------------------------------------------------
+# Join request management (private groups)
+# ---------------------------------------------------------------------------
+
+def get_join_requests(
+    db: Session,
+    group_id: UUID,
+    user_id: UUID,
+    status: Optional[str] = "pending",
+    page: int = 1,
+    limit: int = 20,
+) -> GroupJoinRequestListOut:
+    _require_admin(db, group_id, user_id)
+    _get_group_or_raise(db, group_id)
+
+    query = db.query(GroupJoinRequest).filter(GroupJoinRequest.group_id == group_id)
+    if status:
+        query = query.filter(GroupJoinRequest.status == status)
+
+    total = query.count()
+    requests = (
+        query.order_by(GroupJoinRequest.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    return GroupJoinRequestListOut(
+        requests=[GroupJoinRequestOut.model_validate(r) for r in requests],
+        total=total,
+        page=page,
+        limit=limit,
+    )
+
+
+def resolve_join_request(
+    db: Session,
+    group_id: UUID,
+    request_id: UUID,
+    admin_id: UUID,
+    action: str,  # "approve" | "reject"
+) -> dict:
+    _require_admin(db, group_id, admin_id)
+    group = _get_group_or_raise(db, group_id)
+
+    req = (
+        db.query(GroupJoinRequest)
+        .filter(
+            GroupJoinRequest.id == request_id,
+            GroupJoinRequest.group_id == group_id,
+        )
+        .first()
+    )
+    if not req:
+        raise GroupNotFoundError("Join request not found")
+    if req.status != "pending":
+        raise GroupConflictError(f"Request already {req.status}")
+
+    req.status = "approved" if action == "approve" else "rejected"
+    req.resolved_at = datetime.now(timezone.utc)
+    req.resolved_by = admin_id
+
+    if action == "approve":
+        existing = _get_membership(db, group_id, req.user_id)
+        if not existing:
+            db.add(GroupMember(group_id=group_id, user_id=req.user_id, role="member"))
+            group.member_count += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"request_id": str(request_id), "status": req.status}
+
+
+def get_my_admin_pending_requests(
+    db: Session,
+    user_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+):
+    """
+    Returns all pending join requests across every group the caller admins.
+    Scoped entirely to user_id from JWT — no other user's data is ever returned.
+    """
+    from app.modules.groups.schemas import AdminPendingRequestOut, AdminPendingRequestsListOut
+
+    admin_group_ids = [
+        row.group_id
+        for row in db.query(GroupMember.group_id)
+        .filter(GroupMember.user_id == user_id, GroupMember.role == "admin")
+        .all()
+    ]
+
+    if not admin_group_ids:
+        return AdminPendingRequestsListOut(requests=[], total=0, page=page, limit=limit)
+
+    query = (
+        db.query(GroupJoinRequest, Group.name)
+        .join(Group, Group.id == GroupJoinRequest.group_id)
+        .filter(
+            GroupJoinRequest.group_id.in_(admin_group_ids),
+            GroupJoinRequest.status == "pending",
+        )
+    )
+
+    total = query.count()
+    rows = (
+        query.order_by(GroupJoinRequest.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    return AdminPendingRequestsListOut(
+        requests=[
+            AdminPendingRequestOut(
+                id=req.id,
+                group_id=req.group_id,
+                group_name=group_name,
+                user_id=req.user_id,
+                status=req.status,
+                created_at=req.created_at,
+            )
+            for req, group_name in rows
+        ],
+        total=total,
+        page=page,
+        limit=limit,
+    )
 
 
 def leave_group(db: Session, group_id: UUID, user_id: UUID) -> None:
@@ -417,14 +589,19 @@ def get_members(
 ) -> dict:
     _get_group_or_raise(db, group_id)
 
+    from sqlalchemy import case
+    total = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
     memberships = (
         db.query(GroupMember)
         .filter(GroupMember.group_id == group_id)
+        .order_by(
+            case((GroupMember.role == "admin", 0), else_=1),
+            GroupMember.joined_at.asc(),
+        )
         .offset((page - 1) * limit)
         .limit(limit)
         .all()
     )
-    total = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
 
     member_ids = [m.user_id for m in memberships]
     profiles = (

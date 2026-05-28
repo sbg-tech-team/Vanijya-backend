@@ -37,7 +37,9 @@ from app.modules.groups.service import (
     get_group_image_upload_url,
     get_group_media_upload_url,
     get_group_suggestions,
+    get_join_requests,
     get_members,
+    get_my_admin_pending_requests,
     get_or_create_invite_link,
     join_by_invite_link,
     join_group,
@@ -45,6 +47,7 @@ from app.modules.groups.service import (
     list_group_media,
     list_groups,
     remove_member,
+    resolve_join_request,
     set_member_frozen,
     toggle_favorite,
     toggle_mute,
@@ -112,8 +115,11 @@ def suggest_groups(
 @router.get("/")
 def list_groups_api(
     user_id: UUID = Depends(get_current_user_id),
-    commodity: str | None = Query(None),
-    accessibility: str | None = Query(None),
+    commodity: str | None = Query(None, description="Filter by commodity (e.g. sugar, rice)"),
+    accessibility: str | None = Query(None, description="public | private | invite_only"),
+    search: str | None = Query(None, description="Search by group name"),
+    region_market: str | None = Query(None, description="Filter by market/region name"),
+    target_role: str | None = Query(None, description="Filter by target role (trader | broker | exporter)"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -122,6 +128,9 @@ def list_groups_api(
         list_groups, db, user_id,
         commodity=commodity,
         accessibility=accessibility,
+        search=search,
+        region_market=region_market,
+        target_role=target_role,
         page=page,
         per_page=per_page,
     )
@@ -138,6 +147,20 @@ def create_group_api(
 ):
     result = _handle(create_group, db, user_id, payload)
     return ok(result, "Group created successfully")
+
+
+# ── GET /my-pending-requests — all pending join requests across admin's groups ─
+# Must be ABOVE /:id routes to prevent UUID path conflict.
+
+@router.get("/my-pending-requests")
+def my_pending_requests_api(
+    user_id: UUID = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    result = _handle(get_my_admin_pending_requests, db, user_id, page=page, limit=limit)
+    return ok(result, "Pending join requests fetched")
 
 
 # ── 17. POST /join-by-link/:token — join via invite token ────────────────────
@@ -165,7 +188,7 @@ def get_group_api(
     return ok(result, "Group fetched")
 
 
-# ── 5. PATCH /:id — update group info (admin only) ───────────────────────────
+# ── 5. PATCH /:id — update g/roup info (admin only) ───────────────────────────
 
 @router.patch("/{group_id}")
 def update_group_api(
@@ -393,3 +416,46 @@ def report_group_api(
         {"group_id": str(group_id), "reason": payload.reason, "status": "submitted"},
         "Report submitted — our team will review it",
     )
+
+
+# ── Join requests (private groups) ───────────────────────────────────────────
+
+# ── GET /:id/join-requests — admin views pending/all requests ─────────────────
+
+@router.get("/{group_id}/join-requests")
+def list_join_requests_api(
+    group_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    status: str | None = Query("pending", description="pending | approved | rejected"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    result = _handle(get_join_requests, db, group_id, user_id, status=status, page=page, limit=limit)
+    return ok(result, "Join requests fetched")
+
+
+# ── POST /:id/join-requests/:request_id/approve ───────────────────────────────
+
+@router.post("/{group_id}/join-requests/{request_id}/approve")
+def approve_join_request_api(
+    group_id: UUID,
+    request_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = _handle(resolve_join_request, db, group_id, request_id, user_id, "approve")
+    return ok(result, "Join request approved")
+
+
+# ── POST /:id/join-requests/:request_id/reject ────────────────────────────────
+
+@router.post("/{group_id}/join-requests/{request_id}/reject")
+def reject_join_request_api(
+    group_id: UUID,
+    request_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = _handle(resolve_join_request, db, group_id, request_id, user_id, "reject")
+    return ok(result, "Join request rejected")
