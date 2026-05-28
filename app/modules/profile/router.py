@@ -18,6 +18,7 @@ from app.modules.profile.service import (
     create_profile,
     get_my_profile,
     get_profile_by_id,
+    get_profile_by_user_id,
     delete_profile,
     delete_user,
     update_profile,
@@ -230,6 +231,26 @@ def get_profile_api(
         return RedirectResponse(url="/profile/me", status_code=307)
     try:
         result = get_profile_by_id(db, profile_id, viewer_user_id=cu.user_id)
+        return ok(result, "Profile fetched successfully")
+    except ProfileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Public profile view by user UUID — JWT protected
+# Self-view redirects to /profile/me
+# ---------------------------------------------------------------------------
+
+@router.get("/by-user/{user_id}")
+def get_profile_by_user_api(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+):
+    if cu.user_id == user_id:
+        return RedirectResponse(url="/profile/me", status_code=307)
+    try:
+        result = get_profile_by_user_id(db, user_id, viewer_user_id=cu.user_id)
         return ok(result, "Profile fetched successfully")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

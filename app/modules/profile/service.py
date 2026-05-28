@@ -466,7 +466,66 @@ def get_profile_by_id(
     )
 
 
-# ---------------------------------------------------------------------------
+def get_profile_by_user_id(
+    db: Session, user_id: UUID, viewer_user_id: UUID | None = None
+) -> ProfilePublicResponse:
+    profile = (
+        db.query(Profile)
+        .options(
+            joinedload(Profile.business),
+            joinedload(Profile.commodities).joinedload(Profile_Commodity.commodity),
+        )
+        .filter(Profile.users_id == user_id)
+        .first()
+    )
+    if not profile:
+        raise ProfileNotFoundError("Profile not found")
+
+    posts_count = (
+        db.query(func.count(Post.id)).filter(Post.profile_id == profile.id).scalar() or 0
+    )
+
+    is_following = False
+    message_request_status = None
+    if viewer_user_id and viewer_user_id != user_id:
+        is_following = db.query(UserConnection).filter(
+            UserConnection.follower_id == viewer_user_id,
+            UserConnection.following_id == user_id,
+        ).first() is not None
+
+        msg_req = db.query(MessageRequest).filter(
+            (
+                (MessageRequest.sender_id == viewer_user_id) &
+                (MessageRequest.receiver_id == user_id)
+            ) | (
+                (MessageRequest.sender_id == user_id) &
+                (MessageRequest.receiver_id == viewer_user_id)
+            )
+        ).first()
+        if msg_req:
+            message_request_status = msg_req.status
+
+    return ProfilePublicResponse(
+        id=profile.id,
+        name=profile.name,
+        role_id=profile.role_id,
+        is_user_verified=profile.is_user_verified,
+        is_business_verified=profile.is_business_verified,
+        commodities=[CommodityOut.model_validate(pc.commodity) for pc in profile.commodities],
+        followers_count=profile.followers_count,
+        following_count=profile.following_count,
+        posts_count=posts_count,
+        business_name=profile.business.business_name,
+        city=profile.business.city,
+        state=profile.business.state,
+        latitude=profile.business.latitude,
+        longitude=profile.business.longitude,
+        avatar_url=profile.avatar_url,
+        is_following=is_following,
+        message_request_status=message_request_status,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Avatar upload
 # ---------------------------------------------------------------------------
