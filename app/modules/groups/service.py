@@ -12,6 +12,7 @@ Role mapping (matches existing lookup table seeds):
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -85,6 +86,60 @@ from app.modules.connections.encoding.vector import build_query_vector
 # role_id → string name used in vector encoding
 ROLE_ID_TO_NAME = {1: "trader", 2: "broker", 3: "exporter"}
 TOP_K = 20
+
+# ---------------------------------------------------------------------------
+# Group search intent parsing
+# ---------------------------------------------------------------------------
+
+_KNOWN_ROLES       = {"trader", "broker", "exporter"}
+_ROLE_PLURAL       = {"traders": "trader", "brokers": "broker", "exporters": "exporter"}
+_REGION_PATTERN    = re.compile(r'\b(?:in|from|at)\s+(\w+)', re.IGNORECASE)
+_STOP_WORDS        = {"groups", "group", "for", "the", "a", "an", "and", "of", "about"}
+
+
+def _parse_group_search_intent(q: str) -> dict:
+    """
+    Extract target_role, commodity, region_market, and remaining name tokens
+    from a free-text group search query.
+
+    Examples
+    --------
+    "groups for traders"          → target_role="trader"
+    "rice traders in mumbai"      → commodity="rice", target_role="trader", region_market="mumbai"
+    "wheat exporters"             → commodity="wheat", target_role="exporter"
+    "cotton trading groups"       → commodity="cotton"
+    "brokers from delhi"          → target_role="broker", region_market="delhi"
+    """
+    from app.modules.connections.service import _KNOWN_COMMODITIES  # reuse same commodity list
+
+    tokens = q.lower().split()
+    target_role, commodity, region_market = None, None, None
+    skip: set[str] = set()
+
+    region_match = _REGION_PATTERN.search(q)
+    if region_match:
+        region_market = region_match.group(1).lower()
+        skip.update(region_match.group(0).lower().split())
+
+    remaining = []
+    for token in tokens:
+        if token in skip or token in _STOP_WORDS:
+            continue
+        normalized = _ROLE_PLURAL.get(token, token)
+        if normalized in _KNOWN_ROLES:
+            target_role = normalized
+        elif token in _KNOWN_COMMODITIES:
+            commodity = token
+        else:
+            remaining.append(token)
+
+    return {
+        "target_role":    target_role,
+        "commodity":      commodity,
+        "region_market":  region_market,
+        "name_q":         " ".join(remaining) or None,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -279,6 +334,15 @@ def list_groups(
     page: int = 1,
     per_page: int = 20,
 ) -> GroupListOut:
+    # Smart intent parsing — only when search is the sole filter provided
+    name_q = search
+    if search and not any([commodity, target_role, region_market]):
+        intent = _parse_group_search_intent(search)
+        target_role   = intent["target_role"]
+        commodity     = intent["commodity"]
+        region_market = intent["region_market"]
+        name_q        = intent["name_q"]   # leftover tokens become name search
+
     query = db.query(Group)
 
     if commodity:
@@ -287,8 +351,8 @@ def list_groups(
     if accessibility:
         query = query.filter(Group.accessibility == accessibility)
 
-    if search:
-        query = query.filter(Group.name.ilike(f"%{search}%"))
+    if name_q:
+        query = query.filter(Group.name.ilike(f"%{name_q}%"))
 
     if region_market:
         query = query.filter(Group.region_market.ilike(f"%{region_market}%"))

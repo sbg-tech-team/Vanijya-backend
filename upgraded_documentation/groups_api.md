@@ -324,18 +324,46 @@ List groups with optional filters. Caller's membership context is included in ea
 
 | Query Param | Required | Type | Default | Description |
 |---|---|---|---|---|
-| `commodity` | No | string | — | Filter by commodity (exact match, e.g. `rice`) |
+| `search` | No | string | — | Smart free-text search — see intent parsing below |
+| `commodity` | No | string | — | Explicit commodity filter (e.g. `rice`) |
 | `accessibility` | No | string | — | `public` \| `private` \| `invite_only` |
-| `search` | No | string | — | Search by group name (case-insensitive, partial match) |
-| `region_market` | No | string | — | Filter by market/region name (partial match) |
-| `target_role` | No | string | — | Filter groups targeting a role (`trader` \| `broker` \| `exporter`) |
+| `region_market` | No | string | — | Explicit market/region filter (partial match) |
+| `target_role` | No | string | — | Explicit role filter (`trader` \| `broker` \| `exporter`) |
 | `page` | No | int | `1` | Page number (1-based) |
 | `per_page` | No | int | `20` | Results per page (max 100) |
 
+#### Smart search intent parsing
+
+When `search` is provided **and none of `commodity`, `target_role`, `region_market` are explicitly set**, the backend parses the intent automatically from the free text:
+
+| What it detects | How |
+|---|---|
+| Target role | Token matches `trader`, `broker`, `exporter` (or plural form) |
+| Commodity | Token matches a known commodity: `rice`, `wheat`, `cotton`, `sugar`, etc. |
+| Region/market | Looks for `in <word>`, `from <word>`, or `at <word>` pattern |
+| Group name | Any remaining tokens after the above are extracted become a name `ILIKE` filter |
+
+Stop words (`groups`, `group`, `for`, `the`, `a`, `an`, `and`, `of`, `about`) are dropped and never used as name search terms.
+
+**Explicit params always take priority** — if `target_role=broker` is passed alongside `search`, the role inside `search` is ignored and `broker` is used.
+
+**Smart search examples:**
+
+| `search` value | Resolved as |
+|---|---|
+| `groups for traders` | `target_role=trader` |
+| `rice traders in mumbai` | `commodity=rice`, `target_role=trader`, `region_market=mumbai` |
+| `wheat exporters` | `commodity=wheat`, `target_role=exporter` |
+| `brokers from delhi` | `target_role=broker`, `region_market=delhi` |
+| `cotton groups` | `commodity=cotton` |
+| `sunrise traders` | name ILIKE `%sunrise traders%` |
+
 **Examples:**
 ```
+GET /api/v1/groups/?search=groups+for+traders
+GET /api/v1/groups/?search=rice+traders+in+mumbai
+GET /api/v1/groups/?search=wheat+exporters
 GET /api/v1/groups/?commodity=rice&accessibility=public
-GET /api/v1/groups/?search=wheat&region_market=Mumbai
 GET /api/v1/groups/?target_role=exporter&page=2
 Authorization: Bearer <access_token>
 ```
