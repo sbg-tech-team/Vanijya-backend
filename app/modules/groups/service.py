@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.profile.models import Business, Profile, Profile_Commodity, Role
@@ -352,13 +352,25 @@ def list_groups(
         query = query.filter(Group.accessibility == accessibility)
 
     if name_q:
-        query = query.filter(Group.name.ilike(f"%{name_q}%"))
+        # search group name AND region_market so bare city names (e.g. "nagpur") hit both
+        query = query.filter(
+            or_(
+                Group.name.ilike(f"%{name_q}%"),
+                Group.region_market.ilike(f"%{name_q}%"),
+            )
+        )
 
     if region_market:
         query = query.filter(Group.region_market.ilike(f"%{region_market}%"))
 
     if target_role:
-        query = query.filter(Group.target_roles.contains([target_role]))
+        # JSONB contains is case-sensitive; also match groups whose name contains the role word
+        query = query.filter(
+            or_(
+                Group.target_roles.contains([target_role]),
+                Group.name.ilike(f"%{target_role}%"),
+            )
+        )
 
     total = query.count()
     groups = (
