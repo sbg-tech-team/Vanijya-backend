@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
@@ -146,6 +146,43 @@ class GroupMedia(Base):
     )
 
     group: Mapped["Group"] = relationship("Group", back_populates="media")
+
+
+class GroupDeal(Base):
+    """Deal/Requirement post scoped to a group. Mirrors PostDealDetails fields for clean future extraction."""
+    __tablename__ = "group_deals"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False
+    )
+    posted_by: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    commodity_id: Mapped[int] = mapped_column(Integer, ForeignKey("commodities.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200))
+    caption: Mapped[str] = mapped_column(Text)
+    grain_type: Mapped[str] = mapped_column(String(50))
+    grain_size: Mapped[str] = mapped_column(String(50))
+    commodity_quantity: Mapped[float] = mapped_column(Numeric(12, 2))
+    quantity_unit: Mapped[str] = mapped_column(String(20))   # MT | quintal
+    commodity_price: Mapped[float] = mapped_column(Numeric(12, 2))
+    price_type: Mapped[str] = mapped_column(String(20))      # fixed | negotiable
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NULL until author promotes the deal to their public feed
+    post_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class GroupJoinRequest(Base):

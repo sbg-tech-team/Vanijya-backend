@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -182,6 +182,68 @@ class AdminPendingRequestOut(BaseModel):
 
 class AdminPendingRequestsListOut(BaseModel):
     requests: List[AdminPendingRequestOut]
+    total: int
+    page: int
+    limit: int
+
+
+# ---------------------------------------------------------------------------
+# Group Deal schemas
+# ---------------------------------------------------------------------------
+
+class GroupDealCreate(BaseModel):
+    commodity_id: int
+    title: str = Field(..., min_length=1, max_length=200)
+    caption: str = Field(..., min_length=1)
+    grain_type: str
+    grain_size: str
+    commodity_quantity: float
+    quantity_unit: Literal["MT", "quintal"]
+    commodity_price: float
+    price_type: Literal["fixed", "negotiable"]
+    publish_to_feed: bool = False
+    feed_is_public: bool = True
+
+
+class GroupDealUpdate(BaseModel):
+    title: Optional[str] = Field(None, max_length=200)
+    caption: Optional[str] = None
+    grain_type: Optional[str] = None
+    grain_size: Optional[str] = None
+    commodity_quantity: Optional[float] = None
+    quantity_unit: Optional[Literal["MT", "quintal"]] = None
+    commodity_price: Optional[float] = None
+    price_type: Optional[Literal["fixed", "negotiable"]] = None
+
+
+class GroupDealResponse(BaseModel):
+    id: UUID
+    group_id: UUID
+    posted_by: UUID
+    commodity_id: int
+    title: str
+    caption: str
+    grain_type: str
+    grain_size: str
+    commodity_quantity: float
+    quantity_unit: str
+    commodity_price: float
+    price_type: str
+    is_closed: bool
+    post_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GroupDealPublishRequest(BaseModel):
+    is_public: bool = True
+
+
+class GroupDealListOut(BaseModel):
+    deals: List[GroupDealResponse]
     total: int
     page: int
     limit: int

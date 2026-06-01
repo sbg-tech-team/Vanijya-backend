@@ -26,6 +26,7 @@ from app.modules.profile.models import Business, Profile, Profile_Commodity, Rol
 from app.modules.groups.models import (
     Group,
     GroupActivityCache,
+    GroupDeal,
     GroupEmbedding,
     GroupJoinRequest,
     GroupMedia,
@@ -33,6 +34,10 @@ from app.modules.groups.models import (
 )
 from app.modules.groups.schemas import (
     GroupCreate,
+    GroupDealCreate,
+    GroupDealListOut,
+    GroupDealResponse,
+    GroupDealUpdate,
     GroupJoinRequestListOut,
     GroupJoinRequestOut,
     GroupListOut,
@@ -1111,3 +1116,276 @@ async def delete_group_media(
 
     db.delete(record)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Group Deals
+# ---------------------------------------------------------------------------
+
+def _deal_to_response(deal: GroupDeal) -> GroupDealResponse:
+    return GroupDealResponse(
+        id=deal.id,
+        group_id=deal.group_id,
+        posted_by=deal.posted_by,
+        commodity_id=deal.commodity_id,
+        title=deal.title,
+        caption=deal.caption,
+        grain_type=deal.grain_type,
+        grain_size=deal.grain_size,
+        commodity_quantity=float(deal.commodity_quantity),
+        quantity_unit=deal.quantity_unit,
+        commodity_price=float(deal.commodity_price),
+        price_type=deal.price_type,
+        is_closed=deal.is_closed,
+        post_id=deal.post_id,
+        created_at=deal.created_at,
+        updated_at=deal.updated_at,
+    )
+
+
+def _create_post_from_deal(db: Session, deal: GroupDeal, profile_id: int, is_public: bool):
+    """Insert a Post + PostDealDetails snapshot and index it for the rec engine."""
+    from app.modules.post.models import Post, PostDealDetails, CATEGORY_DEAL
+    from app.modules.post.post_recommendation_module import service as rec_service
+    from app.modules.profile.models import Profile
+
+    post = Post(
+        profile_id=profile_id,
+        category_id=CATEGORY_DEAL,
+        commodity_id=deal.commodity_id,
+        title=deal.title,
+        caption=deal.caption,
+        is_public=is_public,
+    )
+    db.add(post)
+    db.flush()  # get post.id
+
+    details = PostDealDetails(
+        post_id=post.id,
+        grain_type=deal.grain_type,
+        grain_size=deal.grain_size,
+        commodity_quantity=float(deal.commodity_quantity),
+        quantity_unit=deal.quantity_unit,
+        commodity_price=float(deal.commodity_price),
+        price_type=deal.price_type,
+        is_closed=deal.is_closed,
+    )
+    db.add(details)
+    db.flush()
+
+    # resolve location for rec vector
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    lat, lon = 0.0, 0.0
+    if profile and profile.business:
+        lat = float(profile.business.latitude or 0.0)
+        lon = float(profile.business.longitude or 0.0)
+
+    try:
+        rec_service.index_post(
+            db=db,
+            post_id=post.id,
+            commodity_id=post.commodity_id,
+            target_role_ids=None,
+            lat=lat,
+            lon=lon,
+            category_id=CATEGORY_DEAL,
+            commodity_quantity=float(deal.commodity_quantity),
+        )
+    except Exception:
+        pass  # embedding failure must never break deal publishing
+
+    return post
+
+
+def _insert_deal_chat_card(db: Session, deal: GroupDeal) -> None:
+    """Drop a system card into the group chat so members see the new deal."""
+    from app.modules.chat.data.models import Message
+    msg = Message(
+        context_type="group",
+        context_id=deal.group_id,
+        sender_id=deal.posted_by,
+        message_type="deal",
+        media_metadata={
+            "group_deal_id": str(deal.id),
+            "title": deal.title,
+            "commodity_id": deal.commodity_id,
+        },
+    )
+    db.add(msg)
+
+
+def create_group_deal(
+    db: Session,
+    group_id: UUID,
+    user_id: UUID,
+    profile_id: int,
+    payload: GroupDealCreate,
+) -> GroupDealResponse:
+    group = _get_group_or_raise(db, group_id)
+    member = _get_membership(db, group_id, user_id)
+    if not member:
+        raise GroupPermissionError("Must be a group member to post deals")
+    if group.posting_perm == "admins_only" and member.role != "admin":
+        raise GroupPermissionError("Only admins can post deals in this group")
+    if member.is_frozen:
+        raise GroupPermissionError("Your posting access has been frozen by an admin")
+
+    try:
+        deal = GroupDeal(
+            group_id=group_id,
+            posted_by=user_id,
+            commodity_id=payload.commodity_id,
+            title=payload.title.strip(),
+            caption=payload.caption.strip(),
+            grain_type=payload.grain_type,
+            grain_size=payload.grain_size,
+            commodity_quantity=payload.commodity_quantity,
+            quantity_unit=payload.quantity_unit,
+            commodity_price=payload.commodity_price,
+            price_type=payload.price_type,
+        )
+        db.add(deal)
+        db.flush()
+
+        _insert_deal_chat_card(db, deal)
+
+        if payload.publish_to_feed:
+            post = _create_post_from_deal(db, deal, profile_id, payload.feed_is_public)
+            deal.post_id = post.id
+
+        db.commit()
+        db.refresh(deal)
+    except (GroupPermissionError, GroupNotFoundError):
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    return _deal_to_response(deal)
+
+
+def list_group_deals(
+    db: Session,
+    group_id: UUID,
+    user_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+) -> GroupDealListOut:
+    _get_group_or_raise(db, group_id)
+    _require_member(db, group_id, user_id)
+
+    total = db.query(GroupDeal).filter(GroupDeal.group_id == group_id).count()
+    deals = (
+        db.query(GroupDeal)
+        .filter(GroupDeal.group_id == group_id)
+        .order_by(GroupDeal.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return GroupDealListOut(
+        deals=[_deal_to_response(d) for d in deals],
+        total=total,
+        page=page,
+        limit=limit,
+    )
+
+
+def get_group_deal(db: Session, group_id: UUID, deal_id: UUID, user_id: UUID) -> GroupDealResponse:
+    _get_group_or_raise(db, group_id)
+    _require_member(db, group_id, user_id)
+    deal = (
+        db.query(GroupDeal)
+        .filter(GroupDeal.id == deal_id, GroupDeal.group_id == group_id)
+        .first()
+    )
+    if not deal:
+        raise GroupNotFoundError("Deal not found")
+    return _deal_to_response(deal)
+
+
+def update_group_deal(
+    db: Session,
+    group_id: UUID,
+    deal_id: UUID,
+    user_id: UUID,
+    payload: GroupDealUpdate,
+) -> GroupDealResponse:
+    _get_group_or_raise(db, group_id)
+    deal = (
+        db.query(GroupDeal)
+        .filter(GroupDeal.id == deal_id, GroupDeal.group_id == group_id)
+        .first()
+    )
+    if not deal:
+        raise GroupNotFoundError("Deal not found")
+    if deal.posted_by != user_id:
+        raise GroupPermissionError("Only the author can edit this deal")
+    if deal.is_closed:
+        raise GroupPermissionError("Closed deals cannot be edited")
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(deal, field, value)
+    deal.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(deal)
+    return _deal_to_response(deal)
+
+
+def close_group_deal(db: Session, group_id: UUID, deal_id: UUID, user_id: UUID) -> GroupDealResponse:
+    _get_group_or_raise(db, group_id)
+    deal = (
+        db.query(GroupDeal)
+        .filter(GroupDeal.id == deal_id, GroupDeal.group_id == group_id)
+        .first()
+    )
+    if not deal:
+        raise GroupNotFoundError("Deal not found")
+    if deal.posted_by != user_id:
+        raise GroupPermissionError("Only the author can close this deal")
+
+    deal.is_closed = not deal.is_closed
+    deal.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(deal)
+    return _deal_to_response(deal)
+
+
+def publish_group_deal(
+    db: Session,
+    group_id: UUID,
+    deal_id: UUID,
+    user_id: UUID,
+    profile_id: int,
+    is_public: bool = True,
+) -> GroupDealResponse:
+    _get_group_or_raise(db, group_id)
+    deal = (
+        db.query(GroupDeal)
+        .filter(GroupDeal.id == deal_id, GroupDeal.group_id == group_id)
+        .first()
+    )
+    if not deal:
+        raise GroupNotFoundError("Deal not found")
+    if deal.posted_by != user_id:
+        raise GroupPermissionError("Only the author can publish this deal")
+    if deal.post_id is not None:
+        raise GroupConflictError("Deal has already been published to the feed")
+
+    try:
+        post = _create_post_from_deal(db, deal, profile_id, is_public)
+        deal.post_id = post.id
+        deal.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(deal)
+    except (GroupPermissionError, GroupNotFoundError, GroupConflictError):
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    return _deal_to_response(deal)

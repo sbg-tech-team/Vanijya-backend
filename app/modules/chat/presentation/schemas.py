@@ -13,7 +13,7 @@ class OpenChatRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     body: Optional[str] = Field(None, max_length=4000)
-    message_type: str = Field("text", pattern="^(text|image|video|document|audio|location|system|post|news|user)$")
+    message_type: str = Field("text", pattern="^(text|image|video|document|audio|location|system|post|news|user|deal)$")
     media_url: Optional[str] = Field(None, max_length=500)
     media_metadata: Optional[dict] = None
     location_lat: Optional[float] = None
@@ -23,7 +23,7 @@ class SendMessageRequest(BaseModel):
 
 class GroupMessageRequest(BaseModel):
     body: Optional[str] = Field(None, max_length=4000)
-    message_type: str = Field("text", pattern="^(text|image|video|document|audio|location|system|post|news|user)$")
+    message_type: str = Field("text", pattern="^(text|image|video|document|audio|location|system|post|news|user|deal)$")
     media_url: Optional[str] = Field(None, max_length=500)
     media_metadata: Optional[dict] = None
     reply_to_id: Optional[UUID] = None

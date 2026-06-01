@@ -15,10 +15,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user_id, get_db
+from app.dependencies import get_current_user, get_current_user_id, get_db
 from app.modules.groups.schemas import (
     AddMembersRequest,
     GroupCreate,
+    GroupDealCreate,
+    GroupDealPublishRequest,
+    GroupDealUpdate,
     GroupPermissionsUpdate,
     GroupUpdate,
     ReportGroupRequest,
@@ -30,10 +33,13 @@ from app.modules.groups.service import (
     GroupStorageError,
     GroupValidationError,
     add_members,
+    close_group_deal,
     create_group,
+    create_group_deal,
     delete_group,
     delete_group_media,
     get_group,
+    get_group_deal,
     get_group_image_upload_url,
     get_group_media_upload_url,
     get_group_suggestions,
@@ -44,14 +50,17 @@ from app.modules.groups.service import (
     join_by_invite_link,
     join_group,
     leave_group,
+    list_group_deals,
     list_group_media,
     list_groups,
+    publish_group_deal,
     remove_member,
     resolve_join_request,
     set_member_frozen,
     toggle_favorite,
     toggle_mute,
     update_group,
+    update_group_deal,
     update_permissions,
 )
 from app.shared.utils.response import ok
@@ -416,6 +425,82 @@ def report_group_api(
         {"group_id": str(group_id), "reason": payload.reason, "status": "submitted"},
         "Report submitted — our team will review it",
     )
+
+
+# ── Group Deals ──────────────────────────────────────────────────────────────
+
+@router.post("/{group_id}/deals", status_code=201)
+def create_deal_api(
+    group_id: UUID,
+    payload: GroupDealCreate,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    result = _handle(
+        create_group_deal, db, group_id, current_user.user_id, current_user.profile_id, payload
+    )
+    return ok(result, "Deal created")
+
+
+@router.get("/{group_id}/deals")
+def list_deals_api(
+    group_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    result = _handle(list_group_deals, db, group_id, user_id, page=page, limit=limit)
+    return ok(result, "Deals fetched")
+
+
+@router.get("/{group_id}/deals/{deal_id}")
+def get_deal_api(
+    group_id: UUID,
+    deal_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = _handle(get_group_deal, db, group_id, deal_id, user_id)
+    return ok(result, "Deal fetched")
+
+
+@router.patch("/{group_id}/deals/{deal_id}")
+def update_deal_api(
+    group_id: UUID,
+    deal_id: UUID,
+    payload: GroupDealUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = _handle(update_group_deal, db, group_id, deal_id, user_id, payload)
+    return ok(result, "Deal updated")
+
+
+@router.post("/{group_id}/deals/{deal_id}/close")
+def close_deal_api(
+    group_id: UUID,
+    deal_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = _handle(close_group_deal, db, group_id, deal_id, user_id)
+    return ok(result, "Deal closed status toggled")
+
+
+@router.post("/{group_id}/deals/{deal_id}/publish")
+def publish_deal_api(
+    group_id: UUID,
+    deal_id: UUID,
+    payload: GroupDealPublishRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    result = _handle(
+        publish_group_deal,
+        db, group_id, deal_id, current_user.user_id, current_user.profile_id, payload.is_public,
+    )
+    return ok(result, "Deal published to feed")
 
 
 # ── Join requests (private groups) ───────────────────────────────────────────

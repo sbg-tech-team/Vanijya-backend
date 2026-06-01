@@ -1,6 +1,6 @@
 # Groups Module — Developer Guide
 
-A complete reference for group creation, membership management, join requests, permissions, invites, media uploads, and vector-based group suggestions.
+A complete reference for group creation, membership management, join requests, permissions, invites, media uploads, vector-based group suggestions, and group deal/requirement posts.
 
 **Base URL:** `https://vanijyaa-backend.onrender.com`
 
@@ -23,8 +23,9 @@ A complete reference for group creation, membership management, join requests, p
 11. [Utility APIs](#11-utility-apis)
 12. [Media APIs](#12-media-apis)
 13. [Suggestion API](#13-suggestion-api)
-14. [Shared Objects](#14-shared-objects)
-15. [Error Reference](#15-error-reference)
+14. [Group Deal APIs](#14-group-deal-apis)
+15. [Shared Objects](#15-shared-objects)
+16. [Error Reference](#16-error-reference)
 
 ---
 
@@ -41,6 +42,7 @@ The groups module handles:
 - **Media** — upload and list images/videos inside a group.
 - **Suggestions** — vector-based group recommendations using pgvector cosine ANN search.
 - **Utility** — mute, favourite, report.
+- **Group Deals** — members can post Deal/Requirement cards scoped to the group, with optional promotion to the public feed.
 
 ---
 
@@ -157,15 +159,40 @@ Denormalised activity counters updated by background cron.
 | `storage_path` | VARCHAR(500) | Internal Supabase path |
 | `uploaded_at` | DATETIME | |
 
+### `group_deals`
+
+Group-scoped Deal/Requirement posts. Visible only to group members unless promoted to the public feed.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | Auto-generated |
+| `group_id` | UUID FK → groups.id CASCADE | Deleted with the group |
+| `posted_by` | UUID FK → users.id RESTRICT | Author — cannot be deleted while deals exist |
+| `commodity_id` | INT FK → commodities.id | |
+| `title` | VARCHAR(200) | Required |
+| `caption` | TEXT | Required |
+| `grain_type` | VARCHAR(50) | e.g. `"raw"`, `"processed"` |
+| `grain_size` | VARCHAR(50) | e.g. `"medium"`, `"fine"` |
+| `commodity_quantity` | NUMERIC(12,2) | |
+| `quantity_unit` | VARCHAR(20) | `MT` \| `quintal` |
+| `commodity_price` | NUMERIC(12,2) | |
+| `price_type` | VARCHAR(20) | `fixed` \| `negotiable` |
+| `is_closed` | BOOL | Default `false` — toggled by author |
+| `post_id` | INT FK → posts.id SET NULL | `null` until promoted to public feed |
+| `created_at` | DATETIME | |
+| `updated_at` | DATETIME | Updated on every edit or close toggle |
+
+Indexes: `(group_id, created_at)` for listing, `(posted_by)` for author lookup, `(post_id)` for promotion status.
+
 ---
 
 ## 5. File Structure
 
 ```
 app/modules/groups/
-  models.py    ← SQLAlchemy ORM (Group, GroupMember, GroupJoinRequest, GroupEmbedding, GroupActivityCache, GroupMedia)
-  schemas.py   ← Pydantic DTOs (GroupCreate, GroupOut, GroupMemberOut, GroupJoinRequestOut, ...)
-  service.py   ← All business logic
+  models.py    ← SQLAlchemy ORM (Group, GroupMember, GroupJoinRequest, GroupEmbedding, GroupActivityCache, GroupMedia, GroupDeal)
+  schemas.py   ← Pydantic DTOs (GroupCreate, GroupOut, GroupMemberOut, GroupJoinRequestOut, GroupDealCreate, GroupDealResponse, ...)
+  service.py   ← All business logic (includes group deal + publish-to-feed helpers)
   router.py    ← FastAPI route handlers
   vector.py    ← Group embedding builder + match-reason logic
 ```
@@ -207,6 +234,12 @@ All endpoints require `Authorization: Bearer <access_token>`.
 | `POST` | `/{group_id}/media/upload` | Group member | Get signed upload URL for group media |
 | `GET` | `/{group_id}/media` | Group member | List media in a group |
 | `DELETE` | `/{group_id}/media/{media_id}` | Admin or uploader | Delete a media item |
+| `POST` | `/{group_id}/deals` | Member + posting perm + not frozen | Create a group deal — **201** |
+| `GET` | `/{group_id}/deals` | Group member | List all deals in the group |
+| `GET` | `/{group_id}/deals/{deal_id}` | Group member | Get a single deal card |
+| `PATCH` | `/{group_id}/deals/{deal_id}` | Author only, deal not closed | Update deal fields |
+| `POST` | `/{group_id}/deals/{deal_id}/close` | Author only | Toggle `is_closed` |
+| `POST` | `/{group_id}/deals/{deal_id}/publish` | Author only, not yet published | Promote deal to public feed |
 
 ---
 
@@ -1059,7 +1092,228 @@ Returns paginated group recommendations using **pgvector HNSW cosine ANN search*
 
 ---
 
-## 14. Shared Objects
+## 14. Group Deal APIs
+
+Group deals are Deal/Requirement posts that live inside a group. They appear in the **group chat** as a special `"deal"` message card (visible only to members). The author can optionally promote a deal to their **public feed**, which creates an independent `Post` entry — the group deal and its public counterpart then have separate lifecycles.
+
+### Permission rules
+
+| Condition | Result |
+|---|---|
+| User is not a group member | `403` |
+| Group `posting_perm = admins_only` and caller is not admin | `403` |
+| Caller's `is_frozen = true` | `403` |
+
+---
+
+### `POST /api/v1/groups/{group_id}/deals`
+
+Create a group deal. **Requires posting permission (see above).** Returns **201**.
+
+Optionally publish to the public feed in the same request by setting `publish_to_feed: true`.
+
+**Request body:**
+```json
+{
+  "commodity_id": 1,
+  "title": "Fresh Basmati Rice — Bulk Available",
+  "caption": "Grade A Basmati, 500 MT available immediately. DM for FOB pricing.",
+  "grain_type": "raw",
+  "grain_size": "long",
+  "commodity_quantity": 500,
+  "quantity_unit": "MT",
+  "commodity_price": 42000,
+  "price_type": "negotiable",
+  "publish_to_feed": false,
+  "feed_is_public": true
+}
+```
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `commodity_id` | Yes | int | FK to commodities table |
+| `title` | Yes | string | 1–200 characters |
+| `caption` | Yes | string | Min 1 character |
+| `grain_type` | Yes | string | e.g. `"raw"`, `"processed"` |
+| `grain_size` | Yes | string | e.g. `"long"`, `"medium"`, `"fine"` |
+| `commodity_quantity` | Yes | float | Quantity being offered/requested |
+| `quantity_unit` | Yes | string | `MT` \| `quintal` |
+| `commodity_price` | Yes | float | Price per unit |
+| `price_type` | Yes | string | `fixed` \| `negotiable` |
+| `publish_to_feed` | No | bool | `false` (default) — if `true`, also creates a public `Post` immediately |
+| `feed_is_public` | No | bool | `true` (default) — controls visibility of the published Post |
+
+**Success `201`:**
+```json
+{
+  "success": true,
+  "message": "Deal created",
+  "data": {
+    "id": "e1f2a3b4-c5d6-7890-abcd-ef1234567890",
+    "group_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "posted_by": "c37a3257-dc3f-43be-9fb0-33cf918b11ff",
+    "commodity_id": 1,
+    "title": "Fresh Basmati Rice — Bulk Available",
+    "caption": "Grade A Basmati, 500 MT available immediately. DM for FOB pricing.",
+    "grain_type": "raw",
+    "grain_size": "long",
+    "commodity_quantity": 500.0,
+    "quantity_unit": "MT",
+    "commodity_price": 42000.0,
+    "price_type": "negotiable",
+    "is_closed": false,
+    "post_id": null,
+    "created_at": "2026-06-01T10:00:00.000000+00:00",
+    "updated_at": "2026-06-01T10:00:00.000000+00:00"
+  }
+}
+```
+
+When `publish_to_feed: true`, `post_id` will be a non-null integer pointing to the created `Post`.
+
+A **chat card** (`message_type: "deal"`) is always inserted into the group chat when a deal is created so all members see it in the feed.
+
+---
+
+### `GET /api/v1/groups/{group_id}/deals`
+
+List all deals in the group, newest first. **Group members only.**
+
+| Query Param | Type | Default | Description |
+|---|---|---|---|
+| `page` | int | `1` | Page number |
+| `limit` | int | `20` | Per page (max 100) |
+
+**Success `200`:**
+```json
+{
+  "success": true,
+  "message": "Deals fetched",
+  "data": {
+    "deals": [ /* array of GroupDealResponse */ ],
+    "total": 14,
+    "page": 1,
+    "limit": 20
+  }
+}
+```
+
+---
+
+### `GET /api/v1/groups/{group_id}/deals/{deal_id}`
+
+Get a single deal card. **Group members only.**
+
+**Success `200`** — returns a single `GroupDealResponse` (see [Shared Objects](#15-shared-objects)).
+
+**Error `404`:**
+```json
+{ "detail": "Deal not found" }
+```
+
+---
+
+### `PATCH /api/v1/groups/{group_id}/deals/{deal_id}`
+
+Update deal fields. **Author only.** All fields are optional — only send what you want to change.
+
+**Blocked if `is_closed = true`** — returns `403`.
+
+**Request body** (all fields optional):
+```json
+{
+  "title": "Basmati Rice — Revised Offer",
+  "caption": "Updated caption.",
+  "grain_type": "processed",
+  "grain_size": "long",
+  "commodity_quantity": 300,
+  "quantity_unit": "MT",
+  "commodity_price": 43500,
+  "price_type": "fixed"
+}
+```
+
+**Success `200`** — returns the updated `GroupDealResponse`.
+
+**Error `403`** — not the author:
+```json
+{ "detail": "Only the author can edit this deal" }
+```
+
+**Error `403`** — deal is closed:
+```json
+{ "detail": "Closed deals cannot be edited" }
+```
+
+---
+
+### `POST /api/v1/groups/{group_id}/deals/{deal_id}/close`
+
+Toggle `is_closed` on the deal. **Author only.** Calling this on an open deal closes it; calling it again reopens it.
+
+Closed deals **cannot be edited** (PATCH returns 403). They can still be published to the feed.
+
+**Success `200`:**
+```json
+{
+  "success": true,
+  "message": "Deal closed status toggled",
+  "data": {
+    "id": "e1f2a3b4-...",
+    "is_closed": true,
+    ...
+  }
+}
+```
+
+---
+
+### `POST /api/v1/groups/{group_id}/deals/{deal_id}/publish`
+
+Promote a group deal to the author's public feed. **Author only.** Can only be called once per deal (`post_id` must be `null`).
+
+This creates an independent `Post` (category_id = 4) + `PostDealDetails` snapshot in the posts module and indexes it in the recommendation engine. The group deal and the published post then have completely separate lifecycles.
+
+**Request body:**
+```json
+{
+  "is_public": true
+}
+```
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `is_public` | No | `true` | Whether the published Post is visible to all (`true`) or followers-only (`false`) |
+
+**Success `200`:**
+```json
+{
+  "success": true,
+  "message": "Deal published to feed",
+  "data": {
+    "id": "e1f2a3b4-...",
+    "post_id": 1042,
+    "is_closed": false,
+    ...
+  }
+}
+```
+
+`post_id` is now populated. The published post appears in `GET /api/v1/posts/mine` and the recommendation feed.
+
+**Error `409`** — already published:
+```json
+{ "detail": "Deal has already been published to the feed" }
+```
+
+**Error `403`** — not the author:
+```json
+{ "detail": "Only the author can publish this deal" }
+```
+
+---
+
+## 15. Shared Objects
 
 ### `GroupOut` — standard group object
 
@@ -1150,7 +1404,37 @@ Returned by create, get, list, update, and suggestion endpoints.
 
 ---
 
-## 15. Error Reference
+### `GroupDealResponse` — deal card
+
+Returned by all deal endpoints.
+
+```json
+{
+  "id": "e1f2a3b4-c5d6-7890-abcd-ef1234567890",
+  "group_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "posted_by": "c37a3257-dc3f-43be-9fb0-33cf918b11ff",
+  "commodity_id": 1,
+  "title": "Fresh Basmati Rice — Bulk Available",
+  "caption": "Grade A Basmati, 500 MT available immediately.",
+  "grain_type": "raw",
+  "grain_size": "long",
+  "commodity_quantity": 500.0,
+  "quantity_unit": "MT",
+  "commodity_price": 42000.0,
+  "price_type": "negotiable",
+  "is_closed": false,
+  "post_id": null,
+  "created_at": "2026-06-01T10:00:00.000000+00:00",
+  "updated_at": "2026-06-01T10:00:00.000000+00:00"
+}
+```
+
+- `is_closed` — `true` means the deal is finalised; PATCH is blocked.
+- `post_id` — `null` until the author promotes the deal. Once set, points to the `posts` table record.
+
+---
+
+## 16. Error Reference
 
 All errors follow FastAPI's standard shape:
 ```json
@@ -1160,8 +1444,8 @@ All errors follow FastAPI's standard shape:
 | Status | When it happens |
 |---|---|
 | `401` | Missing or invalid Bearer token |
-| `403` | Not an admin / not a member / not KYC+KYB verified (group creation) / only admins or uploader can delete media |
-| `404` | Group not found / profile not found / member not found / invalid invite token / join request not found / media not found |
-| `409` | Already a member / join request already pending / join request already resolved |
-| `422` | Missing required field, wrong data type, or unsupported media content-type |
+| `403` | Not an admin / not a member / not KYC+KYB verified (group creation) / only admins or uploader can delete media / not deal author / deal is closed (PATCH) / frozen member posting deal |
+| `404` | Group not found / profile not found / member not found / invalid invite token / join request not found / media not found / deal not found |
+| `409` | Already a member / join request already pending / join request already resolved / deal already published to feed |
+| `422` | Missing required field, wrong data type, or unsupported media content-type / invalid `quantity_unit` or `price_type` value |
 | `503` | Supabase storage error during image/media upload |
