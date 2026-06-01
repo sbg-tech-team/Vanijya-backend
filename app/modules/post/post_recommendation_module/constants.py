@@ -27,7 +27,7 @@ COLD_MAX_HOURS = 720     # 5 – 30 days
 PARTITION_ALLOWED: dict[str, set[str]] = {
     "hot":  {"market_update", "deal_req", "knowledge", "discussion"},
     "warm": {"deal_req", "knowledge", "discussion"},
-    "cold": {"knowledge"},
+    "cold": {"knowledge", "discussion"},
 }
 
 # ---------------------------------------------------------------------------

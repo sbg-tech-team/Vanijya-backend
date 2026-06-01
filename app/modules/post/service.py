@@ -488,6 +488,8 @@ def toggle_deal_closed(db: Session, post_id: int, profile_id: int) -> DealClosed
         raise PostForbiddenError("Only Deal/Requirement posts can be closed")
 
     deal = post.deal_details
+    if deal is None:
+        raise PostForbiddenError("Deal details missing on this post")
     deal.is_closed = not deal.is_closed
     db.commit()
 
