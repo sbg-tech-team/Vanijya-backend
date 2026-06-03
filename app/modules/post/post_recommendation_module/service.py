@@ -342,10 +342,14 @@ def _apply_diversity(scored: list[dict]) -> list[dict]:
     return result
 
 
+_ROLE_NAMES = {1: "trader", 2: "broker", 3: "exporter"}
+
+
 def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) -> list:
-    from app.modules.post.models import Post, PostLike, PostSave
-    from app.modules.post.schemas import PostResponse, PostDealResponse
-    from app.modules.post.post_recommendation_module.schemas import FeedPostCard, PostAuthorResponse
+    from sqlalchemy import func
+    from app.modules.post.models import Post, PostLike, PostSave, PostComment
+    from app.modules.post.schemas import PostDealResponse
+    from app.modules.post.post_recommendation_module.schemas import FeedPostCard
 
     if not final:
         return []
@@ -369,6 +373,25 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
         ).all()
     }
 
+    # Latest comment per post — one query via max(id) per post_id
+    latest_comment_subq = (
+        db.query(PostComment.post_id, func.max(PostComment.id).label("max_id"))
+        .filter(PostComment.post_id.in_(post_ids))
+        .group_by(PostComment.post_id)
+        .subquery()
+    )
+    latest_comments = {
+        c.post_id: c
+        for c in db.query(PostComment).join(
+            latest_comment_subq, PostComment.id == latest_comment_subq.c.max_id
+        ).all()
+    }
+    commenter_ids = list({c.profile_id for c in latest_comments.values()})
+    commenters = (
+        {p.id: p for p in db.query(Profile).filter(Profile.id.in_(commenter_ids)).all()}
+        if commenter_ids else {}
+    )
+
     cards = []
     for f in final:
         post = posts.get(f["post_id"])
@@ -377,7 +400,16 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
         author = authors.get(post.profile_id)
         biz = author.business if author else None
 
-        post_resp = PostResponse(
+        # location_name: post's own value OR author's "city, state"
+        location_name = post.location_name
+        if not location_name and biz:
+            parts = [p for p in [biz.city, biz.state] if p]
+            location_name = ", ".join(parts) or None
+
+        latest = latest_comments.get(post.id)
+        commenter = commenters.get(latest.profile_id) if latest else None
+
+        cards.append(FeedPostCard(
             id=post.id,
             profile_id=post.profile_id,
             category_id=post.category_id,
@@ -385,36 +417,32 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
             title=post.title,
             caption=post.caption,
             image_url=post.image_url,
-            source_url=post.source_url,
-            location_name=post.location_name,
-            latitude=post.latitude,
-            longitude=post.longitude,
             is_public=post.is_public,
             target_roles=post.target_roles,
             allow_comments=post.allow_comments,
             deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
-            created_at=post.created_at,
-            is_liked=post.id in liked_ids,
-            is_saved=post.id in saved_ids,
+            source_url=post.source_url,
+            location_name=location_name,
+            latitude=post.latitude,
+            longitude=post.longitude,
             view_count=post.view_count,
             like_count=post.like_count,
             comment_count=post.comment_count,
             share_count=post.share_count,
             save_count=post.save_count,
-        )
-
-        author_resp = PostAuthorResponse(
-            profile_id=author.id if author else 0,
-            name=author.name if author else "unknown",
-            role_id=author.role_id if author else 0,
-            avatar_url=author.avatar_url if author else None,
-            city=biz.city if biz else None,
-            state=biz.state if biz else None,
+            is_liked=post.id in liked_ids,
+            is_saved=post.id in saved_ids,
+            created_at=post.created_at,
+            author_name=author.name if author else "unknown",
+            author_role=_ROLE_NAMES.get(author.role_id, "trader") if author else "trader",
+            author_user_id=str(author.users_id) if author else "",
+            author_company=biz.business_name if biz else None,
+            author_avatar_url=author.avatar_url if author else None,
             is_user_verified=author.is_user_verified if author else False,
             is_business_verified=author.is_business_verified if author else False,
-        )
-
-        cards.append(FeedPostCard(post=post_resp, author=author_resp, score=f["final_score"]))
+            comment_preview_author=commenter.name if commenter else None,
+            comment_preview_text=latest.content if latest else None,
+        ))
 
     return cards
 
