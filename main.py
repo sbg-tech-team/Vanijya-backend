@@ -42,22 +42,35 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Vanijyaa API", lifespan=lifespan)
 
-_logger = logging.getLogger("api.timing")
+_logger = logging.getLogger("api")
+
+_SLOW_MS = 1500
 
 
 @app.middleware("http")
 async def log_response_time(request: Request, call_next):
     start = time.perf_counter()
     response = await call_next(request)
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    _logger.info(
-        '%s "%s %s HTTP/1.1" %s %.1fms',
-        request.client.host if request.client else "-",
-        request.method,
-        request.url.path + (f"?{request.url.query}" if request.url.query else ""),
-        response.status_code,
-        elapsed_ms,
-    )
+    ms = (time.perf_counter() - start) * 1000
+
+    status = response.status_code
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+
+    tag = ""
+    if ms > _SLOW_MS:
+        tag = "  SLOW"
+    elif status >= 500:
+        tag = "  ERROR"
+
+    msg = f"{status}  {ms:>6.0f}ms  {request.method:<5} {path}{tag}"
+
+    if ms > _SLOW_MS or status >= 500:
+        _logger.warning(msg)
+    else:
+        _logger.info(msg)
+
     return response
 
 
