@@ -94,6 +94,12 @@ class PostCreate(BaseModel):
     # Optional media
     image_url: Optional[str] = None
 
+    # Optional metadata
+    source_url: Optional[str] = None       # link to information source
+    location_name: Optional[str] = None    # human-readable place name
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
     # Deal / Requirement (required when category_id == 4)
     deal_details: Optional[PostDealCreate] = None
 
@@ -126,6 +132,10 @@ class PostUpdate(BaseModel):
     title: Optional[str] = None
     caption: Optional[str] = None
     image_url: Optional[str] = None
+    source_url: Optional[str] = None
+    location_name: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     is_public: Optional[bool] = None
     target_roles: Optional[List[int]] = None
     allow_comments: Optional[bool] = None
@@ -163,6 +173,11 @@ class PostResponse(BaseModel):
     allow_comments: bool
 
     deal_details: Optional[PostDealResponse]
+
+    source_url: Optional[str]
+    location_name: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
 
     # Counters + viewer state
     view_count: int

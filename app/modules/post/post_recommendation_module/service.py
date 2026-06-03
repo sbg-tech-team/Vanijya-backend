@@ -16,7 +16,6 @@ from app.modules.post.post_recommendation_module.constants import (
     CATEGORY_NAMES, CATEGORY_EXPIRY_DAYS, COMMODITY_ID_TO_IDX,
     DEFAULT_TASTE, FEED_SIZE, FETCH_TARGET, MAX_PER_AUTHOR,
     MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
-    TASTE_BOOTSTRAP_EVENTS,
 )
 from app.modules.post.post_recommendation_module.models import (
     PostEmbedding, PopularPost, SeenPost, UserTasteProfile,
@@ -26,7 +25,7 @@ from app.modules.post.post_recommendation_module.vector import (
     build_user_feed_vector,
     weighted_cosine_similarity,
 )
-from app.modules.profile.models import Profile, Profile_Commodity
+from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 
 
@@ -45,7 +44,7 @@ def _parse_vec(v) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
-# Write path: index post on publish
+# Write path: index post on publish --> on any post create/update embedding and set partition to 'hot'
 # ---------------------------------------------------------------------------
 
 def index_post(
@@ -95,6 +94,10 @@ def index_post(
         ))
     db.commit()
 
+
+# ---------------------------------------------------------------------------
+# Write path: remove post from index on delete --> set is_active to False  
+# ---------------------------------------------------------------------------
 
 def remove_post_index(db: Session, post_id: int) -> None:
     emb = db.query(PostEmbedding).filter(PostEmbedding.post_id == post_id).first()
@@ -175,7 +178,8 @@ def _seen_post_ids(db: Session, profile_id: int) -> set[int]:
     return {r[0] for r in rows}
 
 
-def _record_seen(db: Session, profile_id: int, post_ids: list[int]) -> None:
+def record_seen(db: Session, profile_id: int, post_ids: list[int]) -> None:
+    """Record posts as seen. Called by the client-driven /seen endpoint and on explicit post open."""
     now = datetime.now(timezone.utc)
     for pid in post_ids:
         db.add(SeenPost(profile_id=profile_id, post_id=pid, seen_at=now))
@@ -184,7 +188,8 @@ def _record_seen(db: Session, profile_id: int, post_ids: list[int]) -> None:
     except IntegrityError:
         db.rollback()
 
-
+# ---------------------------------------------------------------------------
+# ANN pre-filter: fetch candidates from the most relevant partition(s) using HNSW vector search
 def _query_partition(
     db: Session, partition: str, limit: int, exclude_ids: set[int], user_vec: list[float]
 ) -> list[dict]:
@@ -193,13 +198,17 @@ def _query_partition(
     ordered by approximate cosine distance. Returns raw vectors so the
     caller can apply exact weighted_cosine_similarity for the final vec_score.
     """
+    # convert user_vec list[float] to Postgres array literal format: '[v1,v2,...]'
     vec_str = "[" + ",".join(str(v) for v in user_vec) + "]"
 
+    # exclude_ids takes set pool_exclude which is seeded with seen post_ids "and expanded with already fetched candidates as we query multiple partitions. This ensures we don't fetch the same post multiple times across hot/warm/cold."
     exclude_clause = (
         f"AND post_id NOT IN ({','.join(str(i) for i in exclude_ids)})"
         if exclude_ids else ""
     )
 
+    # <=> is cosine distance operator provided by pgvector.
+    # :partition is as asked in get_recommended_posts() and determines the freshness bucket (hot/warm/cold).
     rows = db.execute(
         text(f"""
             SELECT post_id, category, vector
@@ -331,11 +340,88 @@ def _apply_diversity(scored: list[dict]) -> list[dict]:
     return result
 
 
+def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) -> list:
+    from app.modules.post.models import Post, PostLike, PostSave
+    from app.modules.post.schemas import PostResponse, PostDealResponse
+    from app.modules.post.post_recommendation_module.schemas import FeedPostCard, PostAuthorResponse
+
+    if not final:
+        return []
+
+    post_ids = [f["post_id"] for f in final]
+    posts = {p.id: p for p in db.query(Post).filter(Post.id.in_(post_ids)).all()}
+
+    author_ids = list({p.profile_id for p in posts.values()})
+    authors = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(author_ids)).all()}
+
+    liked_ids = {
+        r[0] for r in db.query(PostLike.post_id).filter(
+            PostLike.post_id.in_(post_ids),
+            PostLike.profile_id == viewer_profile_id,
+        ).all()
+    }
+    saved_ids = {
+        r[0] for r in db.query(PostSave.post_id).filter(
+            PostSave.post_id.in_(post_ids),
+            PostSave.profile_id == viewer_profile_id,
+        ).all()
+    }
+
+    cards = []
+    for f in final:
+        post = posts.get(f["post_id"])
+        if not post:
+            continue
+        author = authors.get(post.profile_id)
+        biz = author.business if author else None
+
+        post_resp = PostResponse(
+            id=post.id,
+            profile_id=post.profile_id,
+            category_id=post.category_id,
+            commodity_id=post.commodity_id,
+            title=post.title,
+            caption=post.caption,
+            image_url=post.image_url,
+            source_url=post.source_url,
+            location_name=post.location_name,
+            latitude=post.latitude,
+            longitude=post.longitude,
+            is_public=post.is_public,
+            target_roles=post.target_roles,
+            allow_comments=post.allow_comments,
+            deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
+            created_at=post.created_at,
+            is_liked=post.id in liked_ids,
+            is_saved=post.id in saved_ids,
+            view_count=post.view_count,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            share_count=post.share_count,
+            save_count=post.save_count,
+        )
+
+        author_resp = PostAuthorResponse(
+            profile_id=author.id if author else 0,
+            name=author.name if author else "unknown",
+            role_id=author.role_id if author else 0,
+            avatar_url=author.avatar_url if author else None,
+            city=biz.city if biz else None,
+            state=biz.state if biz else None,
+            is_user_verified=author.is_user_verified if author else False,
+            is_business_verified=author.is_business_verified if author else False,
+        )
+
+        cards.append(FeedPostCard(post=post_resp, author=author_resp, score=f["final_score"]))
+
+    return cards
+
+
 # ---------------------------------------------------------------------------
 # Main read path
 # ---------------------------------------------------------------------------
 
-def get_recommended_posts(db: Session, profile_id: int, dry_run: bool = False) -> list[dict]:
+def get_recommended_posts(db: Session, profile_id: int) -> list:
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
         raise ValueError(f"Profile {profile_id} not found")
@@ -392,8 +478,4 @@ def get_recommended_posts(db: Session, profile_id: int, dry_run: bool = False) -
     scored = _rerank(db, pool, taste_counts, followed_user_ids)
     final = _apply_diversity(scored)
 
-    post_ids = [f["post_id"] for f in final]
-    if not dry_run:
-        _record_seen(db, profile_id, post_ids)
-
-    return [{"post_id": f["post_id"], "score": f["final_score"]} for f in final]
+    return _build_feed_cards(db, final, profile_id)
