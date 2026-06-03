@@ -173,6 +173,8 @@ def _seen_post_ids(db: Session, profile_id: int) -> set[int]:
     rows = (
         db.query(SeenPost.post_id)
         .filter(SeenPost.profile_id == profile_id, SeenPost.seen_at >= cutoff)
+        .order_by(SeenPost.seen_at.desc())
+        .limit(100)
         .all()
     )
     return {r[0] for r in rows}

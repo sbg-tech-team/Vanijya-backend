@@ -136,8 +136,13 @@ def run_popular_posts_sync(db: Session) -> dict:
         for post_id, _ in entries[:50]:
             top_ids.add(post_id)
 
+    # Replace the entire popular_posts table in one shot:
+    # delete-all then bulk-insert avoids ORM dirty-object race conditions
+    # with the concurrent expiry_job which also deletes from popular_posts.
+    db.query(PopularPost).delete(synchronize_session=False)
+
     post_map = {p.id: p for p in posts}
-    upserted = 0
+    new_rows = []
     for post_id, velocity in scored:
         if post_id not in top_ids:
             continue
@@ -151,33 +156,19 @@ def run_popular_posts_sync(db: Session) -> dict:
         hours = max((now - created).total_seconds() / 3600, 0.0)
         saves = getattr(post, "save_count", 0)
 
-        existing = db.query(PopularPost).filter(PopularPost.post_id == post_id).first()
-        if existing:
-            existing.velocity_score = velocity
-            existing.saves_count = saves
-            existing.likes_count = post.like_count
-            existing.comments_count = post.comment_count
-            existing.hours_since_post = hours
-            existing.last_updated_at = now
-            existing.is_active = True
-        else:
-            db.add(PopularPost(
-                post_id=post_id,
-                commodity_idx=emb_map.get(post_id, 0),
-                category=cat_map.get(post_id, "other"),
-                velocity_score=velocity,
-                saves_count=saves,
-                likes_count=post.like_count,
-                comments_count=post.comment_count,
-                hours_since_post=hours,
-                last_updated_at=now,
-                is_active=True,
-            ))
-        upserted += 1
+        new_rows.append(PopularPost(
+            post_id=post_id,
+            commodity_idx=emb_map.get(post_id, 0),
+            category=cat_map.get(post_id, "other"),
+            velocity_score=velocity,
+            saves_count=saves,
+            likes_count=post.like_count,
+            comments_count=post.comment_count,
+            hours_since_post=hours,
+            last_updated_at=now,
+            is_active=True,
+        ))
 
-    db.query(PopularPost).filter(
-        ~PopularPost.post_id.in_(list(top_ids))
-    ).delete(synchronize_session=False)
-
+    db.bulk_save_objects(new_rows)
     db.commit()
-    return {"synced": upserted, "top_ids_count": len(top_ids)}
+    return {"synced": len(new_rows), "top_ids_count": len(top_ids)}
