@@ -49,15 +49,15 @@ async def create_post_api(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.get("/")
-def get_feed_api(
-    profile_id: int = Depends(get_current_profile_id),
-    limit: int = 20,
-    offset: int = 0,
-    db: Session = Depends(get_db),
-):
-    result = service.get_feed(db, profile_id, limit, offset)
-    return ok(result, "Feed fetched successfully")
+# @router.get("/")
+# def get_feed_api(
+#     profile_id: int = Depends(get_current_profile_id),
+#     limit: int = 20,
+#     offset: int = 0,
+#     db: Session = Depends(get_db),
+# ):
+#     result = service.get_feed(db, profile_id, limit, offset)
+#     return ok(result, "Feed fetched successfully")
 
 
 @router.get("/mine")

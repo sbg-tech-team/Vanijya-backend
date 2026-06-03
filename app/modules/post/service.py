@@ -117,6 +117,10 @@ def _to_post_response(db: Session, post: Post, viewer_profile_id: int) -> PostRe
         title=post.title,
         caption=post.caption,
         image_url=post.image_url,
+        source_url=post.source_url,
+        location_name=post.location_name,
+        latitude=post.latitude,
+        longitude=post.longitude,
         is_public=post.is_public,
         target_roles=post.target_roles,
         allow_comments=post.allow_comments,
@@ -208,15 +212,17 @@ async def create_post(db: Session, profile_id: int, payload: PostCreate) -> Post
         db.commit()
         db.refresh(post)
 
-    lat, lon = _profile_location(db, profile_id)
+    author_lat, author_lon = _profile_location(db, profile_id)
+    post_lat = float(post.latitude) if post.latitude is not None else author_lat
+    post_lon = float(post.longitude) if post.longitude is not None else author_lon
     try:
         rec_service.index_post(
             db=db,
             post_id=post.id,
             commodity_id=post.commodity_id,
             target_role_ids=post.target_roles,
-            lat=lat,
-            lon=lon,
+            lat=post_lat,
+            lon=post_lon,
             category_id=post.category_id,
             commodity_quantity=float(deal.commodity_quantity) if deal else None,
         )
@@ -230,6 +236,10 @@ def get_post(db: Session, post_id: int, viewer_profile_id: int) -> PostResponse:
     post = _get_post_or_raise(db, post_id)
     _record_view(db, post_id, viewer_profile_id)
     db.refresh(post)
+    try:
+        rec_service.record_seen(db, viewer_profile_id, [post_id])
+    except Exception:
+        pass
     return _to_post_response(db, post, viewer_profile_id)
 
 
@@ -499,15 +509,17 @@ def toggle_deal_closed(db: Session, post_id: int, profile_id: int) -> DealClosed
         except Exception:
             pass
     else:
-        lat, lon = _profile_location(db, post.profile_id)
+        author_lat, author_lon = _profile_location(db, post.profile_id)
+        post_lat = float(post.latitude) if post.latitude is not None else author_lat
+        post_lon = float(post.longitude) if post.longitude is not None else author_lon
         try:
             rec_service.index_post(
                 db=db,
                 post_id=post.id,
                 commodity_id=post.commodity_id,
                 target_role_ids=post.target_roles,
-                lat=lat,
-                lon=lon,
+                lat=post_lat,
+                lon=post_lon,
                 category_id=post.category_id,
                 commodity_quantity=float(deal.commodity_quantity),
             )

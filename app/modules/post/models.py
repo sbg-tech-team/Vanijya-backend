@@ -40,6 +40,12 @@ class Post(Base):
     title: Mapped[str] = mapped_column(String(200))
     image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     caption: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Location (overrides author's business location in recommendation vector when set)
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    location_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Visibility
     is_public: Mapped[bool] = mapped_column(default=True)
