@@ -1,10 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import time
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
 from app.modules.auth.router import router as auth_router
 from app.modules.profile.router import router as profile_router
@@ -41,37 +40,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Vanijyaa API", lifespan=lifespan)
-
-_logger = logging.getLogger("api")
-
-_SLOW_MS = 1500
-
-
-@app.middleware("http")
-async def log_response_time(request: Request, call_next):
-    start = time.perf_counter()
-    response = await call_next(request)
-    ms = (time.perf_counter() - start) * 1000
-
-    status = response.status_code
-    path = request.url.path
-    if request.url.query:
-        path = f"{path}?{request.url.query}"
-
-    tag = ""
-    if ms > _SLOW_MS:
-        tag = "  SLOW"
-    elif status >= 500:
-        tag = "  ERROR"
-
-    msg = f"{status}  {ms:>6.0f}ms  {request.method:<5} {path}{tag}"
-
-    if ms > _SLOW_MS or status >= 500:
-        _logger.warning(msg)
-    else:
-        _logger.info(msg)
-
-    return response
 
 
 app.get("/", status_code=200)(lambda: {"message": "Server is up and running!"})
