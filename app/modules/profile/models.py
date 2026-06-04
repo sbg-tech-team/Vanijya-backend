@@ -165,6 +165,9 @@ class UserEmbedding(Base):
     )
     # 11-dim pgvector IS vector — indexed with HNSW for cosine ANN search
     is_vector: Mapped[Optional[list]] = mapped_column(Vector(11), nullable=True)
+    # 10-dim post feed vector — built from same profile fields, stored to avoid
+    # recomputing on every recommendation feed request
+    post_feed_vector: Mapped[Optional[list]] = mapped_column(Vector(10), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )

@@ -230,12 +230,23 @@ def _upsert_user_embedding(db: Session, user_id: UUID) -> None:
         qty_max=int(profile.quantity_max),
     )
 
+    from app.modules.post.post_recommendation_module.vector import build_user_feed_vector
+    commodity_ids = [pc.commodity_id for pc in profile.commodities]
+    post_vec = build_user_feed_vector(
+        commodity_ids=commodity_ids,
+        role_id=profile.role_id,
+        lat=float(profile.business.latitude),
+        lon=float(profile.business.longitude),
+        commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
+    )
+
     existing = db.query(UserEmbedding).filter(UserEmbedding.user_id == user_id).first()
     if existing:
         existing.is_vector = vec
+        existing.post_feed_vector = post_vec
         existing.updated_at = datetime.now(timezone.utc)
     else:
-        db.add(UserEmbedding(user_id=user_id, is_vector=vec))
+        db.add(UserEmbedding(user_id=user_id, is_vector=vec, post_feed_vector=post_vec))
 
 
 # ---------------------------------------------------------------------------
