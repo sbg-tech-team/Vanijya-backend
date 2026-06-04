@@ -40,7 +40,7 @@ def get_post_share_link(db: Session, post_id: int) -> dict:
         "share_text": share_text,
         "title": f"Post by {poster_name}",
         "description": description,
-        "image_url": post.image_url,
+        "image_url": post.image_urls[0] if post.image_urls else None,
     }
 
 

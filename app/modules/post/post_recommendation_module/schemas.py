@@ -13,7 +13,7 @@ class FeedPostCard(BaseModel):
     commodity_id: int
     title: str
     caption: str
-    image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
     is_public: bool
     target_roles: Optional[List[int]] = None
     allow_comments: bool

@@ -90,7 +90,7 @@ def _unseen_followed_posts(
                 "id": r["id"],
                 "profile_id": r["profile_id"],
                 "caption": r["caption"],
-                "image_url": r["image_url"],
+                "image_urls": r["image_urls"],
                 "category_id": r["category_id"],
                 "commodity_id": r["commodity_id"],
                 "like_count": r["like_count"],

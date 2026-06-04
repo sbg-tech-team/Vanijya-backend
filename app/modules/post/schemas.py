@@ -113,8 +113,15 @@ class PostCreate(BaseModel):
     # Interaction
     allow_comments: bool = True
 
-    # Optional media
-    image_url: Optional[str] = None
+    # Optional media (up to 5 URLs)
+    image_urls: Optional[List[str]] = None
+
+    @field_validator("image_urls")
+    @classmethod
+    def image_urls_max_five(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is not None and len(v) > 5:
+            raise ValueError("A post can have at most 5 images")
+        return v or None
 
     # Optional metadata
     source_url: Optional[str] = None       # link to information source
@@ -153,7 +160,7 @@ class PostCreate(BaseModel):
 class PostUpdate(BaseModel):
     title: Optional[str] = None
     caption: Optional[str] = None
-    image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
     source_url: Optional[str] = None
     location_name: Optional[str] = None
     latitude: Optional[float] = None
@@ -189,7 +196,7 @@ class PostResponse(BaseModel):
     commodity_id: int
     title: str
     caption: str
-    image_url: Optional[str]
+    image_urls: Optional[List[str]]
     is_public: bool
     target_roles: Optional[List[int]]
     allow_comments: bool

@@ -411,7 +411,7 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
             commodity_id=post.commodity_id,
             title=post.title,
             caption=post.caption,
-            image_url=post.image_url,
+            image_urls=post.image_urls,
             is_public=post.is_public,
             target_roles=post.target_roles,
             allow_comments=post.allow_comments,

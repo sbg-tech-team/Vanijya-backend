@@ -116,7 +116,7 @@ def _to_post_response(db: Session, post: Post, viewer_profile_id: int) -> PostRe
         commodity_id=post.commodity_id,
         title=post.title,
         caption=post.caption,
-        image_url=post.image_url,
+        image_urls=post.image_urls,
         source_url=post.source_url,
         location_name=post.location_name,
         latitude=post.latitude,
@@ -161,16 +161,17 @@ def _profile_location(db: Session, profile_id: int) -> tuple[float, float]:
 # Post CRUD
 # ----------------------------------------------------------------------------
 
-async def create_post(db: Session, profile_id: int, payload: PostCreate) -> PostResponse:
-    if payload.image_url:
+async def _verify_image_urls(profile_id: int, urls: list[str]) -> None:
+    """Verify each URL belongs to this profile and exists in storage."""
+    for url in urls:
         try:
-            path = path_from_url(_POST_STORAGE_BUCKET, payload.image_url)
+            path = path_from_url(_POST_STORAGE_BUCKET, url)
         except StorageError:
-            raise PostImageUploadError("image_url does not belong to the posts storage bucket")
+            raise PostImageUploadError(f"image_url does not belong to the posts storage bucket: {url}")
 
         parts = path.strip("/").split("/")
         if len(parts) < 2:
-            raise PostImageUploadError("Invalid storage path")
+            raise PostImageUploadError(f"Invalid storage path for: {url}")
         if parts[0] != str(profile_id):
             raise PostImageUploadError("Image does not belong to this profile")
 
@@ -187,8 +188,13 @@ async def create_post(db: Session, profile_id: int, payload: PostCreate) -> Post
             raise PostStorageUnavailableError("Storage verification temporarily unavailable")
         if result is not True:
             raise PostImageUploadError(
-                "Image not found in storage — complete the upload before creating a post"
+                f"Image not found in storage — complete the upload before creating a post: {url}"
             )
+
+
+async def create_post(db: Session, profile_id: int, payload: PostCreate) -> PostResponse:
+    if payload.image_urls:
+        await _verify_image_urls(profile_id, payload.image_urls)
 
     post = Post(
         profile_id=profile_id,
@@ -196,7 +202,7 @@ async def create_post(db: Session, profile_id: int, payload: PostCreate) -> Post
         commodity_id=payload.commodity_id,
         title=payload.title,
         caption=payload.caption,
-        image_url=payload.image_url,
+        image_urls=payload.image_urls,
         is_public=payload.is_public,
         target_roles=payload.target_roles,
         allow_comments=payload.allow_comments,
@@ -266,7 +272,7 @@ async def delete_post(db: Session, post_id: int, profile_id: int) -> None:
     if post.profile_id != profile_id:
         raise PostForbiddenError("You can only delete your own posts")
 
-    image_url = post.image_url
+    image_urls = post.image_urls or []
 
     try:
         rec_service.remove_post_index(db, post_id)
@@ -276,9 +282,9 @@ async def delete_post(db: Session, post_id: int, profile_id: int) -> None:
     db.delete(post)
     db.commit()
 
-    if image_url:
+    for url in image_urls:
         try:
-            old_path = path_from_url(_POST_STORAGE_BUCKET, image_url)
+            old_path = path_from_url(_POST_STORAGE_BUCKET, url)
             await delete_object(_POST_STORAGE_BUCKET, old_path)
         except StorageError:
             pass

@@ -38,7 +38,7 @@ class Post(Base):
 
     # Content
     title: Mapped[str] = mapped_column(String(200))
-    image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    image_urls: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String), nullable=True)
     caption: Mapped[str] = mapped_column(Text)
     source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
