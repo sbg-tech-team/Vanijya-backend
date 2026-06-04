@@ -1,7 +1,29 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, computed_field, field_validator, model_validator
+
+
+def _time_elapsed(dt: datetime) -> str:
+    now = datetime.now(timezone.utc)
+    aware = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((now - aware).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        m = seconds // 60
+        return f"{m} minute{'s' if m != 1 else ''} ago"
+    if seconds < 86400:
+        h = seconds // 3600
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    if seconds < 604800:
+        d = seconds // 86400
+        return f"{d} day{'s' if d != 1 else ''} ago"
+    if seconds < 2592000:
+        w = seconds // 604800
+        return f"{w} week{'s' if w != 1 else ''} ago"
+    mo = seconds // 2592000
+    return f"{mo} month{'s' if mo != 1 else ''} ago"
 
 # Fixed category IDs (matches DB seed)
 CATEGORY_DEAL = 4
@@ -189,6 +211,11 @@ class PostResponse(BaseModel):
     is_saved: bool
 
     created_at: datetime
+
+    @computed_field
+    @property
+    def time_elapsed(self) -> str:
+        return _time_elapsed(self.created_at)
 
     class Config:
         from_attributes = True

@@ -77,8 +77,22 @@ FEED_SIZE = 25           # final posts returned to caller
 POPULAR_LIMIT = 30       # popular posts appended to pool every feed load
 
 # Diversity caps applied at the end
-MAX_PER_CATEGORY = 3
-MAX_PER_AUTHOR = 2
+MAX_PER_CATEGORY = 8
+MAX_PER_AUTHOR = 3
 
 # Taste interaction threshold before behavioural layer kicks in
 TASTE_BOOTSTRAP_EVENTS = 20
+
+# ---------------------------------------------------------------------------
+# Freshness
+# Boost decays continuously: 1.0 + FRESH_BOOST_PEAK * exp(-age_h / FRESH_DECAY_TAU)
+# Peak boost at age=0 is (1.0 + FRESH_BOOST_PEAK). Fades to ~1.0 by 48h.
+# FRESH_DECAY_TAU controls the half-life (~5.5h with tau=8).
+# ---------------------------------------------------------------------------
+FRESH_BOOST_PEAK = 0.4   # max additive boost above 1.0
+FRESH_DECAY_TAU  = 8.0   # decay constant in hours
+
+# Fresh pool guarantee — posts younger than this are added to the candidate pool
+# even if the ANN search wouldn't naturally surface them (e.g. > FETCH_TARGET hot posts).
+FRESH_INJECT_HOURS = 4
+FRESH_SLOTS        = 5   # max fresh candidates injected into pool

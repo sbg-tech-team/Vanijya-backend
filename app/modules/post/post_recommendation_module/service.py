@@ -14,8 +14,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.modules.post.post_recommendation_module.constants import (
     CATEGORY_NAMES, CATEGORY_EXPIRY_DAYS, COMMODITY_ID_TO_IDX,
-    DEFAULT_TASTE, FEED_SIZE, FETCH_TARGET, MAX_PER_AUTHOR,
-    MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
+    DEFAULT_TASTE, FEED_SIZE, FETCH_TARGET,
+    FRESH_BOOST_PEAK, FRESH_DECAY_TAU, FRESH_INJECT_HOURS, FRESH_SLOTS,
+    MAX_PER_AUTHOR, MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
 )
 from app.modules.post.post_recommendation_module.models import (
     PostEmbedding, PopularPost, SeenPost, UserTasteProfile,
@@ -173,8 +174,6 @@ def _seen_post_ids(db: Session, profile_id: int) -> set[int]:
     rows = (
         db.query(SeenPost.post_id)
         .filter(SeenPost.profile_id == profile_id, SeenPost.seen_at >= cutoff)
-        .order_by(SeenPost.seen_at.desc())
-        .limit(100)
         .all()
     )
     return {r[0] for r in rows}
@@ -260,12 +259,8 @@ def _taste_weight(counts: dict[str, int], category: str) -> float:
 def _freshness(created_at: datetime) -> float:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
-    age_h = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600
-    if age_h < 2:
-        return 1.4
-    if age_h < 6:
-        return 1.2
-    return 1.0
+    age_h = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds() / 3600)
+    return 1.0 + FRESH_BOOST_PEAK * math.exp(-age_h / FRESH_DECAY_TAU)
 
 
 def _rerank(
@@ -321,7 +316,7 @@ def _rerank(
     return scored
 
 
-def _apply_diversity(scored: list[dict]) -> list[dict]:
+def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
     cat_counts: dict[str, int] = {}
     author_counts: dict[int, int] = {}
     result: list[dict] = []
@@ -336,7 +331,7 @@ def _apply_diversity(scored: list[dict]) -> list[dict]:
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
         author_counts[author] = author_counts.get(author, 0) + 1
         result.append(item)
-        if len(result) >= FEED_SIZE:
+        if len(result) >= limit:
             break
 
     return result
@@ -448,10 +443,75 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
 
 
 # ---------------------------------------------------------------------------
+# Fresh pool guarantee
+# ---------------------------------------------------------------------------
+
+def _ensure_fresh_in_pool(
+    db: Session,
+    viewer_role_id: int,
+    commodity_idxs: set[int],
+    exclude_ids: set[int],
+    user_vec: list[float],
+    limit: int,
+) -> list[dict]:
+    """
+    Guarantees recently published posts enter the candidate pool even when the
+    hot ANN search misses them (happens when > FETCH_TARGET hot posts exist and
+    the new post's vector similarity is below the cutoff).
+
+    Returns [{post_id, category, vec_score}] — same shape as ANN pool entries.
+    These flow through _rerank and _apply_diversity unchanged; the continuous
+    freshness boost in _freshness() provides their exposure lift.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=FRESH_INJECT_HOURS)
+
+    exclude_clause = (
+        f"AND pe.post_id NOT IN ({','.join(str(i) for i in exclude_ids)})"
+        if exclude_ids else ""
+    )
+    commodity_clause = (
+        f"AND pe.commodity_idx IN ({','.join(str(i) for i in commodity_idxs)})"
+        if commodity_idxs else ""
+    )
+
+    rows = db.execute(
+        text(f"""
+            SELECT pe.post_id, pe.category, pe.vector, p.target_roles
+            FROM post_embeddings pe
+            JOIN posts p ON p.id = pe.post_id
+            WHERE pe.is_active = true
+              AND p.created_at >= :cutoff
+              AND p.is_public = true
+              {commodity_clause}
+              {exclude_clause}
+            ORDER BY p.created_at DESC
+            LIMIT :limit
+        """),
+        {"cutoff": cutoff, "limit": limit * 3},
+    ).mappings().all()
+
+    result = []
+    for r in rows:
+        target = r["target_roles"]
+        if target and viewer_role_id not in target:
+            continue
+        vec_score = weighted_cosine_similarity(user_vec, _parse_vec(r["vector"]))
+        result.append({
+            "post_id": r["post_id"],
+            "category": r["category"],
+            "vec_score": vec_score,
+        })
+        if len(result) >= limit:
+            break
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main read path
 # ---------------------------------------------------------------------------
 
-def get_recommended_posts(db: Session, profile_id: int) -> list:
+def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) -> list:
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
         raise ValueError(f"Profile {profile_id} not found")
@@ -461,13 +521,21 @@ def get_recommended_posts(db: Session, profile_id: int) -> list:
         COMMODITY_ID_TO_IDX[cid] for cid in commodity_ids if cid in COMMODITY_ID_TO_IDX
     }
 
-    user_vec = build_user_feed_vector(
-        commodity_ids=commodity_ids,
-        role_id=profile.role_id,
-        lat=float(profile.business.latitude),
-        lon=float(profile.business.longitude),
-        commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
-    )
+    from app.modules.profile.models import UserEmbedding
+    emb_row = db.query(UserEmbedding).filter(
+        UserEmbedding.user_id == profile.users_id
+    ).first()
+
+    if emb_row and emb_row.post_feed_vector is not None:
+        user_vec = _parse_vec(emb_row.post_feed_vector)
+    else:
+        user_vec = build_user_feed_vector(
+            commodity_ids=commodity_ids,
+            role_id=profile.role_id,
+            lat=float(profile.business.latitude),
+            lon=float(profile.business.longitude),
+            commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
+        )
 
     taste_counts = _get_or_seed_taste(db, profile_id, profile.role_id)
 
@@ -504,8 +572,22 @@ def get_recommended_posts(db: Session, profile_id: int) -> list:
 
     popular = _get_popular_posts(db, commodity_idxs or {0, 1, 2}, pool_exclude)
     pool.extend(popular)
+    for p in popular:
+        pool_exclude.add(p["post_id"])
+
+    # Guarantee fresh posts are in the pool even if the hot ANN missed them.
+    # They enter with their actual vec_score and compete via score + freshness boost.
+    fresh = _ensure_fresh_in_pool(
+        db=db,
+        viewer_role_id=profile.role_id,
+        commodity_idxs=commodity_idxs or {0, 1, 2},
+        exclude_ids=pool_exclude,
+        user_vec=user_vec,
+        limit=FRESH_SLOTS,
+    )
+    pool.extend(fresh)
 
     scored = _rerank(db, pool, taste_counts, followed_user_ids)
-    final = _apply_diversity(scored)
+    final = _apply_diversity(scored, limit=limit)
 
     return _build_feed_cards(db, final, profile_id)

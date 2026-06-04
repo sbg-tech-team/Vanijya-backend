@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
-from app.modules.post.schemas import PostDealResponse
+from app.modules.post.schemas import PostDealResponse, _time_elapsed
 
 
 class FeedPostCard(BaseModel):
@@ -31,6 +31,11 @@ class FeedPostCard(BaseModel):
     is_saved: bool
     created_at: datetime
 
+    @computed_field
+    @property
+    def time_elapsed(self) -> str:
+        return _time_elapsed(self.created_at)
+
     # ── Author ────────────────────────────────────────────────────────────────
     author_name: str
     author_role: str                       # "trader" | "broker" | "exporter"
@@ -43,6 +48,11 @@ class FeedPostCard(BaseModel):
     # ── Comment preview ───────────────────────────────────────────────────────
     comment_preview_author: Optional[str] = None
     comment_preview_text: Optional[str] = None
+
+
+class FeedResponse(BaseModel):
+    posts: List[FeedPostCard]
+    has_more: bool
 
 
 class PostSeenPayload(BaseModel):
