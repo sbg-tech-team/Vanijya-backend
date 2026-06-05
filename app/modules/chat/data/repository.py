@@ -4,15 +4,24 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
-from app.modules.chat.domain.entities import ConvSendGuard, ConvStatus, ConversationEntity, LastMessage, MessageEntity, UserSnap
-from app.modules.chat.domain.repository import IChatRepository
-from app.modules.groups.models import Group, GroupMember
-from app.modules.profile.models import Profile
+from app.modules.chat.domain.entities import (
+    ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
+    DealSnap, MessageEntity, PostSnap, UserSnap,
+)
+from app.modules.groups.models import Group, GroupDeal, GroupMember
+from app.modules.post.models import Post
+from app.modules.profile.models import Commodity, Profile
 
+# Fixed lookup dicts — roles and post categories are seeded with stable int IDs
+ROLE_NAMES = {1: "Trader", 2: "Broker", 3: "Exporter"}
+CATEGORY_NAMES = {1: "Market Update", 2: "Knowledge", 3: "Discussion", 4: "Deal/Requirements"}
+
+
+# ── Private builder helpers ────────────────────────────────────────────────────
 
 def _profile_snap(profile: Profile) -> UserSnap:
     return UserSnap(
@@ -21,19 +30,28 @@ def _profile_snap(profile: Profile) -> UserSnap:
         name=profile.name,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
+        avatar_url=profile.avatar_url,
+        role=ROLE_NAMES.get(profile.role_id, "Trader"),
+        is_online=False,  # runtime state — set by ConnectionManager at presentation layer
     )
 
 
-def _last_message(db: Session, context_id: UUID) -> Optional[LastMessage]:
+def _last_message(db: Session, context_id: UUID) -> Optional[DMLastMessage]:
     row = (
         db.query(Message)
         .filter(Message.context_type == "dm", Message.context_id == context_id, Message.is_deleted.is_(False))
-        .order_by(Message.created_at.desc())
+        .order_by(Message.sent_at.desc())
         .first()
     )
     if row is None:
         return None
-    return LastMessage(id=row.id, body=row.body, message_type=row.message_type, sender_id=row.sender_id, sent_at=row.created_at)
+    return DMLastMessage(
+        id=row.id,
+        body=row.body,
+        message_type=row.message_type,
+        sender_id=row.sender_id,
+        sent_at=row.sent_at,
+    )
 
 
 def _unread_count(db: Session, conv_id: UUID, user_id: UUID) -> int:
@@ -51,7 +69,7 @@ def _unread_count(db: Session, conv_id: UUID, user_id: UUID) -> int:
         Message.sender_id != user_id,
     )
     if member.last_read_at is not None:
-        q = q.filter(Message.created_at > member.last_read_at)
+        q = q.filter(Message.sent_at > member.last_read_at)
     return q.scalar() or 0
 
 
@@ -80,12 +98,56 @@ def _build_conversation(db: Session, conv: Conversation, requesting_user_id: UUI
     )
 
 
+def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(GroupDeal).filter(GroupDeal.id == deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return DealSnap(
+        deal_id=deal.id,
+        deal_type=deal.deal_type,
+        title=deal.title,
+        commodity_name=commodity.name if commodity else "",
+        grain_type=deal.grain_type,
+        grain_size=deal.grain_size,
+        broken_percentage=float(deal.broken_percentage) if deal.broken_percentage is not None else None,
+        commodity_quantity=float(deal.commodity_quantity),
+        quantity_unit=deal.quantity_unit,
+        commodity_price=float(deal.commodity_price) if deal.commodity_price is not None else None,
+        price_type=deal.price_type,
+        location=deal.location,
+        image_urls=deal.image_urls,
+        is_closed=deal.is_closed,
+        caption=deal.caption,
+    )
+
+
+def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if post is None:
+        return None
+    author = db.query(Profile).filter(Profile.id == post.profile_id).first()
+    return PostSnap(
+        post_id=post.id,
+        title=post.title,
+        image_urls=post.image_urls,
+        caption=post.caption,
+        category_id=post.category_id,
+        category_name=CATEGORY_NAMES.get(post.category_id, ""),
+        author_name=author.name if author else "",
+    )
+
+
 def _build_message(db: Session, msg: Message) -> MessageEntity:
     sender_profile = db.query(Profile).filter(Profile.users_id == msg.sender_id).first()
     sender_snap = (
         _profile_snap(sender_profile)
         if sender_profile
-        else UserSnap(user_id=msg.sender_id, profile_id=0, name="Unknown", is_user_verified=False, is_business_verified=False)
+        else UserSnap(
+            user_id=msg.sender_id, profile_id=0, name="Unknown",
+            is_user_verified=False, is_business_verified=False,
+            avatar_url=None, role="Trader", is_online=False,
+        )
     )
     return MessageEntity(
         id=msg.id,
@@ -94,27 +156,30 @@ def _build_message(db: Session, msg: Message) -> MessageEntity:
         sender=sender_snap,
         message_type=msg.message_type,
         body=msg.body,
-        media_url=msg.media_url,
+        media_urls=msg.media_urls,
         media_metadata=msg.media_metadata,
         location_lat=msg.location_lat,
         location_lon=msg.location_lon,
         reply_to_id=msg.reply_to_id,
         is_deleted=msg.is_deleted,
-        sent_at=msg.created_at,
+        sent_at=msg.sent_at,
+        deal=_deal_snap(db, msg.deal_id) if msg.deal_id else None,
+        post=_post_snap(db, msg.post_id) if msg.post_id else None,
     )
 
 
-class ChatRepository(IChatRepository):
+# ── Repository ─────────────────────────────────────────────────────────────────
+
+class ChatRepository:
 
     def __init__(self, db: Session):
         self.db = db
 
-    # ── Conversations ─────────────────────────────────────────────────────────
+    # ── Conversations ──────────────────────────────────────────────────────────
 
     def get_or_create_dm(self, sender_id: UUID, participant_id: UUID) -> tuple[ConversationEntity, bool]:
         cm1 = aliased(ConversationMember)
         cm2 = aliased(ConversationMember)
-
         existing = (
             self.db.query(Conversation)
             .join(cm1, and_(cm1.conversation_id == Conversation.id, cm1.user_id == sender_id))
@@ -122,28 +187,22 @@ class ChatRepository(IChatRepository):
             .filter(Conversation.type == "dm")
             .first()
         )
-
         if existing:
-            return _build_conversation(self.db, existing, sender_id), False
+            entity = _build_conversation(self.db, existing, sender_id)
+            assert entity is not None
+            return entity, False
 
         now = datetime.now(timezone.utc)
-        conv = Conversation(
-            id=uuid4(),
-            type="dm",
-            status=ConvStatus.REQUESTED,
-            initiator_id=sender_id,
-            created_at=now,
-            updated_at=now,
-        )
+        conv = Conversation(id=uuid4(), type="dm", status=ConvStatus.REQUESTED, initiator_id=sender_id, created_at=now, updated_at=now)
         self.db.add(conv)
         self.db.flush()
-
         self.db.add(ConversationMember(conversation_id=conv.id, user_id=sender_id, joined_at=now))
         self.db.add(ConversationMember(conversation_id=conv.id, user_id=participant_id, joined_at=now))
         self.db.commit()
         self.db.refresh(conv)
-
-        return _build_conversation(self.db, conv, sender_id), True
+        entity = _build_conversation(self.db, conv, sender_id)
+        assert entity is not None
+        return entity, True
 
     def get_conversation(self, conv_id: UUID, requesting_user_id: UUID) -> Optional[ConversationEntity]:
         conv = self.db.query(Conversation).filter(Conversation.id == conv_id).first()
@@ -153,7 +212,7 @@ class ChatRepository(IChatRepository):
 
     def get_conversations(self, user_id: UUID, page: int, per_page: int) -> list[ConversationEntity]:
         offset = (page - 1) * per_page
-        conv_ids = self.db.query(ConversationMember.conversation_id).filter(ConversationMember.user_id == user_id).subquery()
+        conv_ids = select(ConversationMember.conversation_id).where(ConversationMember.user_id == user_id)
         convs = (
             self.db.query(Conversation)
             .filter(Conversation.id.in_(conv_ids))
@@ -164,16 +223,18 @@ class ChatRepository(IChatRepository):
         )
         return [e for conv in convs if (e := _build_conversation(self.db, conv, user_id))]
 
-    def set_conversation_status(self, conv_id: UUID, status: str) -> ConversationEntity:
+    def set_conversation_status(self, conv_id: UUID, status: str, requesting_user_id: UUID) -> ConversationEntity:
         conv = self.db.query(Conversation).filter(Conversation.id == conv_id).first()
+        assert conv is not None
         conv.status = status
         conv.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(conv)
-        member = self.db.query(ConversationMember).filter(ConversationMember.conversation_id == conv_id).first()
-        return _build_conversation(self.db, conv, member.user_id)
+        entity = _build_conversation(self.db, conv, requesting_user_id)
+        assert entity is not None
+        return entity
 
-    # ── Messages ──────────────────────────────────────────────────────────────
+    # ── Messages ───────────────────────────────────────────────────────────────
 
     def save_message(
         self,
@@ -182,11 +243,13 @@ class ChatRepository(IChatRepository):
         sender_id: UUID,
         body: Optional[str] = None,
         message_type: str = "text",
-        media_url: Optional[str] = None,
+        media_urls: Optional[list[str]] = None,
         media_metadata: Optional[dict] = None,
         location_lat: Optional[float] = None,
         location_lon: Optional[float] = None,
         reply_to_id: Optional[UUID] = None,
+        deal_id: Optional[UUID] = None,
+        post_id: Optional[int] = None,
     ) -> MessageEntity:
         now = datetime.now(timezone.utc)
         msg = Message(
@@ -196,27 +259,28 @@ class ChatRepository(IChatRepository):
             sender_id=sender_id,
             message_type=message_type,
             body=body,
-            media_url=media_url,
+            media_urls=media_urls,
             media_metadata=media_metadata,
             location_lat=location_lat,
             location_lon=location_lon,
             reply_to_id=reply_to_id,
+            deal_id=deal_id,
+            post_id=post_id,
             is_deleted=False,
-            created_at=now,
+            sent_at=now,
         )
         self.db.add(msg)
         self.db.flush()
 
-        if media_url and message_type in ("image", "video", "document", "audio"):
-            self.db.add(ChatAttachment(
-                id=uuid4(),
-                message_id=msg.id,
-                context_type=context_type,
-                context_id=context_id,
-                media_type=message_type,
-                media_url=media_url,
-                created_at=now,
-            ))
+        if media_urls and message_type in ("image", "video", "document", "audio"):
+            for url in media_urls:
+                self.db.add(ChatAttachment(
+                    id=uuid4(),
+                    message_id=msg.id,
+                    media_type=message_type,
+                    media_url=url,
+                    created_at=now,
+                ))
 
         if context_type == "dm":
             self.db.query(Conversation).filter(Conversation.id == context_id).update({"updated_at": now})
@@ -228,8 +292,8 @@ class ChatRepository(IChatRepository):
     def get_messages(self, context_type: str, context_id: UUID, before: Optional[datetime], limit: int) -> list[MessageEntity]:
         q = self.db.query(Message).filter(Message.context_type == context_type, Message.context_id == context_id)
         if before is not None:
-            q = q.filter(Message.created_at < before)
-        rows = q.order_by(Message.created_at.desc()).limit(limit).all()
+            q = q.filter(Message.sent_at < before)
+        rows = q.order_by(Message.sent_at.desc()).limit(limit).all()
         return [_build_message(self.db, m) for m in rows]
 
     def mark_read(self, conv_id: UUID, user_id: UUID) -> None:
@@ -239,7 +303,7 @@ class ChatRepository(IChatRepository):
         ).update({"last_read_at": datetime.now(timezone.utc)})
         self.db.commit()
 
-    # ── DM membership helpers ─────────────────────────────────────────────────
+    # ── DM membership helpers ──────────────────────────────────────────────────
 
     def is_member(self, conv_id: UUID, user_id: UUID) -> bool:
         return (
@@ -248,26 +312,10 @@ class ChatRepository(IChatRepository):
             .first()
         ) is not None
 
-    def get_other_member_id(self, conv_id: UUID, user_id: UUID) -> Optional[UUID]:
-        row = (
-            self.db.query(ConversationMember.user_id)
-            .filter(ConversationMember.conversation_id == conv_id, ConversationMember.user_id != user_id)
-            .first()
-        )
-        return row[0] if row else None
-
     def get_conv_send_info(self, conv_id: UUID, sender_id: UUID) -> Optional[ConvSendGuard]:
-        """
-        Single JOIN query replacing 10 separate queries in the old send path:
-          - verifies sender is a member (join cm_sender)
-          - fetches the other member's user_id (join cm_receiver)
-          - fetches conversation status + initiator_id
-          - fetches sender's profile for the message payload
-        Returns None if conv doesn't exist or sender is not a member.
-        """
+        """Single JOIN replacing multiple queries: verifies membership, fetches status + initiator + receiver + sender profile."""
         cm_sender   = aliased(ConversationMember)
         cm_receiver = aliased(ConversationMember)
-
         row = (
             self.db.query(
                 Conversation.status,
@@ -277,6 +325,8 @@ class ChatRepository(IChatRepository):
                 Profile.name,
                 Profile.is_user_verified,
                 Profile.is_business_verified,
+                Profile.avatar_url,
+                Profile.role_id,
             )
             .join(cm_sender,   and_(cm_sender.conversation_id   == Conversation.id, cm_sender.user_id   == sender_id))
             .join(cm_receiver, and_(cm_receiver.conversation_id == Conversation.id, cm_receiver.user_id != sender_id))
@@ -284,10 +334,8 @@ class ChatRepository(IChatRepository):
             .filter(Conversation.id == conv_id)
             .first()
         )
-
         if row is None:
             return None
-
         return ConvSendGuard(
             status=row.status,
             initiator_id=row.initiator_id,
@@ -298,72 +346,20 @@ class ChatRepository(IChatRepository):
                 name=row.name,
                 is_user_verified=row.is_user_verified,
                 is_business_verified=row.is_business_verified,
+                avatar_url=row.avatar_url,
+                role=ROLE_NAMES.get(row.role_id, "Trader"),
+                is_online=True,  # sender is actively sending
             ),
         )
 
-    def persist_message(
-        self,
-        msg_id: UUID,
-        sent_at: datetime,
-        context_type: str,
-        context_id: UUID,
-        sender_id: UUID,
-        body: Optional[str],
-        message_type: str,
-        media_url: Optional[str],
-        media_metadata: Optional[dict],
-        location_lat: Optional[float],
-        location_lon: Optional[float],
-        reply_to_id: Optional[UUID],
-    ) -> None:
-        """
-        Background INSERT — runs after HTTP response is already sent.
-        Creates its own session because the request session is closed by this point.
-        """
-        from app.core.database.session import SessionLocal
-        db = SessionLocal()
-        try:
-            msg = Message(
-                id=msg_id,
-                context_type=context_type,
-                context_id=context_id,
-                sender_id=sender_id,
-                message_type=message_type,
-                body=body,
-                media_url=media_url,
-                media_metadata=media_metadata,
-                location_lat=location_lat,
-                location_lon=location_lon,
-                reply_to_id=reply_to_id,
-                is_deleted=False,
-                created_at=sent_at,
-            )
-            db.add(msg)
-            if context_type == "dm":
-                db.query(Conversation).filter(Conversation.id == context_id).update({"updated_at": sent_at})
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
-    # ── Group helpers ─────────────────────────────────────────────────────────
+    # ── Group helpers ──────────────────────────────────────────────────────────
 
     def get_group_member_role(self, group_id: UUID, user_id: UUID) -> Optional[str]:
-        row = (
-            self.db.query(GroupMember.role)
-            .filter(GroupMember.group_id == group_id, GroupMember.user_id == user_id)
-            .first()
-        )
+        row = self.db.query(GroupMember.role).filter(GroupMember.group_id == group_id, GroupMember.user_id == user_id).first()
         return row[0] if row else None
 
     def is_group_member_frozen(self, group_id: UUID, user_id: UUID) -> bool:
-        row = (
-            self.db.query(GroupMember.is_frozen)
-            .filter(GroupMember.group_id == group_id, GroupMember.user_id == user_id)
-            .first()
-        )
+        row = self.db.query(GroupMember.is_frozen).filter(GroupMember.group_id == group_id, GroupMember.user_id == user_id).first()
         return bool(row[0]) if row else False
 
     def get_group_chat_perm(self, group_id: UUID) -> Optional[str]:
