@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
-from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -162,15 +162,20 @@ class GroupDeal(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     commodity_id: Mapped[int] = mapped_column(Integer, ForeignKey("commodities.id"), nullable=False)
+    deal_type: Mapped[str] = mapped_column(String(10), nullable=False)              # selling | buying
     title: Mapped[str] = mapped_column(String(200))
     caption: Mapped[str] = mapped_column(Text)
     grain_type: Mapped[str] = mapped_column(String(50))
-    grain_size: Mapped[str] = mapped_column(String(50))
+    grain_size: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    broken_percentage: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
     commodity_quantity: Mapped[float] = mapped_column(Numeric(12, 2))
-    quantity_unit: Mapped[str] = mapped_column(String(20))   # MT | quintal
-    commodity_price: Mapped[float] = mapped_column(Numeric(12, 2))
-    price_type: Mapped[str] = mapped_column(String(20))      # fixed | negotiable
+    quantity_unit: Mapped[str] = mapped_column(String(20))                          # MT | quintal
+    commodity_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    price_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)    # fixed | negotiable
+    location: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    image_urls: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text), nullable=True)
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (CheckConstraint("deal_type IN ('selling', 'buying')", name="ck_group_deals_deal_type"),)
     # NULL until author promotes the deal to their public feed
     post_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
@@ -206,4 +211,38 @@ class GroupJoinRequest(Base):
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     resolved_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class PersonalDeal(Base):
+    """Deal/Requirement created directly inside a DM conversation between two users."""
+    __tablename__ = "personal_deals"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    posted_by: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    commodity_id: Mapped[int] = mapped_column(Integer, ForeignKey("commodities.id"), nullable=False)
+    deal_type: Mapped[str] = mapped_column(String(10), nullable=False)              # selling | buying
+    title: Mapped[str] = mapped_column(String(200))
+    caption: Mapped[str] = mapped_column(Text)
+    grain_type: Mapped[str] = mapped_column(String(50))
+    grain_size: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    broken_percentage: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+    commodity_quantity: Mapped[float] = mapped_column(Numeric(12, 2))
+    quantity_unit: Mapped[str] = mapped_column(String(20))                          # MT | quintal
+    commodity_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    price_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)    # fixed | negotiable
+    location: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    image_urls: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text), nullable=True)
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (CheckConstraint("deal_type IN ('selling', 'buying')", name="ck_personal_deals_deal_type"),)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
