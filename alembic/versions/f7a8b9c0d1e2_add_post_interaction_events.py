@@ -70,7 +70,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_pie_event_type_processed", table_name="post_interaction_events")
+    op.execute("DROP INDEX IF EXISTS ix_pie_event_type_processed")
     op.drop_index("ix_pie_created_at", table_name="post_interaction_events")
     op.drop_index("ix_pie_event_type_created", table_name="post_interaction_events")
     op.drop_index("ix_pie_profile_post", table_name="post_interaction_events")
