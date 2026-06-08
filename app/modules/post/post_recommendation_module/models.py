@@ -6,6 +6,8 @@ from pgvector.sqlalchemy import Vector
 
 from app.core.database.base import Base
 
+# UserTasteProfile has moved to app.modules.post.post_user_interaction.models
+
 
 class PostEmbedding(Base):
     __tablename__ = "post_embeddings"
@@ -46,25 +48,6 @@ class PopularPost(Base):
         nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-
-class UserTasteProfile(Base):
-    __tablename__ = "user_taste_profiles"
-
-    profile_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("profile.id", ondelete="CASCADE"), primary_key=True
-    )
-    market_update_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    deal_req_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    discussion_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    knowledge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
 
 
 class SeenPost(Base):

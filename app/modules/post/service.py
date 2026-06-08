@@ -16,6 +16,7 @@ from app.modules.post.schemas import (
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
+from app.modules.post.post_user_interaction import service as interaction_service
 from app.shared.utils.storage import (
     ALLOWED_IMAGE_TYPES,
     StorageError,
@@ -329,7 +330,8 @@ def _record_view(db: Session, post_id: int, profile_id: int) -> None:
         )
         db.commit()
     except IntegrityError:
-        db.rollback()  # duplicate view – unique constraint, no increment
+        db.rollback()  # duplicate view — log as revisit instead of incrementing
+        interaction_service.record_revisit_event(db, profile_id, post_id)
 
 
 # ----------------------------------------------------------------------------
@@ -362,7 +364,7 @@ def toggle_like(db: Session, post_id: int, profile_id: int) -> LikeResponse:
         db.commit()
         db.refresh(post)
         try:
-            rec_service.record_interaction(db, profile_id, post.category_id)
+            interaction_service.record_interaction(db, profile_id, post.category_id, "like", post.commodity_id, post.profile_id)
         except Exception:
             pass
         return LikeResponse(liked=True, like_count=post.like_count)
@@ -388,7 +390,7 @@ def add_comment(db: Session, post_id: int, profile_id: int, payload: CommentCrea
     db.refresh(comment)
 
     try:
-        rec_service.record_interaction(db, profile_id, post.category_id)
+        interaction_service.record_interaction(db, profile_id, post.category_id, "comment", post.commodity_id, post.profile_id)
     except Exception:
         pass
 
@@ -455,6 +457,10 @@ def record_share(db: Session, post_id: int, profile_id: int) -> ShareResponse:
     )
     db.commit()
     db.refresh(post)
+    try:
+        interaction_service.record_interaction(db, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
+    except Exception:
+        pass
     return ShareResponse(share_count=post.share_count)
 
 
@@ -486,7 +492,7 @@ def toggle_save(db: Session, post_id: int, profile_id: int) -> SaveResponse:
         )
         db.commit()
         try:
-            rec_service.record_interaction(db, profile_id, post.category_id)
+            interaction_service.record_interaction(db, profile_id, post.category_id, "save", post.commodity_id, post.profile_id)
         except Exception:
             pass
         return SaveResponse(saved=True)

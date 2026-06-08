@@ -1,9 +1,9 @@
 """
 Post Recommendation Service
 
-Write path  – index_post():         called by post service on publish
-Read path   – get_recommended():    returns list[{post_id, score}] for the feed
-Taste path  – record_interaction(): called by post service on every engagement
+Write path  – index_post():            called by post service on publish
+Read path   – get_recommended_posts(): returns personalised feed cards
+Taste path  – taste_service.get_taste_weights() (post_user_interaction)
 """
 import math
 from datetime import datetime, timezone, timedelta
@@ -14,13 +14,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.modules.post.post_recommendation_module.constants import (
     CATEGORY_NAMES, CATEGORY_EXPIRY_DAYS, COMMODITY_ID_TO_IDX,
-    DEFAULT_TASTE, FEED_SIZE, FETCH_TARGET,
+    FEED_SIZE, FETCH_TARGET,
     FRESH_BOOST_PEAK, FRESH_DECAY_TAU, FRESH_INJECT_HOURS, FRESH_SLOTS,
     MAX_PER_AUTHOR, MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
 )
 from app.modules.post.post_recommendation_module.models import (
-    PostEmbedding, PopularPost, SeenPost, UserTasteProfile,
+    PostEmbedding, PopularPost, SeenPost,
 )
+from app.modules.post.post_user_interaction import taste_service
 from app.modules.post.post_recommendation_module.vector import (
     build_post_vector,
     build_user_feed_vector,
@@ -108,65 +109,15 @@ def remove_post_index(db: Session, post_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Taste path: record user interaction (like / save / comment)
+# Taste path: record_interaction and get_taste_for_feed have moved to
+# app.modules.post.post_user_interaction.service
 # ---------------------------------------------------------------------------
-
-def record_interaction(db: Session, profile_id: int, category_id: int) -> None:
-    category = CATEGORY_NAMES.get(category_id)
-    if not category:
-        return
-
-    col_map = {
-        "market_update": "market_update_count",
-        "deal_req": "deal_req_count",
-        "discussion": "discussion_count",
-        "knowledge": "knowledge_count",
-    }
-    col = col_map.get(category)
-    if not col:
-        return
-
-    taste = db.query(UserTasteProfile).filter(
-        UserTasteProfile.profile_id == profile_id
-    ).first()
-
-    if taste is None:
-        profile = db.query(Profile).filter(Profile.id == profile_id).first()
-        if not profile:
-            return
-        defaults = DEFAULT_TASTE.get(profile.role_id, DEFAULT_TASTE[1])
-        taste = UserTasteProfile(
-            profile_id=profile_id,
-            market_update_count=defaults["market_update"],
-            deal_req_count=defaults["deal_req"],
-            discussion_count=defaults["discussion"],
-            knowledge_count=defaults["knowledge"],
-            total_events=0,
-        )
-        db.add(taste)
-        db.flush()
-
-    setattr(taste, col, getattr(taste, col) + 1)
-    taste.total_events += 1
-    db.commit()
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers for the read path
 # ---------------------------------------------------------------------------
 
-def _get_or_seed_taste(db: Session, profile_id: int, role_id: int) -> dict[str, int]:
-    taste = db.query(UserTasteProfile).filter(
-        UserTasteProfile.profile_id == profile_id
-    ).first()
-    if taste:
-        return {
-            "market_update": taste.market_update_count,
-            "deal_req":      taste.deal_req_count,
-            "discussion":    taste.discussion_count,
-            "knowledge":     taste.knowledge_count,
-        }
-    return DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
 
 
 def _seen_post_ids(db: Session, profile_id: int) -> set[int]:
@@ -249,11 +200,21 @@ def _get_popular_posts(
 # Reranking
 # ---------------------------------------------------------------------------
 
-def _taste_weight(counts: dict[str, int], category: str) -> float:
-    total = sum(math.log1p(v) for v in counts.values())
+def _category_weight(cat_weights: dict[str, float], category: str) -> float:
+    total = sum(math.log1p(v) for v in cat_weights.values())
     if total == 0:
-        return 1.0 / len(counts)
-    return math.log1p(counts.get(category, 0)) / total
+        return 1.0 / max(len(cat_weights), 1)
+    return math.log1p(cat_weights.get(category, 0.05)) / total
+
+
+def _commodity_multiplier(commodity_weights: dict[str, float], commodity_id: int | None) -> float:
+    if not commodity_id or not commodity_weights:
+        return 1.0
+    score = commodity_weights.get(str(commodity_id), 0.0)
+    if score <= 0:
+        return 1.0
+    max_score = max(commodity_weights.values())
+    return 1.0 + 0.3 * min(score / max(max_score, 0.05), 1.0)
 
 
 def _freshness(created_at: datetime) -> float:
@@ -266,7 +227,9 @@ def _freshness(created_at: datetime) -> float:
 def _rerank(
     db: Session,
     candidates: list[dict],
-    taste_counts: dict[str, int],
+    cat_weights: dict[str, float],
+    commodity_weights: dict[str, float],
+    author_weights: dict[str, float],
     followed_user_ids: set,
 ) -> list[dict]:
     from app.modules.post.models import Post
@@ -295,11 +258,18 @@ def _rerank(
 
         author_profile = profiles.get(post.profile_id)
         author_user_id = author_profile.users_id if author_profile else None
-        social = 1.5 if author_user_id in followed_user_ids else 1.0
+        is_followed = author_user_id in followed_user_ids
+
+        if is_followed:
+            social = 1.5
+        else:
+            author_score = author_weights.get(str(post.profile_id), 0.0)
+            social = taste_service.get_author_affinity(author_score)
 
         final = (
             c["vec_score"]
-            * _taste_weight(taste_counts, c["category"])
+            * _category_weight(cat_weights, c["category"])
+            * _commodity_multiplier(commodity_weights, post.commodity_id)
             * (1 + engagement)
             * _freshness(post.created_at)
             * social
@@ -537,7 +507,9 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
             commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
         )
 
-    taste_counts = _get_or_seed_taste(db, profile_id, profile.role_id)
+    cat_weights       = taste_service.get_taste_weights(db, profile_id, "category", profile.role_id)
+    commodity_weights = taste_service.get_taste_weights(db, profile_id, "commodity")
+    author_weights    = taste_service.get_taste_weights(db, profile_id, "author")
 
     followed_user_ids = {
         row.following_id
@@ -587,7 +559,7 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     )
     pool.extend(fresh)
 
-    scored = _rerank(db, pool, taste_counts, followed_user_ids)
+    scored = _rerank(db, pool, cat_weights, commodity_weights, author_weights, followed_user_ids)
     final = _apply_diversity(scored, limit=limit)
 
     return _build_feed_cards(db, final, profile_id)

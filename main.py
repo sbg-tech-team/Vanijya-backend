@@ -10,6 +10,7 @@ from app.modules.profile.router import router as profile_router
 from app.modules.groups.router import router as groups_router
 from app.modules.post.router import router as post_router
 from app.modules.post.post_recommendation_module.router import router as post_rec_router
+from app.modules.post.post_user_interaction.router import router as post_interaction_router
 from app.modules.connections.router import (
     connections_router,
     recommendations_router,
@@ -49,6 +50,7 @@ app.include_router(profile_router)
 app.include_router(groups_router)
 app.include_router(post_router)
 app.include_router(post_rec_router)
+app.include_router(post_interaction_router)
 app.include_router(connections_router)
 app.include_router(recommendations_router)
 app.include_router(news_router)

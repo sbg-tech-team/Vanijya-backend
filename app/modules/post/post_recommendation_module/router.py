@@ -2,9 +2,11 @@
 Post recommendation endpoints.
 
 GET  /posts/recommendation/feed
-POST /posts/recommendation/seen
+POST /posts/recommendation/seen           ← deprecated no-op shim
 POST /posts/recommendation/jobs/expiry
 POST /posts/recommendation/jobs/popular-sync
+
+Interaction events → POST /posts/interactions/batch  (post_user_interaction router)
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -41,11 +43,10 @@ def mark_seen(
     db: Session = Depends(get_db),
 ):
     """
-    Mark posts as seen. Frontend decides when a post qualifies as seen
-    (dwell time, scroll-past, explicit open). Excluded from recommendation
-    feed for 30 days from first call.
+    Deprecated — use POST /posts/recommendation/interactions instead.
+    Kept as a no-op shim for backward compatibility with older clients.
     """
-    service.record_seen(db, profile_id, payload.post_ids)
+    pass
 
 
 @router.post("/jobs/expiry", response_model=JobResult)
