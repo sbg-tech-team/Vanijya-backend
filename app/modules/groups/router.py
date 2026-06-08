@@ -35,7 +35,7 @@ from app.modules.groups.service import (
     add_members,
     close_group_deal,
     create_group,
-    create_group_deal,
+
     delete_group,
     delete_group_media,
     get_group,
@@ -428,19 +428,6 @@ def report_group_api(
 
 
 # ── Group Deals ──────────────────────────────────────────────────────────────
-
-@router.post("/{group_id}/deals", status_code=201)
-def create_deal_api(
-    group_id: UUID,
-    payload: GroupDealCreate,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    result = _handle(
-        create_group_deal, db, group_id, current_user.user_id, current_user.profile_id, payload
-    )
-    return ok(result, "Deal created")
-
 
 @router.get("/{group_id}/deals")
 def list_deals_api(

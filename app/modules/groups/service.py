@@ -1136,6 +1136,7 @@ def _deal_to_response(deal: GroupDeal) -> GroupDealResponse:
         quantity_unit=deal.quantity_unit,
         commodity_price=float(deal.commodity_price),
         price_type=deal.price_type,
+        image_urls=deal.image_urls,
         is_closed=deal.is_closed,
         post_id=deal.post_id,
         created_at=deal.created_at,
@@ -1205,8 +1206,8 @@ def _insert_deal_chat_card(db: Session, deal: GroupDeal) -> None:
         context_id=deal.group_id,
         sender_id=deal.posted_by,
         message_type="deal",
+        deal_id=deal.id,
         media_metadata={
-            "group_deal_id": str(deal.id),
             "title": deal.title,
             "commodity_id": deal.commodity_id,
         },
@@ -1218,7 +1219,6 @@ def create_group_deal(
     db: Session,
     group_id: UUID,
     user_id: UUID,
-    profile_id: int,
     payload: GroupDealCreate,
 ) -> GroupDealResponse:
     group = _get_group_or_raise(db, group_id)
@@ -1243,6 +1243,7 @@ def create_group_deal(
             quantity_unit=payload.quantity_unit,
             commodity_price=payload.commodity_price,
             price_type=payload.price_type,
+            image_urls=payload.image_urls,
         )
         db.add(deal)
         db.flush()
@@ -1250,7 +1251,10 @@ def create_group_deal(
         _insert_deal_chat_card(db, deal)
 
         if payload.publish_to_feed:
-            post = _create_post_from_deal(db, deal, profile_id, payload.feed_is_public)
+            profile = db.query(Profile).filter(Profile.users_id == user_id).first()
+            if profile is None:
+                raise GroupNotFoundError("Profile not found")
+            post = _create_post_from_deal(db, deal, profile.id, payload.feed_is_public)
             deal.post_id = post.id
 
         db.commit()

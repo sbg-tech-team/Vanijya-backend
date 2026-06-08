@@ -201,6 +201,7 @@ class GroupDealCreate(BaseModel):
     quantity_unit: Literal["MT", "quintal"]
     commodity_price: float
     price_type: Literal["fixed", "negotiable"]
+    image_urls: Optional[List[str]] = None
     publish_to_feed: bool = False
     feed_is_public: bool = True
 
@@ -214,6 +215,7 @@ class GroupDealUpdate(BaseModel):
     quantity_unit: Optional[Literal["MT", "quintal"]] = None
     commodity_price: Optional[float] = None
     price_type: Optional[Literal["fixed", "negotiable"]] = None
+    image_urls: Optional[List[str]] = None
 
 
 class GroupDealResponse(BaseModel):
@@ -229,6 +231,7 @@ class GroupDealResponse(BaseModel):
     quantity_unit: str
     commodity_price: float
     price_type: str
+    image_urls: Optional[List[str]] = None
     is_closed: bool
     post_id: Optional[int] = None
     created_at: datetime
