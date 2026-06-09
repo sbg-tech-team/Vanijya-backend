@@ -13,7 +13,7 @@ from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
     PostCreate, PostUpdate, PostResponse, PostDealResponse,
-    FeedPostCard, FollowingFeedResponse,
+    FeedPostCard, MyPostCard, FollowingFeedResponse,
     CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
@@ -288,6 +288,72 @@ def _batch_feed_cards(
     return cards
 
 
+def _batch_my_post_cards(
+    db: Session,
+    posts: list[Post],
+    profile_id: int,
+) -> list[MyPostCard]:
+    """FeedPostCard fields + owner-only fields (created_at, is_public, etc.) for GET /posts/mine."""
+    if not posts:
+        return []
+
+    post_ids = [p.id for p in posts]
+
+    liked_ids = {
+        row[0] for row in db.query(PostLike.post_id)
+        .filter(PostLike.profile_id == profile_id, PostLike.post_id.in_(post_ids)).all()
+    }
+    saved_ids = {
+        row[0] for row in db.query(PostSave.post_id)
+        .filter(PostSave.profile_id == profile_id, PostSave.post_id.in_(post_ids)).all()
+    }
+
+    author = (
+        db.query(Profile)
+        .options(selectinload(Profile.business))
+        .filter(Profile.id == profile_id)
+        .first()
+    )
+    biz = author.business if author else None
+
+    cards = []
+    for post in posts:
+        cards.append(MyPostCard(
+            id=post.id,
+            profile_id=post.profile_id,
+            category_id=post.category_id,
+            commodity_id=post.commodity_id,
+            title=post.title,
+            caption=post.caption,
+            image_urls=post.image_urls,
+            source_url=post.source_url,
+            allow_comments=post.allow_comments,
+            deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
+            location_name=post.location_name,
+            location_city=biz.city if biz else None,
+            location_state=biz.state if biz else None,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            is_liked=post.id in liked_ids,
+            is_saved=post.id in saved_ids,
+            created_at=post.created_at,
+            is_public=post.is_public,
+            target_roles=post.target_roles,
+            view_count=post.view_count,
+            share_count=post.share_count,
+            save_count=post.save_count,
+            author_name=author.name if author else "",
+            author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
+            author_user_id=str(author.users_id) if author else "",
+            author_company=biz.business_name if biz else None,
+            author_avatar_url=author.avatar_url if author else None,
+            is_following=False,
+            is_user_verified=author.is_user_verified if author else False,
+            is_business_verified=author.is_business_verified if author else False,
+        ))
+    return cards
+
+
 def _following_taste_counts(taste: UserTasteProfile | None, role_id: int) -> dict[str, int]:
     if taste and taste.total_events > 0:
         return {
@@ -495,7 +561,7 @@ def get_feed(db: Session, viewer_profile_id: int, limit: int = 20, offset: int =
     return _batch_post_responses(db, posts, viewer_profile_id)
 
 
-def get_my_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
+def get_my_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[MyPostCard]:
     posts = (
         db.query(Post)
         .options(selectinload(Post.deal_details))
@@ -505,7 +571,7 @@ def get_my_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0)
         .offset(offset)
         .all()
     )
-    return _batch_post_responses(db, posts, profile_id)
+    return _batch_my_post_cards(db, posts, profile_id)
 
 
 # ----------------------------------------------------------------------------

@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.modules.post.schemas import FeedPostCard
+
 
 # ---------------------------------------------------------------------------
 # Reference data responses
@@ -119,6 +121,7 @@ class ProfilePublicResponse(BaseModel):
     avatar_url: Optional[str] = None
     is_following: bool = False
     message_request_status: Optional[str] = None
+    posts: List["FeedPostCard"] = []
 
 
 # ---------------------------------------------------------------------------

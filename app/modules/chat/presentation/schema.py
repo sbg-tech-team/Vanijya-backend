@@ -1,5 +1,5 @@
-### This is all the schema that the api endpoints accept and payload requirements --- like type check 
-#so this is basically pydantic models 
+### This is all the schema that the api endpoints accept and payload requirements --- like type check
+#so this is basically pydantic models
 from __future__ import annotations
 
 from typing import Optional

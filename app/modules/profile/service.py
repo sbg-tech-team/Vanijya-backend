@@ -418,8 +418,16 @@ def delete_user(db: Session, user_id: UUID) -> None:
 
 
 def get_profile_by_id(
-    db: Session, profile_id: int, viewer_user_id: UUID | None = None
+    db: Session,
+    profile_id: int,
+    viewer_user_id: UUID | None = None,
+    viewer_profile_id: int | None = None,
 ) -> ProfilePublicResponse:
+    from app.modules.post.models import PostSave
+    from app.modules.post.service import _batch_feed_cards
+    from sqlalchemy.orm import selectinload as _sil
+    from app.modules.post.models import Post as _Post
+
     profile = (
         db.query(Profile)
         .options(
@@ -432,9 +440,15 @@ def get_profile_by_id(
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 
-    posts_count = (
-        db.query(func.count(Post.id)).filter(Post.profile_id == profile_id).scalar() or 0
+    posts = (
+        db.query(_Post)
+        .options(_sil(_Post.deal_details))
+        .filter(_Post.profile_id == profile_id)
+        .order_by(_Post.created_at.desc())
+        .limit(20)
+        .all()
     )
+    posts_count = len(posts)
 
     is_following = False
     message_request_status = None
@@ -456,6 +470,8 @@ def get_profile_by_id(
         if msg_req:
             message_request_status = msg_req.status
 
+    feed_cards = _batch_feed_cards(db, posts, viewer_profile_id, viewer_users_id=viewer_user_id) if viewer_profile_id else []
+
     return ProfilePublicResponse(
         id=profile.id,
         name=profile.name,
@@ -474,12 +490,20 @@ def get_profile_by_id(
         avatar_url=profile.avatar_url,
         is_following=is_following,
         message_request_status=message_request_status,
+        posts=feed_cards,
     )
 
 
 def get_profile_by_user_id(
-    db: Session, user_id: UUID, viewer_user_id: UUID | None = None
+    db: Session,
+    user_id: UUID,
+    viewer_user_id: UUID | None = None,
+    viewer_profile_id: int | None = None,
 ) -> ProfilePublicResponse:
+    from app.modules.post.service import _batch_feed_cards
+    from sqlalchemy.orm import selectinload as _sil
+    from app.modules.post.models import Post as _Post
+
     profile = (
         db.query(Profile)
         .options(
@@ -492,9 +516,15 @@ def get_profile_by_user_id(
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 
-    posts_count = (
-        db.query(func.count(Post.id)).filter(Post.profile_id == profile.id).scalar() or 0
+    posts = (
+        db.query(_Post)
+        .options(_sil(_Post.deal_details))
+        .filter(_Post.profile_id == profile.id)
+        .order_by(_Post.created_at.desc())
+        .limit(20)
+        .all()
     )
+    posts_count = len(posts)
 
     is_following = False
     message_request_status = None
@@ -516,6 +546,8 @@ def get_profile_by_user_id(
         if msg_req:
             message_request_status = msg_req.status
 
+    feed_cards = _batch_feed_cards(db, posts, viewer_profile_id, viewer_users_id=viewer_user_id) if viewer_profile_id else []
+
     return ProfilePublicResponse(
         id=profile.id,
         name=profile.name,
@@ -534,6 +566,7 @@ def get_profile_by_user_id(
         avatar_url=profile.avatar_url,
         is_following=is_following,
         message_request_status=message_request_status,
+        posts=feed_cards,
     )
 
 

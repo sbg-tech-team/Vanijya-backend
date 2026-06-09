@@ -278,6 +278,19 @@ class FeedPostCard(BaseModel):
 
 
 # ----------------------------------------------------------------------------
+# My-posts card — FeedPostCard + owner-only management fields
+# ----------------------------------------------------------------------------
+
+class MyPostCard(FeedPostCard):
+    created_at: datetime          # override parent's exclude=True — visible to owner
+    is_public: bool
+    target_roles: Optional[List[int]] = None
+    view_count: int
+    share_count: int
+    save_count: int
+
+
+# ----------------------------------------------------------------------------
 # Following feed
 # ----------------------------------------------------------------------------
 

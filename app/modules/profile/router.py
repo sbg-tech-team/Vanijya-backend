@@ -230,7 +230,7 @@ def get_profile_api(
     if cu.profile_id == profile_id:
         return RedirectResponse(url="/profile/me", status_code=307)
     try:
-        result = get_profile_by_id(db, profile_id, viewer_user_id=cu.user_id)
+        result = get_profile_by_id(db, profile_id, viewer_user_id=cu.user_id, viewer_profile_id=cu.profile_id)
         return ok(result, "Profile fetched successfully")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -250,7 +250,7 @@ def get_profile_by_user_api(
     if cu.user_id == user_id:
         return RedirectResponse(url="/profile/me", status_code=307)
     try:
-        result = get_profile_by_user_id(db, user_id, viewer_user_id=cu.user_id)
+        result = get_profile_by_user_id(db, user_id, viewer_user_id=cu.user_id, viewer_profile_id=cu.profile_id)
         return ok(result, "Profile fetched successfully")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
