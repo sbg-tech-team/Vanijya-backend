@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_profile_id, get_db
-from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse
+from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, FeedPostCard
 from app.modules.post import service
 from app.shared.utils.response import ok
 
@@ -81,7 +81,7 @@ def get_following_feed_api(
     return service.get_following_feed(db, profile_id, limit, cursor)
 
 
-@router.get("/saved")
+@router.get("/saved", response_model=list[FeedPostCard])
 def get_saved_posts_api(
     profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,

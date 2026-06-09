@@ -857,7 +857,7 @@ def get_following_feed(
     )
 
 
-def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
+def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[FeedPostCard]:
     saves = (
         db.query(PostSave)
         .filter(PostSave.profile_id == profile_id)
@@ -878,4 +878,4 @@ def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int =
     )
     post_map = {p.id: p for p in posts}
     ordered = [post_map[pid] for pid in post_ids if pid in post_map]
-    return _batch_post_responses(db, ordered, profile_id)
+    return _batch_feed_cards(db, ordered, profile_id)
