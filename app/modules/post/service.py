@@ -2,7 +2,7 @@ import asyncio
 import os
 import uuid
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import IntegrityError
 
 from datetime import datetime, timezone, timedelta
@@ -135,6 +135,64 @@ def _to_post_response(db: Session, post: Post, viewer_profile_id: int) -> PostRe
         share_count=post.share_count,
         save_count=post.save_count,
     )
+
+
+def _batch_post_responses(
+    db: Session,
+    posts: list[Post],
+    viewer_profile_id: int,
+) -> list[PostResponse]:
+    """Build PostResponse objects for a list of posts using batch DB lookups.
+
+    Replaces per-post _is_liked / _is_saved calls with two single queries,
+    eliminating the N+1 pattern in feed endpoints.
+    """
+    if not posts:
+        return []
+
+    post_ids = [p.id for p in posts]
+
+    liked_ids = {
+        row[0]
+        for row in db.query(PostLike.post_id)
+        .filter(PostLike.profile_id == viewer_profile_id, PostLike.post_id.in_(post_ids))
+        .all()
+    }
+    saved_ids = {
+        row[0]
+        for row in db.query(PostSave.post_id)
+        .filter(PostSave.profile_id == viewer_profile_id, PostSave.post_id.in_(post_ids))
+        .all()
+    }
+
+    return [
+        PostResponse(
+            id=post.id,
+            profile_id=post.profile_id,
+            category_id=post.category_id,
+            commodity_id=post.commodity_id,
+            title=post.title,
+            caption=post.caption,
+            image_urls=post.image_urls,
+            source_url=post.source_url,
+            location_name=post.location_name,
+            latitude=post.latitude,
+            longitude=post.longitude,
+            is_public=post.is_public,
+            target_roles=post.target_roles,
+            allow_comments=post.allow_comments,
+            deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
+            created_at=post.created_at,
+            is_liked=post.id in liked_ids,
+            is_saved=post.id in saved_ids,
+            view_count=post.view_count,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            share_count=post.share_count,
+            save_count=post.save_count,
+        )
+        for post in posts
+    ]
 
 
 def _get_post_or_raise(db: Session, post_id: int) -> Post:
@@ -294,25 +352,27 @@ async def delete_post(db: Session, post_id: int, profile_id: int) -> None:
 def get_feed(db: Session, viewer_profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
     posts = (
         db.query(Post)
+        .options(selectinload(Post.deal_details))
         .filter(Post.profile_id.in_(_active_profile_ids(db)))
         .order_by(Post.created_at.desc())
         .limit(limit)
         .offset(offset)
         .all()
     )
-    return [_to_post_response(db, post, viewer_profile_id) for post in posts]
+    return _batch_post_responses(db, posts, viewer_profile_id)
 
 
 def get_my_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
     posts = (
         db.query(Post)
+        .options(selectinload(Post.deal_details))
         .filter(Post.profile_id == profile_id)
         .order_by(Post.created_at.desc())
         .limit(limit)
         .offset(offset)
         .all()
     )
-    return [_to_post_response(db, post, profile_id) for post in posts]
+    return _batch_post_responses(db, posts, profile_id)
 
 
 # ----------------------------------------------------------------------------
@@ -567,6 +627,7 @@ def get_following_feed(db: Session, profile_id: int, limit: int = 20, offset: in
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     posts = (
         db.query(Post)
+        .options(selectinload(Post.deal_details))
         .filter(
             Post.profile_id.in_(followed_profile_ids),
             Post.created_at >= cutoff,
@@ -576,7 +637,7 @@ def get_following_feed(db: Session, profile_id: int, limit: int = 20, offset: in
         .offset(offset)
         .all()
     )
-    return [_to_post_response(db, post, profile_id) for post in posts]
+    return _batch_post_responses(db, posts, profile_id)
 
 
 def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
@@ -591,6 +652,7 @@ def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int =
     post_ids = [s.post_id for s in saves]
     posts = (
         db.query(Post)
+        .options(selectinload(Post.deal_details))
         .filter(
             Post.id.in_(post_ids),
             Post.profile_id.in_(_active_profile_ids(db)),
@@ -598,4 +660,5 @@ def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int =
         .all()
     )
     post_map = {p.id: p for p in posts}
-    return [_to_post_response(db, post_map[pid], profile_id) for pid in post_ids if pid in post_map]
+    ordered = [post_map[pid] for pid in post_ids if pid in post_map]
+    return _batch_post_responses(db, ordered, profile_id)

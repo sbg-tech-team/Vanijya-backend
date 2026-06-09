@@ -9,7 +9,7 @@ import math
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import IntegrityError
 
 from app.modules.post.post_recommendation_module.constants import (
@@ -231,14 +231,20 @@ def _rerank(
     commodity_weights: dict[str, float],
     author_weights: dict[str, float],
     followed_user_ids: set,
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     from app.modules.post.models import Post
 
     if not candidates:
-        return []
+        return [], {}
 
     post_ids = list({c["post_id"] for c in candidates})
-    posts = {p.id: p for p in db.query(Post).filter(Post.id.in_(post_ids)).all()}
+    posts = {
+        p.id: p
+        for p in db.query(Post)
+        .options(selectinload(Post.deal_details))
+        .filter(Post.id.in_(post_ids))
+        .all()
+    }
 
     profile_ids = list({p.profile_id for p in posts.values()})
     profiles = {
@@ -283,7 +289,7 @@ def _rerank(
         })
 
     scored.sort(key=lambda x: x["final_score"], reverse=True)
-    return scored
+    return scored, posts
 
 
 def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
@@ -310,7 +316,12 @@ def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
 _ROLE_NAMES = {1: "trader", 2: "broker", 3: "exporter"}
 
 
-def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) -> list:
+def _build_feed_cards(
+    db: Session,
+    final: list[dict],
+    viewer_profile_id: int,
+    posts: dict | None = None,
+) -> list:
     from sqlalchemy import func
     from app.modules.post.models import Post, PostLike, PostSave, PostComment
     from app.modules.post.schemas import PostDealResponse
@@ -320,10 +331,23 @@ def _build_feed_cards(db: Session, final: list[dict], viewer_profile_id: int) ->
         return []
 
     post_ids = [f["post_id"] for f in final]
-    posts = {p.id: p for p in db.query(Post).filter(Post.id.in_(post_ids)).all()}
+    if posts is None:
+        posts = {
+            p.id: p
+            for p in db.query(Post)
+            .options(selectinload(Post.deal_details))
+            .filter(Post.id.in_(post_ids))
+            .all()
+        }
 
     author_ids = list({p.profile_id for p in posts.values()})
-    authors = {p.id: p for p in db.query(Profile).filter(Profile.id.in_(author_ids)).all()}
+    authors = {
+        p.id: p
+        for p in db.query(Profile)
+        .options(selectinload(Profile.business))
+        .filter(Profile.id.in_(author_ids))
+        .all()
+    }
 
     liked_ids = {
         r[0] for r in db.query(PostLike.post_id).filter(
@@ -482,7 +506,15 @@ def _ensure_fresh_in_pool(
 # ---------------------------------------------------------------------------
 
 def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) -> list:
-    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    profile = (
+        db.query(Profile)
+        .options(
+            selectinload(Profile.commodities),
+            selectinload(Profile.business),
+        )
+        .filter(Profile.id == profile_id)
+        .first()
+    )
     if not profile:
         raise ValueError(f"Profile {profile_id} not found")
 
@@ -490,12 +522,12 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     commodity_idxs = {
         COMMODITY_ID_TO_IDX[cid] for cid in commodity_ids if cid in COMMODITY_ID_TO_IDX
     }
-
+    # user vector fetch
     from app.modules.profile.models import UserEmbedding
     emb_row = db.query(UserEmbedding).filter(
         UserEmbedding.user_id == profile.users_id
     ).first()
-
+    # user vector convert or build
     if emb_row and emb_row.post_feed_vector is not None:
         user_vec = _parse_vec(emb_row.post_feed_vector)
     else:
@@ -559,7 +591,7 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     )
     pool.extend(fresh)
 
-    scored = _rerank(db, pool, cat_weights, commodity_weights, author_weights, followed_user_ids)
+    scored, posts = _rerank(db, pool, cat_weights, commodity_weights, author_weights, followed_user_ids)
     final = _apply_diversity(scored, limit=limit)
 
-    return _build_feed_cards(db, final, profile_id)
+    return _build_feed_cards(db, final, profile_id, posts=posts)
