@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import uuid
 
@@ -11,12 +12,16 @@ from app.modules.post.models import CATEGORY_DEAL, Post, PostDealDetails, PostVi
 from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
-    PostCreate, PostUpdate, PostResponse, PostDealResponse,
+    PostCreate, PostUpdate, PostResponse, PostDealResponse, FollowingFeedResponse,
     CommentCreate, CommentResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
+from app.modules.post.post_recommendation_module.models import SeenPost
+from app.modules.post.post_recommendation_module.constants import FRESH_BOOST_PEAK, FRESH_DECAY_TAU
 from app.modules.post.post_user_interaction import service as interaction_service
+from app.modules.post.post_user_interaction.models import UserTasteProfile
+from app.modules.post.post_user_interaction.constants import CATEGORY_NAMES, DEFAULT_TASTE
 from app.shared.utils.storage import (
     ALLOWED_IMAGE_TYPES,
     StorageError,
@@ -193,6 +198,46 @@ def _batch_post_responses(
         )
         for post in posts
     ]
+
+
+def _following_taste_counts(taste: UserTasteProfile | None, role_id: int) -> dict[str, int]:
+    if taste and taste.total_events > 0:
+        return {
+            "market_update": taste.market_update_count,
+            "deal_req":      taste.deal_req_count,
+            "discussion":    taste.discussion_count,
+            "knowledge":     taste.knowledge_count,
+        }
+    return DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
+
+
+def _score_following_posts(
+    posts: list[Post],
+    viewer_commodity_ids: set[int],
+    taste_counts: dict[str, int],
+) -> list[tuple[Post, float]]:
+    now = datetime.now(timezone.utc)
+    total_taste = sum(math.log1p(v) for v in taste_counts.values()) or 1.0
+    results = []
+    for post in posts:
+        commodity_boost = 1.3 if post.commodity_id in viewer_commodity_ids else 1.0
+
+        cat_key = CATEGORY_NAMES.get(post.category_id, "")
+        cat_w = math.log1p(taste_counts.get(cat_key, 0)) / total_taste
+
+        created_at = post.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_h = max(0.0, (now - created_at).total_seconds() / 3600)
+        freshness = 1.0 + FRESH_BOOST_PEAK * math.exp(-age_h / FRESH_DECAY_TAU)
+
+        # Closed deals are shown but ranked lower
+        closed_penalty = 0.5 if (post.deal_details and post.deal_details.is_closed) else 1.0
+
+        engagement = math.log1p(post.like_count * 2 + post.save_count * 3 + post.comment_count)
+        score = (0.5 + cat_w) * commodity_boost * freshness * closed_penalty * (1.0 + 0.05 * engagement)
+        results.append((post, score))
+    return results
 
 
 def _get_post_or_raise(db: Session, post_id: int) -> Post:
@@ -601,43 +646,93 @@ def toggle_deal_closed(db: Session, post_id: int, profile_id: int) -> DealClosed
     return DealClosedResponse(is_closed=deal.is_closed)
 
 
-def get_following_feed(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
-    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+def get_following_feed(
+    db: Session,
+    profile_id: int,
+    limit: int = 20,
+    cursor_post_id: int | None = None,
+) -> FollowingFeedResponse:
+    profile = (
+        db.query(Profile)
+        .options(selectinload(Profile.commodities))
+        .filter(Profile.id == profile_id)
+        .first()
+    )
     if not profile:
-        return []
+        return FollowingFeedResponse(posts=[], all_caught_up=False)
 
-    following_user_ids = [
-        row[0]
-        for row in db.query(UserConnection.following_id)
-        .filter(UserConnection.follower_id == profile.users_id)
-        .all()
-    ]
-    if not following_user_ids:
-        return []
-
+    # Single join query: follower → user_connections → profile
     followed_profile_ids = [
         row[0]
         for row in db.query(Profile.id)
-        .filter(Profile.users_id.in_(following_user_ids))
+        .join(UserConnection, UserConnection.following_id == Profile.users_id)
+        .filter(UserConnection.follower_id == profile.users_id)
         .all()
     ]
     if not followed_profile_ids:
-        return []
+        return FollowingFeedResponse(posts=[], all_caught_up=False)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-    posts = (
+    # Posts already seen (shared with recommendation feed)
+    seen_ids: set[int] = {
+        row[0]
+        for row in db.query(SeenPost.post_id)
+        .filter(SeenPost.profile_id == profile_id)
+        .all()
+    }
+
+    # Fetch unseen candidate posts from the last 30 days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    query = (
         db.query(Post)
         .options(selectinload(Post.deal_details))
         .filter(
             Post.profile_id.in_(followed_profile_ids),
             Post.created_at >= cutoff,
         )
-        .order_by(Post.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-        .all()
     )
-    return _batch_post_responses(db, posts, profile_id)
+    if seen_ids:
+        query = query.filter(Post.id.notin_(seen_ids))
+    posts = query.all()
+
+    # "All caught up" — no unseen posts from last 3 days, but some exist (seen or not)
+    three_day_cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    recent_unseen = [
+        p for p in posts
+        if (p.created_at if p.created_at.tzinfo else p.created_at.replace(tzinfo=timezone.utc))
+        >= three_day_cutoff
+    ]
+    all_caught_up = False
+    if not recent_unseen and seen_ids:
+        all_caught_up = db.query(Post.id).filter(
+            Post.profile_id.in_(followed_profile_ids),
+            Post.created_at >= three_day_cutoff,
+            Post.id.in_(seen_ids),
+        ).first() is not None
+
+    # Score and rank
+    taste = db.query(UserTasteProfile).filter(UserTasteProfile.profile_id == profile_id).first()
+    taste_counts = _following_taste_counts(taste, profile.role_id)
+    viewer_commodity_ids = {pc.commodity_id for pc in profile.commodities}
+    scored = _score_following_posts(posts, viewer_commodity_ids, taste_counts)
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Cursor pagination
+    start = 0
+    if cursor_post_id is not None:
+        ranked_ids = [p.id for p, _ in scored]
+        try:
+            start = ranked_ids.index(cursor_post_id) + 1
+        except ValueError:
+            start = 0  # cursor post was seen/removed; restart from top
+
+    page_posts = [p for p, _ in scored[start: start + limit]]
+    next_cursor = page_posts[-1].id if len(page_posts) == limit else None
+
+    return FollowingFeedResponse(
+        posts=_batch_post_responses(db, page_posts, profile_id),
+        all_caught_up=all_caught_up,
+        next_cursor=next_cursor,
+    )
 
 
 def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:

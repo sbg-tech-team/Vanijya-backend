@@ -229,6 +229,16 @@ class PostResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------------
+# Following feed
+# ----------------------------------------------------------------------------
+
+class FollowingFeedResponse(BaseModel):
+    posts: List[PostResponse]
+    all_caught_up: bool
+    next_cursor: Optional[int] = None  # last post_id in this page; None = end of feed
+
+
+# ----------------------------------------------------------------------------
 # Comments
 # ----------------------------------------------------------------------------
 
