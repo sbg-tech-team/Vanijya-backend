@@ -313,19 +313,16 @@ def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
     return result
 
 
-_ROLE_NAMES = {1: "trader", 2: "broker", 3: "exporter"}
-
-
 def _build_feed_cards(
     db: Session,
     final: list[dict],
     viewer_profile_id: int,
     posts: dict | None = None,
+    followed_user_ids: set | None = None,
 ) -> list:
-    from sqlalchemy import func
-    from app.modules.post.models import Post, PostLike, PostSave, PostComment
-    from app.modules.post.schemas import PostDealResponse
-    from app.modules.post.post_recommendation_module.schemas import FeedPostCard
+    from app.modules.post.models import Post, PostLike, PostSave
+    from app.modules.post.schemas import PostDealResponse, FeedPostCard
+    from app.modules.post.service import _ROLE_NAMES
 
     if not final:
         return []
@@ -362,25 +359,6 @@ def _build_feed_cards(
         ).all()
     }
 
-    # Latest comment per post — one query via max(id) per post_id
-    latest_comment_subq = (
-        db.query(PostComment.post_id, func.max(PostComment.id).label("max_id"))
-        .filter(PostComment.post_id.in_(post_ids))
-        .group_by(PostComment.post_id)
-        .subquery()
-    )
-    latest_comments = {
-        c.post_id: c
-        for c in db.query(PostComment).join(
-            latest_comment_subq, PostComment.id == latest_comment_subq.c.max_id
-        ).all()
-    }
-    commenter_ids = list({c.profile_id for c in latest_comments.values()})
-    commenters = (
-        {p.id: p for p in db.query(Profile).filter(Profile.id.in_(commenter_ids)).all()}
-        if commenter_ids else {}
-    )
-
     cards = []
     for f in final:
         post = posts.get(f["post_id"])
@@ -388,15 +366,6 @@ def _build_feed_cards(
             continue
         author = authors.get(post.profile_id)
         biz = author.business if author else None
-
-        # location_name: post's own value OR author's "city, state"
-        location_name = post.location_name
-        if not location_name and biz:
-            parts = [p for p in [biz.city, biz.state] if p]
-            location_name = ", ".join(parts) or None
-
-        latest = latest_comments.get(post.id)
-        commenter = commenters.get(latest.profile_id) if latest else None
 
         cards.append(FeedPostCard(
             id=post.id,
@@ -406,31 +375,27 @@ def _build_feed_cards(
             title=post.title,
             caption=post.caption,
             image_urls=post.image_urls,
-            is_public=post.is_public,
-            target_roles=post.target_roles,
+            source_url=post.source_url,
+            location_name=post.location_name,
+            location_city=biz.city if biz else None,
+            location_state=biz.state if biz else None,
             allow_comments=post.allow_comments,
             deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
-            source_url=post.source_url,
-            location_name=location_name,
-            latitude=post.latitude,
-            longitude=post.longitude,
-            view_count=post.view_count,
-            like_count=post.like_count,
-            comment_count=post.comment_count,
-            share_count=post.share_count,
-            save_count=post.save_count,
+            created_at=post.created_at,
             is_liked=post.id in liked_ids,
             is_saved=post.id in saved_ids,
-            created_at=post.created_at,
-            author_name=author.name if author else "unknown",
-            author_role=_ROLE_NAMES.get(author.role_id, "trader") if author else "trader",
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            author_name=author.name if author else "",
+            author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
             author_user_id=str(author.users_id) if author else "",
             author_company=biz.business_name if biz else None,
             author_avatar_url=author.avatar_url if author else None,
+            is_following=bool(
+                author and followed_user_ids and author.users_id in followed_user_ids
+            ),
             is_user_verified=author.is_user_verified if author else False,
             is_business_verified=author.is_business_verified if author else False,
-            comment_preview_author=commenter.name if commenter else None,
-            comment_preview_text=latest.content if latest else None,
         ))
 
     return cards
@@ -594,4 +559,4 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     scored, posts = _rerank(db, pool, cat_weights, commodity_weights, author_weights, followed_user_ids)
     final = _apply_diversity(scored, limit=limit)
 
-    return _build_feed_cards(db, final, profile_id, posts=posts)
+    return _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)

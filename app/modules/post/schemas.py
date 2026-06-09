@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from pydantic import BaseModel, computed_field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 
 def _time_elapsed(dt: datetime) -> str:
@@ -229,11 +229,60 @@ class PostResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------------
+# Unified feed card — used by recommendation feed, following feed, home feed,
+# and view-profile feed. Contains full author info and excludes fields that
+# are only relevant for the post owner's management views.
+# ----------------------------------------------------------------------------
+
+class FeedPostCard(BaseModel):
+    # Post
+    id: int
+    profile_id: int
+    category_id: int
+    commodity_id: int
+    title: str
+    caption: str
+    image_urls: Optional[List[str]] = None
+    source_url: Optional[str] = None
+    allow_comments: bool
+    deal_details: Optional[PostDealResponse] = None
+
+    # Location — post's own label + author's city/state (all optional)
+    location_name: Optional[str] = None
+    location_city: Optional[str] = None
+    location_state: Optional[str] = None
+
+    # Engagement visible to viewer
+    like_count: int
+    comment_count: int
+    is_liked: bool
+    is_saved: bool
+
+    # Stored internally for time_elapsed; not serialised in the response
+    created_at: datetime = Field(exclude=True)
+
+    @computed_field
+    @property
+    def time_elapsed(self) -> str:
+        return _time_elapsed(self.created_at)
+
+    # Author
+    author_name: str
+    author_role: str               # "Trader" | "Broker" | "Exporter"
+    author_user_id: str            # UUID string — needed for Follow button
+    author_company: Optional[str] = None
+    author_avatar_url: Optional[str] = None
+    is_following: bool
+    is_user_verified: bool
+    is_business_verified: bool
+
+
+# ----------------------------------------------------------------------------
 # Following feed
 # ----------------------------------------------------------------------------
 
 class FollowingFeedResponse(BaseModel):
-    posts: List[PostResponse]
+    posts: List[FeedPostCard]
     all_caught_up: bool
     next_cursor: Optional[int] = None  # last post_id in this page; None = end of feed
 
@@ -256,12 +305,30 @@ class CommentCreate(BaseModel):
 class CommentResponse(BaseModel):
     id: int
     post_id: int
-    profile_id: int
     content: str
-    created_at: datetime
 
-    class Config:
-        from_attributes = True
+    # Commenter identity
+    commenter_profile_id: int
+    commenter_user_id: str        # UUID string — tap name → profile
+    commenter_name: str
+    commenter_role: str           # "Trader" | "Broker" | "Exporter"
+    commenter_company: Optional[str] = None
+    commenter_avatar_url: Optional[str] = None
+    is_user_verified: bool
+    is_business_verified: bool
+
+    # Stored internally for time_elapsed; not sent in response
+    created_at: datetime = Field(exclude=True)
+
+    @computed_field
+    @property
+    def time_elapsed(self) -> str:
+        return _time_elapsed(self.created_at)
+
+
+class CommentFeedResponse(BaseModel):
+    comments: List[CommentResponse]
+    next_cursor: Optional[int] = None  # last comment_id in this page; None = end of list
 
 
 # ----------------------------------------------------------------------------

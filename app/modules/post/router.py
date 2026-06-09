@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_profile_id, get_db
-from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse
+from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse
 from app.modules.post import service
 from app.shared.utils.response import ok
 
@@ -156,17 +156,16 @@ def toggle_like_api(
 # Comments
 # ----------------------------------------------------------------------------
 
-@router.get("/{post_id}/comments")
+@router.get("/{post_id}/comments", response_model=CommentFeedResponse)
 def get_comments_api(
     post_id: int,
     profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
-    offset: int = 0,
+    cursor: int | None = None,
     db: Session = Depends(get_db),
 ):
     try:
-        result = service.get_comments(db, post_id, limit, offset)
-        return ok(result, "Comments fetched successfully")
+        return service.get_comments(db, post_id, limit, cursor)
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

@@ -12,8 +12,9 @@ from app.modules.post.models import CATEGORY_DEAL, Post, PostDealDetails, PostVi
 from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
-    PostCreate, PostUpdate, PostResponse, PostDealResponse, FollowingFeedResponse,
-    CommentCreate, CommentResponse,
+    PostCreate, PostUpdate, PostResponse, PostDealResponse,
+    FeedPostCard, FollowingFeedResponse,
+    CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
@@ -198,6 +199,93 @@ def _batch_post_responses(
         )
         for post in posts
     ]
+
+
+_ROLE_NAMES = {1: "Trader", 2: "Broker", 3: "Exporter"}
+
+
+def _batch_feed_cards(
+    db: Session,
+    posts: list[Post],
+    viewer_profile_id: int,
+    viewer_users_id=None,
+) -> list[FeedPostCard]:
+    """Build FeedPostCard objects with full author info and following status.
+
+    viewer_users_id: pass when already available to save one query.
+    """
+    if not posts:
+        return []
+
+    post_ids = [p.id for p in posts]
+    author_profile_ids = list({p.profile_id for p in posts})
+
+    liked_ids = {
+        row[0] for row in db.query(PostLike.post_id)
+        .filter(PostLike.profile_id == viewer_profile_id, PostLike.post_id.in_(post_ids)).all()
+    }
+    saved_ids = {
+        row[0] for row in db.query(PostSave.post_id)
+        .filter(PostSave.profile_id == viewer_profile_id, PostSave.post_id.in_(post_ids)).all()
+    }
+
+    authors = {
+        p.id: p
+        for p in db.query(Profile)
+        .options(selectinload(Profile.business))
+        .filter(Profile.id.in_(author_profile_ids))
+        .all()
+    }
+
+    if viewer_users_id is None:
+        row = db.query(Profile.users_id).filter(Profile.id == viewer_profile_id).first()
+        viewer_users_id = row[0] if row else None
+
+    following_user_ids: set = set()
+    if viewer_users_id:
+        candidate_uids = [a.users_id for a in authors.values() if a.users_id]
+        if candidate_uids:
+            following_user_ids = {
+                row[0] for row in db.query(UserConnection.following_id)
+                .filter(
+                    UserConnection.follower_id == viewer_users_id,
+                    UserConnection.following_id.in_(candidate_uids),
+                ).all()
+            }
+
+    cards = []
+    for post in posts:
+        author = authors.get(post.profile_id)
+        biz = author.business if author else None
+        cards.append(FeedPostCard(
+            id=post.id,
+            profile_id=post.profile_id,
+            category_id=post.category_id,
+            commodity_id=post.commodity_id,
+            title=post.title,
+            caption=post.caption,
+            image_urls=post.image_urls,
+            source_url=post.source_url,
+            location_name=post.location_name,
+            location_city=biz.city if biz else None,
+            location_state=biz.state if biz else None,
+            allow_comments=post.allow_comments,
+            deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
+            created_at=post.created_at,
+            is_liked=post.id in liked_ids,
+            is_saved=post.id in saved_ids,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            author_name=author.name if author else "",
+            author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
+            author_user_id=str(author.users_id) if author else "",
+            author_company=biz.business_name if biz else None,
+            author_avatar_url=author.avatar_url if author else None,
+            is_following=bool(author and author.users_id in following_user_ids),
+            is_user_verified=author.is_user_verified if author else False,
+            is_business_verified=author.is_business_verified if author else False,
+        ))
+    return cards
 
 
 def _following_taste_counts(taste: UserTasteProfile | None, role_id: int) -> dict[str, int]:
@@ -499,36 +587,70 @@ def add_comment(db: Session, post_id: int, profile_id: int, payload: CommentCrea
     except Exception:
         pass
 
+    commenter = db.query(Profile).options(selectinload(Profile.business)).filter(Profile.id == profile_id).first()
+
     return CommentResponse(
         id=comment.id,
         post_id=comment.post_id,
-        profile_id=comment.profile_id,
         content=comment.content,
+        commenter_profile_id=comment.profile_id,
+        commenter_user_id=str(commenter.users_id) if commenter else "",
+        commenter_name=commenter.name if commenter else "",
+        commenter_role=_ROLE_NAMES.get(commenter.role_id, "Trader") if commenter else "Trader",
+        commenter_company=commenter.business.business_name if commenter and commenter.business else None,
+        commenter_avatar_url=commenter.avatar_url if commenter else None,
+        is_user_verified=commenter.is_user_verified if commenter else False,
+        is_business_verified=commenter.is_business_verified if commenter else False,
         created_at=comment.created_at,
     )
 
 
-def get_comments(db: Session, post_id: int, limit: int = 20, offset: int = 0) -> list[CommentResponse]:
+def get_comments(
+    db: Session,
+    post_id: int,
+    limit: int = 20,
+    cursor_comment_id: int | None = None,
+) -> CommentFeedResponse:
     _get_post_or_raise(db, post_id)
 
-    comments = (
-        db.query(PostComment)
-        .filter(PostComment.post_id == post_id)
-        .order_by(PostComment.created_at.asc())
-        .limit(limit)
-        .offset(offset)
+    query = db.query(PostComment).filter(PostComment.post_id == post_id)
+    if cursor_comment_id is not None:
+        query = query.filter(PostComment.id > cursor_comment_id)
+    comments = query.order_by(PostComment.id.asc()).limit(limit).all()
+
+    if not comments:
+        return CommentFeedResponse(comments=[], next_cursor=None)
+
+    commenter_ids = list({c.profile_id for c in comments})
+    commenter_map = {
+        p.id: p
+        for p in db.query(Profile)
+        .options(selectinload(Profile.business))
+        .filter(Profile.id.in_(commenter_ids))
         .all()
-    )
-    return [
-        CommentResponse(
+    }
+
+    responses = []
+    for c in comments:
+        commenter = commenter_map.get(c.profile_id)
+        biz = commenter.business if commenter else None
+        responses.append(CommentResponse(
             id=c.id,
             post_id=c.post_id,
-            profile_id=c.profile_id,
             content=c.content,
+            commenter_profile_id=c.profile_id,
+            commenter_user_id=str(commenter.users_id) if commenter else "",
+            commenter_name=commenter.name if commenter else "",
+            commenter_role=_ROLE_NAMES.get(commenter.role_id, "Trader") if commenter else "Trader",
+            commenter_company=biz.business_name if biz else None,
+            commenter_avatar_url=commenter.avatar_url if commenter else None,
+            is_user_verified=commenter.is_user_verified if commenter else False,
+            is_business_verified=commenter.is_business_verified if commenter else False,
             created_at=c.created_at,
-        )
-        for c in comments
-    ]
+        ))
+
+    next_cursor = comments[-1].id if len(comments) == limit else None
+    return CommentFeedResponse(comments=responses, next_cursor=next_cursor)
 
 
 def delete_comment(db: Session, post_id: int, comment_id: int, profile_id: int) -> None:
@@ -729,7 +851,7 @@ def get_following_feed(
     next_cursor = page_posts[-1].id if len(page_posts) == limit else None
 
     return FollowingFeedResponse(
-        posts=_batch_post_responses(db, page_posts, profile_id),
+        posts=_batch_feed_cards(db, page_posts, profile_id, viewer_users_id=profile.users_id),
         all_caught_up=all_caught_up,
         next_cursor=next_cursor,
     )
