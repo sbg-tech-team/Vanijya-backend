@@ -67,6 +67,9 @@ class Message(Base):
     deal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("group_deals.id", ondelete="SET NULL"), nullable=True
     )
+    personal_deal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("personal_deals.id", ondelete="SET NULL"), nullable=True
+    )
     post_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
     )

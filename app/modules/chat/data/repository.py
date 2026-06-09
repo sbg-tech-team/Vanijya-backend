@@ -12,7 +12,7 @@ from app.modules.chat.domain.entities import (
     ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
     DealSnap, MessageEntity, PostSnap, UserSnap,
 )
-from app.modules.groups.models import Group, GroupDeal, GroupMember
+from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.models import Post
 from app.modules.profile.models import Commodity, Profile
 
@@ -105,17 +105,35 @@ def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
     commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
     return DealSnap(
         deal_id=deal.id,
-        deal_type=deal.deal_type,
         title=deal.title,
         commodity_name=commodity.name if commodity else "",
         grain_type=deal.grain_type,
         grain_size=deal.grain_size,
-        broken_percentage=float(deal.broken_percentage) if deal.broken_percentage is not None else None,
         commodity_quantity=float(deal.commodity_quantity),
         quantity_unit=deal.quantity_unit,
-        commodity_price=float(deal.commodity_price) if deal.commodity_price is not None else None,
+        commodity_price=float(deal.commodity_price),
         price_type=deal.price_type,
-        location=deal.location,
+        image_urls=deal.image_urls,
+        is_closed=deal.is_closed,
+        caption=deal.caption,
+    )
+
+
+def _personal_deal_snap(db: Session, personal_deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(PersonalDeal).filter(PersonalDeal.id == personal_deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return DealSnap(
+        deal_id=deal.id,
+        title=deal.title,
+        commodity_name=commodity.name if commodity else "",
+        grain_type=deal.grain_type,
+        grain_size=deal.grain_size,
+        commodity_quantity=float(deal.commodity_quantity),
+        quantity_unit=deal.quantity_unit,
+        commodity_price=float(deal.commodity_price),
+        price_type=deal.price_type,
         image_urls=deal.image_urls,
         is_closed=deal.is_closed,
         caption=deal.caption,
@@ -163,7 +181,9 @@ def _build_message(db: Session, msg: Message) -> MessageEntity:
         reply_to_id=msg.reply_to_id,
         is_deleted=msg.is_deleted,
         sent_at=msg.sent_at,
-        deal=_deal_snap(db, msg.deal_id) if msg.deal_id else None,
+        deal=_deal_snap(db, msg.deal_id) if msg.deal_id else (
+            _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
+        ),
         post=_post_snap(db, msg.post_id) if msg.post_id else None,
     )
 
@@ -249,6 +269,7 @@ class ChatRepository:
         location_lon: Optional[float] = None,
         reply_to_id: Optional[UUID] = None,
         deal_id: Optional[UUID] = None,
+        personal_deal_id: Optional[UUID] = None,
         post_id: Optional[int] = None,
     ) -> MessageEntity:
         now = datetime.now(timezone.utc)
@@ -265,6 +286,7 @@ class ChatRepository:
             location_lon=location_lon,
             reply_to_id=reply_to_id,
             deal_id=deal_id,
+            personal_deal_id=personal_deal_id,
             post_id=post_id,
             is_deleted=False,
             sent_at=now,
@@ -351,6 +373,55 @@ class ChatRepository:
                 is_online=True,  # sender is actively sending
             ),
         )
+    
+    def create_personal_deal(
+        self,
+        conv_id: UUID,
+        sender_id: UUID,
+        commodity_id: int,
+        title: str,
+        caption: str,
+        grain_type: str,
+        grain_size: str,
+        commodity_quantity: float,
+        quantity_unit: str,
+        commodity_price: float,
+        price_type: str,
+        image_urls: Optional[list[str]],
+    ) -> MessageEntity:
+        from app.modules.groups.models import PersonalDeal
+        now = datetime.now(timezone.utc)
+        deal = PersonalDeal(
+            id=uuid4(),
+            conversation_id=conv_id,
+            posted_by=sender_id,
+            commodity_id=commodity_id,
+            title=title,
+            caption=caption,
+            grain_type=grain_type,
+            grain_size=grain_size,
+            commodity_quantity=commodity_quantity,
+            quantity_unit=quantity_unit,
+            commodity_price=commodity_price,
+            price_type=price_type,
+            image_urls=image_urls,
+        )
+        self.db.add(deal)
+        self.db.flush()   # get deal.id
+
+        return self.save_message(
+            context_type="dm",
+            context_id=conv_id,
+            sender_id=sender_id,
+            message_type="deal",
+            personal_deal_id=deal.id,
+        )
+
+    
+
+
+    
+    
 
     # ── Group helpers ──────────────────────────────────────────────────────────
 

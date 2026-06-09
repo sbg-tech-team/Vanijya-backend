@@ -103,7 +103,7 @@ class SendMessageUseCase:
     def __init__(self,repo):
         self.repo=repo
     
-    def execute(self, sender_id: UUID, conv_id: UUID, body: Optional[str] = None, message_type: str = "text", media_urls: Optional[list[str]] = None, media_metadata: Optional[dict] = None, location_lat: Optional[float] = None, location_lon: Optional[float] = None, reply_to_id: Optional[UUID] = None, deal_id: Optional[UUID] = None, post_id: Optional[int] = None):
+    def execute(self, sender_id: UUID, conv_id: UUID, body: Optional[str] = None, message_type: str = "text", media_urls: Optional[list[str]] = None, media_metadata: Optional[dict] = None, location_lat: Optional[float] = None, location_lon: Optional[float] = None, reply_to_id: Optional[UUID] = None, deal_id: Optional[UUID] = None, personal_deal_id: Optional[UUID] = None, post_id: Optional[int] = None):
 
        gaurd=self.repo.get_conv_send_info(conv_id,sender_id)
        if not gaurd:
@@ -126,6 +126,7 @@ class SendMessageUseCase:
             location_lon=location_lon,
             reply_to_id=reply_to_id,
             deal_id=deal_id,
+            personal_deal_id=personal_deal_id,
             post_id=post_id,
         )
 
@@ -169,6 +170,7 @@ class SendGroupMessageUseCase:
             deal_id=deal_id,
             post_id=post_id,
         )
+        # personal_deal_id is not passed here — group messages can only reference group_deals
 
 
 
@@ -181,3 +183,16 @@ class GetGroupMessagesUseCase:
         if member_role is None:
             raise HTTPException(status_code=403,detail="Not a member of this group.")
         return self.repo.get_messages("group",group_id,before,min(limit,100))
+
+
+class CreatePersonalDealUseCase:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def execute(self, sender_id: UUID, conv_id: UUID, **deal_fields):
+        conv = self.repo.get_conversation(conv_id, sender_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if conv.status != ConvStatus.ACTIVE:
+            raise HTTPException(status_code=403, detail="Can only create deals in an active conversation.")
+        return self.repo.create_personal_deal(conv_id=conv_id, sender_id=sender_id, **deal_fields)

@@ -20,3 +20,4 @@ firebase-admin
 redis
 websocket-client
 supabase
+python-socketio

@@ -24,8 +24,9 @@ class SendMessageRequest(BaseModel):
     location_lat: Optional[float]  = None
     location_lon: Optional[float] =None
     reply_to_id: Optional[UUID]  =None
-    deal_id: Optional[UUID] =None
-    post_id: Optional[int] =None
+    deal_id: Optional[UUID] = None
+    personal_deal_id: Optional[UUID] = None
+    post_id: Optional[int] = None
 
     
 
@@ -40,3 +41,17 @@ class SendGroupMessageRequest(BaseModel):
     reply_to_id: Optional[UUID] = None
     deal_id: Optional[UUID] = None
     post_id: Optional[int] = None
+
+
+
+class CreatePersonalDealRequest(BaseModel):
+    commodity_id: int
+    title: str = Field(..., min_length=1, max_length=200)
+    caption: str = Field(..., min_length=1)
+    grain_type: str
+    grain_size: str
+    commodity_quantity: float
+    quantity_unit: str = Field(..., pattern=r"^(MT|quintal)$")
+    commodity_price: float
+    price_type: str = Field(..., pattern=r"^(fixed|negotiable)$")
+    image_urls: Optional[list[str]] = None

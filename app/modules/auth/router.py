@@ -1,8 +1,11 @@
+import os
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from app.core.security.jwt_handler import create_onboarding_token, decode_access_token
+from app.core.security.jwt_handler import create_access_token, create_onboarding_token, decode_access_token
 from app.dependencies import get_db
 from app.modules.auth.schemas import (
     FirebaseVerifyRequest,
@@ -18,12 +21,43 @@ from app.modules.auth.service import (
     revoke_session_by_jti,
     verify_firebase_token,
 )
-from app.modules.profile.models import User
+from app.modules.profile.models import Profile, User
 from app.shared.utils.response import ok
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 _bearer = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/dev-token  — local testing only, blocked in production
+# ---------------------------------------------------------------------------
+
+@router.get("/dev-token")
+def dev_token(name: str, db: Session = Depends(get_db)):
+    """
+    Returns a valid access token for any profile whose name matches `name`.
+    Only works when DEBUG=true is set in the environment.
+    Usage: GET /auth/dev-token?name=test1
+    """
+    if os.getenv("DEBUG", "").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    profile = db.query(Profile).filter(Profile.name.ilike(name)).first()
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No profile found with name '{name}'")
+
+    token = create_access_token(
+        user_id=profile.users_id,
+        session_id=uuid4(),
+        profile_id=profile.id,
+    )
+    return {
+        "access_token": token,
+        "user_id": str(profile.users_id),
+        "profile_id": profile.id,
+        "name": profile.name,
+    }
 
 
 # ---------------------------------------------------------------------------

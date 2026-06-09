@@ -3,6 +3,7 @@ load_dotenv()
 
 import logging
 from contextlib import asynccontextmanager
+import socketio
 from fastapi import FastAPI
 
 from app.modules.auth.router import router as auth_router
@@ -17,8 +18,9 @@ from app.modules.connections.router import (
 )
 from app.modules.news.router import router as news_router
 from app.modules.feed.router import router as feed_router
-# from app.modules.chat.presentation.router import router as chat_router
-# from app.modules.chat.presentation.ws_router import ws_router as chat_ws_router
+
+from app.modules.chat.presentation.router import router as chat_router
+from app.modules.chat.presentation.connection_manager import sio
 from app.modules.deeplink.router import router as deeplink_router
 from app.modules.safety.router import router as safety_router
 from app.modules.verification.router import router as verification_router
@@ -55,8 +57,9 @@ app.include_router(connections_router)
 app.include_router(recommendations_router)
 app.include_router(news_router)
 app.include_router(feed_router)
-# app.include_router(chat_router)
-# app.include_router(chat_ws_router)
+app.include_router(chat_router)
 app.include_router(deeplink_router)
 app.include_router(safety_router)
 app.include_router(verification_router)
+
+app = socketio.ASGIApp(sio, other_asgi_app=app)

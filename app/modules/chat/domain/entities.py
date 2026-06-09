@@ -110,17 +110,14 @@ class PostSnap:
 @dataclass
 class DealSnap:
     deal_id: UUID
-    deal_type: str                        # selling | buying
     title: str
     commodity_name: str
     grain_type: str
-    grain_size: Optional[str]
-    broken_percentage: Optional[float]
+    grain_size: str
     commodity_quantity: float
     quantity_unit: str
-    commodity_price: Optional[float]      # None for buying deals
-    price_type: Optional[str]
-    location: Optional[str]
+    commodity_price: float
+    price_type: str
     image_urls: Optional[list[str]]
     is_closed: bool
     caption: str

@@ -10,3 +10,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 cd "c:\Users\Admin\OneDrive\Desktop\vanijyaa-backend\backend" && alembic upgrade head 2>&1
 
+{
+  "command": "cd \"C:\\Users\\Admin\\OneDrive\\Desktop\\vanijyaa-backend\\backend\"; & \"C:\\Users\\Admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\alembic.exe\" upgrade head 2>&1",
+  "description": "Run alembic upgrade head using full path"
+}
