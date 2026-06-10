@@ -422,8 +422,9 @@ def get_profile_by_id(
     profile_id: int,
     viewer_user_id: UUID | None = None,
     viewer_profile_id: int | None = None,
+    posts_cursor: int | None = None,
+    posts_limit: int = 20,
 ) -> ProfilePublicResponse:
-    from app.modules.post.models import PostSave
     from app.modules.post.service import _batch_feed_cards
     from sqlalchemy.orm import selectinload as _sil
     from app.modules.post.models import Post as _Post
@@ -440,14 +441,15 @@ def get_profile_by_id(
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 
-    posts = (
+    post_query = (
         db.query(_Post)
         .options(_sil(_Post.deal_details))
         .filter(_Post.profile_id == profile_id)
-        .order_by(_Post.created_at.desc())
-        .limit(20)
-        .all()
     )
+    if posts_cursor is not None:
+        post_query = post_query.filter(_Post.id < posts_cursor)
+    posts = post_query.order_by(_Post.id.desc()).limit(posts_limit).all()
+    posts_next_cursor = posts[-1].id if len(posts) == posts_limit else None
     posts_count = len(posts)
 
     is_following = False
@@ -491,6 +493,7 @@ def get_profile_by_id(
         is_following=is_following,
         message_request_status=message_request_status,
         posts=feed_cards,
+        posts_next_cursor=posts_next_cursor,
     )
 
 
@@ -499,6 +502,8 @@ def get_profile_by_user_id(
     user_id: UUID,
     viewer_user_id: UUID | None = None,
     viewer_profile_id: int | None = None,
+    posts_cursor: int | None = None,
+    posts_limit: int = 20,
 ) -> ProfilePublicResponse:
     from app.modules.post.service import _batch_feed_cards
     from sqlalchemy.orm import selectinload as _sil
@@ -516,14 +521,15 @@ def get_profile_by_user_id(
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 
-    posts = (
+    post_query = (
         db.query(_Post)
         .options(_sil(_Post.deal_details))
         .filter(_Post.profile_id == profile.id)
-        .order_by(_Post.created_at.desc())
-        .limit(20)
-        .all()
     )
+    if posts_cursor is not None:
+        post_query = post_query.filter(_Post.id < posts_cursor)
+    posts = post_query.order_by(_Post.id.desc()).limit(posts_limit).all()
+    posts_next_cursor = posts[-1].id if len(posts) == posts_limit else None
     posts_count = len(posts)
 
     is_following = False
@@ -567,6 +573,7 @@ def get_profile_by_user_id(
         is_following=is_following,
         message_request_status=message_request_status,
         posts=feed_cards,
+        posts_next_cursor=posts_next_cursor,
     )
 
 

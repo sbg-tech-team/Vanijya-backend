@@ -122,6 +122,7 @@ class ProfilePublicResponse(BaseModel):
     is_following: bool = False
     message_request_status: Optional[str] = None
     posts: List["FeedPostCard"] = []
+    posts_next_cursor: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

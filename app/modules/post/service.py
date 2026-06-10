@@ -13,7 +13,7 @@ from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
     PostCreate, PostUpdate, PostResponse, PostDealResponse,
-    FeedPostCard, MyPostCard, FollowingFeedResponse,
+    FeedPostCard, MyPostCard, MyPostFeedResponse, PostFeedResponse, FollowingFeedResponse,
     CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
@@ -561,17 +561,25 @@ def get_feed(db: Session, viewer_profile_id: int, limit: int = 20, offset: int =
     return _batch_post_responses(db, posts, viewer_profile_id)
 
 
-def get_my_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[MyPostCard]:
-    posts = (
+def get_my_posts(
+    db: Session,
+    profile_id: int,
+    limit: int = 20,
+    cursor_post_id: int | None = None,
+) -> MyPostFeedResponse:
+    query = (
         db.query(Post)
         .options(selectinload(Post.deal_details))
         .filter(Post.profile_id == profile_id)
-        .order_by(Post.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-        .all()
     )
-    return _batch_my_post_cards(db, posts, profile_id)
+    if cursor_post_id is not None:
+        query = query.filter(Post.id < cursor_post_id)
+    posts = query.order_by(Post.id.desc()).limit(limit).all()
+    next_cursor = posts[-1].id if len(posts) == limit else None
+    return MyPostFeedResponse(
+        posts=_batch_my_post_cards(db, posts, profile_id),
+        next_cursor=next_cursor,
+    )
 
 
 # ----------------------------------------------------------------------------

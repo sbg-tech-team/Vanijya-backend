@@ -33,8 +33,20 @@ from app.modules.post.post_user_interaction.service import (
 from app.modules.post.post_user_interaction import taste_service
 from app.modules.post.models import Post
 
-_BATCH_SIZE       = 500   # max dwell events per taste-update run
+_BATCH_SIZE        = 500   # max passive events per taste-update run
 _IGNORE_BATCH_SIZE = 500  # max (profile, post) pairs per ignore-detection run
+
+# Event types processed by run_taste_update_job.
+# dwell   — needs duration classification (bounce / short / medium / long)
+# open_*  — fixed positive weight, no value_ms needed
+# link_click — fixed positive weight, no value_ms needed
+_PASSIVE_EVENT_TYPES = frozenset({
+    "dwell",
+    "open_read_more",
+    "open_carousel",
+    "open_comments",
+    "link_click",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +95,7 @@ def run_taste_update_job(db: Session) -> dict:
     events: list[PostInteractionEvent] = (
         db.query(PostInteractionEvent)
         .filter(
-            PostInteractionEvent.event_type == "dwell",
+            PostInteractionEvent.event_type.in_(_PASSIVE_EVENT_TYPES),
             PostInteractionEvent.processed_at.is_(None),
         )
         .order_by(PostInteractionEvent.id)
@@ -112,9 +124,6 @@ def run_taste_update_job(db: Session) -> dict:
     upt_deltas: dict[tuple[int, str, str], list] = {}
 
     for event in events:
-        if event.value_ms is None:
-            continue                        # malformed row — skip, will be marked processed
-
         meta = post_meta.get(event.post_id)
         if not meta:
             continue                        # post deleted — skip
@@ -126,40 +135,67 @@ def run_taste_update_job(db: Session) -> dict:
             continue
 
         pid = event.profile_id
-        pos_delta, neg_delta = derive_signal("dwell", event.value_ms)
-        is_bounce = event.value_ms < DWELL_BOUNCE_MS
 
-        if is_bounce:
-            # Phase 5: bounce → negative taste (user_post_taste only)
-            if neg_delta > 0:
-                _acc(upt_deltas, pid, "category", category, 0.0, neg_delta)
-                if commodity_id:
-                    _acc(upt_deltas, pid, "commodity", str(commodity_id), 0.0, neg_delta)
-            continue                        # no positive processing for bounces
+        # ── Dwell ─────────────────────────────────────────────────────────────
+        if event.event_type == "dwell":
+            if event.value_ms is None:
+                continue                    # malformed row — skip, will be marked processed
 
-        # Positive dwell ──────────────────────────────────────────────────────
-        int_delta = _to_int_delta(pos_delta)
-        if pos_delta <= 0:
-            continue
+            pos_delta, neg_delta = derive_signal("dwell", event.value_ms)
+            is_bounce = event.value_ms < DWELL_BOUNCE_MS
 
-        # Legacy write
-        if int_delta > 0:
-            cols = utp_col_deltas.setdefault(pid, {})
-            cols[col] = cols.get(col, 0) + int_delta
-        utp_event_counts[pid] = utp_event_counts.get(pid, 0) + 1
+            if is_bounce:
+                if neg_delta > 0:
+                    _acc(upt_deltas, pid, "category", category, 0.0, neg_delta)
+                    if commodity_id:
+                        _acc(upt_deltas, pid, "commodity", str(commodity_id), 0.0, neg_delta)
+                continue
 
-        # Phase 3 — category + commodity
-        _acc(upt_deltas, pid, "category", category, pos_delta, 0.0)
-        if commodity_id:
-            _acc(upt_deltas, pid, "commodity", str(commodity_id), pos_delta, 0.0)
+            int_delta = _to_int_delta(pos_delta)
+            if pos_delta <= 0:
+                continue
 
-        # Phase 4 — author (high-confidence dwell; no self-interaction)
-        if (
-            pos_delta >= AUTHOR_TASTE_MIN_DELTA
-            and author_profile_id
-            and author_profile_id != pid
-        ):
-            _acc(upt_deltas, pid, "author", str(author_profile_id), pos_delta, 0.0)
+            if int_delta > 0:
+                cols = utp_col_deltas.setdefault(pid, {})
+                cols[col] = cols.get(col, 0) + int_delta
+            utp_event_counts[pid] = utp_event_counts.get(pid, 0) + 1
+
+            _acc(upt_deltas, pid, "category", category, pos_delta, 0.0)
+            if commodity_id:
+                _acc(upt_deltas, pid, "commodity", str(commodity_id), pos_delta, 0.0)
+
+            if (
+                pos_delta >= AUTHOR_TASTE_MIN_DELTA
+                and author_profile_id
+                and author_profile_id != pid
+            ):
+                _acc(upt_deltas, pid, "author", str(author_profile_id), pos_delta, 0.0)
+
+        # ── Open events & link_click ──────────────────────────────────────────
+        # open_read_more=1.5  open_carousel=1.0  open_comments=1.5  link_click=2.0
+        else:
+            pos_delta, _ = derive_signal(event.event_type, None)
+            if pos_delta <= 0:
+                continue
+
+            int_delta = _to_int_delta(pos_delta)
+
+            if int_delta > 0:
+                cols = utp_col_deltas.setdefault(pid, {})
+                cols[col] = cols.get(col, 0) + int_delta
+            utp_event_counts[pid] = utp_event_counts.get(pid, 0) + 1
+
+            _acc(upt_deltas, pid, "category", category, pos_delta, 0.0)
+            if commodity_id:
+                _acc(upt_deltas, pid, "commodity", str(commodity_id), pos_delta, 0.0)
+
+            # Author affinity only for link_click (2.0 ≥ threshold); open_* are below 2.0
+            if (
+                pos_delta >= AUTHOR_TASTE_MIN_DELTA
+                and author_profile_id
+                and author_profile_id != pid
+            ):
+                _acc(upt_deltas, pid, "author", str(author_profile_id), pos_delta, 0.0)
 
     # ── Apply legacy deltas ───────────────────────────────────────────────────
     taste_updates = 0

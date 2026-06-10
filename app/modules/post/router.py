@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_profile_id, get_db
-from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostCard
+from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse
 from app.modules.post import service
 from app.shared.utils.response import ok
 
@@ -60,14 +60,14 @@ async def create_post_api(
 #     return ok(result, "Feed fetched successfully")
 
 
-@router.get("/mine", response_model=list[MyPostCard])
+@router.get("/mine", response_model=MyPostFeedResponse)
 def get_my_posts_api(
     profile_id: int = Depends(get_current_profile_id),
     limit: int = 20,
-    offset: int = 0,
+    cursor: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return service.get_my_posts(db, profile_id, limit, offset)
+    return service.get_my_posts(db, profile_id, limit, cursor)
 
 
 @router.get("/following", response_model=FollowingFeedResponse)

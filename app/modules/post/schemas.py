@@ -290,6 +290,20 @@ class MyPostCard(FeedPostCard):
     save_count: int
 
 
+class MyPostFeedResponse(BaseModel):
+    posts: List[MyPostCard]
+    next_cursor: Optional[int] = None  # last post_id on this page; None = no more posts
+
+
+# ----------------------------------------------------------------------------
+# Generic paginated feed — used for viewing another user's profile posts
+# ----------------------------------------------------------------------------
+
+class PostFeedResponse(BaseModel):
+    posts: List[FeedPostCard]
+    next_cursor: Optional[int] = None
+
+
 # ----------------------------------------------------------------------------
 # Following feed
 # ----------------------------------------------------------------------------
