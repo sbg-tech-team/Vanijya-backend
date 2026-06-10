@@ -19,13 +19,14 @@ A complete reference for direct messaging (DM), group chat, deal cards in chat, 
 7. [REST API Quick Reference](#7-rest-api-quick-reference)
 8. [DM Conversation APIs](#8-dm-conversation-apis)
 9. [DM Message APIs](#9-dm-message-apis)
-10. [Personal Deal APIs](#10-personal-deal-apis)
-11. [Group Chat APIs](#11-group-chat-apis)
-12. [Group Deal APIs (Chat)](#12-group-deal-apis-chat)
-13. [Conversation Status Flow](#13-conversation-status-flow)
-14. [Message Types](#14-message-types)
-15. [Shared Objects](#15-shared-objects)
-16. [Error Reference](#16-error-reference)
+10. [Media Upload & Message Deletion](#10-media-upload--message-deletion)
+11. [Personal Deal APIs](#11-personal-deal-apis)
+12. [Group Chat APIs](#12-group-chat-apis)
+13. [Group Deal APIs (Chat)](#13-group-deal-apis-chat)
+14. [Conversation Status Flow](#14-conversation-status-flow)
+15. [Message Types](#15-message-types)
+16. [Shared Objects](#16-shared-objects)
+17. [Error Reference](#17-error-reference)
 
 ---
 
@@ -37,7 +38,9 @@ The chat module handles:
 - **Group Chat** — real-time messaging scoped to a group. Members send text/media/deal/post cards into the group feed.
 - **Personal Deals** — Deal/Requirement cards posted inside a DM. Visible only to the two participants.
 - **Group Deals (chat entry point)** — Deal/Requirement cards posted into a group chat. `POST /chat/groups/{group_id}/deals` is the canonical endpoint — it creates the deal, inserts a chat card, and pushes a Socket.IO event to the group room all in one call.
-- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `conversation_accepted`, and `conversation_declined` events to connected clients after every write.
+- **Media upload** — images, video, audio, and documents are uploaded **directly from the client to Supabase Storage** via a signed URL minted by the backend. The backend never proxies file bytes — see [Section 10](#10-media-upload--message-deletion).
+- **Message deletion** — a sender can soft-delete their own message; the attached media object is removed from the bucket in the background.
+- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `conversation_accepted`, `conversation_declined`, `message_deleted`, and `read` events to connected clients. Clients also emit `typing` / `stop_typing`, which the server relays to the chat peer / group room.
 
 ---
 
@@ -200,6 +203,22 @@ socket.emit('join_group', {'group_id': 'f47ac10b-...'});
 
 No response is emitted back — fire and forget. The server verifies DB membership and silently ignores the event if the user is not a member of that group.
 
+### Typing indicators (client → server)
+
+The client emits `typing` while the user is composing and `stop_typing` when they pause/send. Payload identifies the chat context:
+
+```dart
+socket.emit('typing',      {'context_type': 'dm',    'context_id': convId});
+socket.emit('stop_typing', {'context_type': 'group', 'context_id': groupId});
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `context_type` | string | `"dm"` or `"group"` |
+| `context_id` | UUID | Conversation ID (DM) or group ID |
+
+The server relays the same event name (`typing` / `stop_typing`) to the peer — to the other DM member's `user:` room, or to the `group:` room (excluding the sender). For DMs the server verifies the sender is a conversation member before relaying. Relayed payload: `{"context_type", "context_id", "user_id"}` (the `user_id` of whoever is typing).
+
 ### Events emitted by the server
 
 | Event | Room | Fired when | Payload |
@@ -209,8 +228,11 @@ No response is emitted back — fire and forget. The server verifies DB membersh
 | `new_group_deal` | `group:{group_id}` | Group deal created | `GroupDealResponse` |
 | `conversation_accepted` | `user:{initiator_id}` | Recipient accepted the chat request | `{"conv_id": "<uuid>"}` |
 | `conversation_declined` | `user:{initiator_id}` | Recipient declined the chat request | `{"conv_id": "<uuid>"}` |
+| `message_deleted` | `user:{receiver_id}` (DM) / `group:{group_id}` (group) | A message was soft-deleted | `{"message_id": "<uuid>", "context_id": "<uuid>"}` |
+| `read` | `user:{other_member_id}` | A DM was marked read by the other party | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
+| `typing` / `stop_typing` | `user:{peer_id}` (DM) / `group:{group_id}` (group) | A member is composing / stopped | `{"context_type", "context_id", "user_id"}` |
 
-`MessageEntity` and `GroupDealResponse` shapes are in [Shared Objects](#15-shared-objects).
+`MessageEntity` and `GroupDealResponse` shapes are in [Shared Objects](#16-shared-objects).
 
 ### Disconnect
 
@@ -234,10 +256,12 @@ All endpoints require `Authorization: Bearer <access_token>`.
 | `POST` | `/conversations` | Start a new DM (or resume existing) + send first message |
 | `GET` | `/conversations/{conv_id}/messages` | Paginated message history for a DM |
 | `POST` | `/conversations/{conv_id}/messages` | Send a DM message — pushes `new_message` WS event |
-| `POST` | `/conversations/{conv_id}/read` | Mark a DM as read (updates `last_read_at`) |
+| `POST` | `/conversations/{conv_id}/read` | Mark a DM as read (updates `last_read_at`) — pushes `read` to the other party |
 | `POST` | `/conversations/{conv_id}/accept` | Accept a conversation request — pushes `conversation_accepted` to initiator |
 | `POST` | `/conversations/{conv_id}/decline` | Decline a conversation request (blocks it) — pushes `conversation_declined` to initiator |
 | `POST` | `/conversations/{conv_id}/deals` | Post a deal card into a DM — pushes `new_message` WS event |
+| `POST` | `/media/upload-url` | Mint a signed Supabase upload URL for a chat attachment |
+| `DELETE` | `/messages/{message_id}` | Soft-delete your own message — pushes `message_deleted`, cleans up media |
 | `GET` | `/groups/{group_id}/messages` | Paginated message history for a group |
 | `POST` | `/groups/{group_id}/messages` | Send a group message — pushes `new_group_message` WS event |
 | `POST` | `/groups/{group_id}/deals` | Create a group deal + chat card — pushes `new_group_deal` WS event |
@@ -418,7 +442,7 @@ Send a message in an existing DM. Also fires a `new_message` Socket.IO event to 
 | Field | Required | Type | Notes |
 |---|---|---|---|
 | `body` | Conditional | string | Required for `text`; null for media/deal/post |
-| `message_type` | No | string | Default `"text"` — see [Message Types](#14-message-types) |
+| `message_type` | No | string | Default `"text"` — see [Message Types](#15-message-types) |
 | `media_urls` | No | string[] | CDN URLs of uploaded files |
 | `media_metadata` | No | dict | Arbitrary metadata (filename, duration, etc.) |
 | `location_lat` / `location_lon` | No | float | For `message_type = "location"` |
@@ -454,6 +478,8 @@ No request body.
 { "ok": true }
 ```
 
+**WS push:** fires `read` to the other member's `user:{id}` room with `{"conv_id": "<uuid>", "reader_id": "<caller-uuid>"}`, so the sender can flip their message ticks to "read".
+
 ---
 
 ### `POST /chat/conversations/{conv_id}/accept`
@@ -485,7 +511,90 @@ No request body.
 
 ---
 
-## 10. Personal Deal APIs
+## 10. Media Upload & Message Deletion
+
+### Media upload — the 3-step flow
+
+Chat media (images, video, audio, documents) is **never sent to the backend as file bytes**. The client uploads straight to Supabase Storage; the backend only mints a short-lived signed URL and later stores the resulting public URL on the message.
+
+```
+1. Client  → POST /chat/media/upload-url?content_type=audio/mp4   (backend mints signed URL)
+2. Client  → PUT <upload_url> with the raw bytes                  (direct to Supabase, Content-Type must match)
+3. Client  → POST /chat/conversations/{id}/messages              (send msg with media_url in media_urls)
+              { "message_type": "audio", "media_urls": ["<media_url>"] }
+```
+
+Files land in the `chat` bucket (env `CHAT_STORAGE_BUCKET`) at path `{user_id}/{uuid}.{ext}`. The signed URL expires in 5 minutes.
+
+### `POST /chat/media/upload-url`
+
+Mint a signed upload URL for a chat attachment. Per-user scoped — any authenticated user may call it; no conversation/group membership is checked at this step.
+
+| Query Param | Type | Required | Description |
+|---|---|---|---|
+| `content_type` | string | Yes | MIME type of the file being uploaded — must be in the allowlist below |
+
+**Allowed `content_type` values:**
+
+| Category | MIME types |
+|---|---|
+| Image | `image/jpeg`, `image/png`, `image/webp` |
+| Video | `video/mp4`, `video/quicktime`, `video/webm` |
+| Audio | `audio/mpeg`, `audio/mp4`, `audio/webm`, `audio/ogg` |
+| Document | `application/pdf` |
+
+**Success `201`:**
+```json
+{
+  "upload_url": "https://wnkjqmdoosbtukjbzknu.supabase.co/storage/v1/object/upload/sign/chat/...",
+  "expires_at": "2026-06-10T10:05:00+00:00",
+  "media_url": "https://wnkjqmdoosbtukjbzknu.supabase.co/storage/v1/object/public/chat/<user_id>/<uuid>.mp4",
+  "content_type": "audio/mp4"
+}
+```
+
+| Field | Description |
+|---|---|
+| `upload_url` | Signed PUT target — upload the raw bytes here within 5 min. The `Content-Type` header on the PUT **must equal** the `content_type` you requested |
+| `media_url` | The public URL to put in `media_urls` when sending the message |
+| `expires_at` | ISO 8601 expiry of `upload_url` |
+
+**Error `400`** — unsupported content type:
+```json
+{ "detail": "Unsupported type 'audio/3gpp'. Allowed: image/jpeg, image/png, image/webp, ..." }
+```
+
+**Error `503`** — Supabase Storage unavailable.
+
+> **Cleanup tracking:** When the message is later sent, the backend derives the internal `storage_path` from `media_url` and stores it on the `chat_attachments` row, so the object can be removed if the message is deleted. URLs that don't belong to the `chat` bucket are accepted but won't be tracked for cleanup.
+
+---
+
+### `DELETE /chat/messages/{message_id}`
+
+Soft-delete a message. **Only the original sender may delete their own message** (works for both DM and group messages). Sets `is_deleted = true`; the attached media object is removed from the `chat` bucket in a background task.
+
+No request body.
+
+**Success `200`:**
+```json
+{ "ok": true, "message_id": "d4e5f6a7-..." }
+```
+
+**WS push:**
+- DM → fires `message_deleted` to the other member's `user:{id}` room
+- Group → fires `message_deleted` to the `group:{group_id}` room
+
+Payload: `{"message_id": "<uuid>", "context_id": "<uuid>"}`. Clients should replace the bubble with a "This message was deleted" placeholder.
+
+**Error `404`** — message not found, already deleted, or the caller is not the sender:
+```json
+{ "detail": "Message not found or you cannot delete it." }
+```
+
+---
+
+## 11. Personal Deal APIs
 
 Personal deals are Deal/Requirement cards created inside a DM. The deal is saved and a `message_type = "deal"` chat card is automatically inserted — there is no separate "send the message" step.
 
@@ -538,7 +647,7 @@ After saving, fires a `new_message` Socket.IO event to the receiver with the dea
 
 ---
 
-## 11. Group Chat APIs
+## 12. Group Chat APIs
 
 ### `GET /chat/groups/{group_id}/messages`
 
@@ -588,7 +697,7 @@ Send a message into a group. Also fires a `new_group_message` Socket.IO event to
 | Field | Required | Type | Notes |
 |---|---|---|---|
 | `body` | Conditional | string | Required for `text`; null for other types |
-| `message_type` | No | string | Default `"text"` — see [Message Types](#14-message-types) |
+| `message_type` | No | string | Default `"text"` — see [Message Types](#15-message-types) |
 | `media_urls` | No | string[] | CDN URLs of uploaded files |
 | `media_metadata` | No | dict | Arbitrary metadata |
 | `location_lat` / `location_lon` | No | float | For `message_type = "location"` |
@@ -604,7 +713,7 @@ Send a message into a group. Also fires a `new_group_message` Socket.IO event to
 
 ---
 
-## 12. Group Deal APIs (Chat)
+## 13. Group Deal APIs (Chat)
 
 Group deals live in the `group_deals` table (shared with the groups module) but their **creation endpoint is here** — because creating a deal needs to write a chat card and push a Socket.IO event, which requires the chat module's infrastructure.
 
@@ -670,7 +779,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 13. Conversation Status Flow
+## 14. Conversation Status Flow
 
 ```
 (User A sends first message)
@@ -698,7 +807,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 14. Message Types
+## 15. Message Types
 
 | `message_type` | When to use | Which fields to populate |
 |---|---|---|
@@ -713,7 +822,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 15. Shared Objects
+## 16. Shared Objects
 
 ### `UserSnap` — sender/participant profile
 
@@ -819,7 +928,7 @@ When `message_type = "post"`, the `post` field is a `PostSnap`:
 
 ---
 
-## 16. Error Reference
+## 17. Error Reference
 
 All errors follow FastAPI's standard shape:
 ```json
