@@ -2,6 +2,7 @@ from uuid import UUID
 import socketio
 from app.core.database.session import SessionLocal
 from app.core.security.jwt_handler import decode_access_token
+from app.modules.chat.data.models import ConversationMember
 from app.modules.groups.models import GroupMember
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -47,6 +48,48 @@ async def join_group(sid, data):
         return  # silently refuse — not a member
 
     await sio.enter_room(sid, f"group:{group_id}")
+
+
+@sio.event
+async def typing(sid, data):
+    await _relay_typing(sid, data, "typing")
+
+
+@sio.event
+async def stop_typing(sid, data):
+    await _relay_typing(sid, data, "stop_typing")
+
+
+async def _relay_typing(sid, data, event: str) -> None:
+    """Relay a typing indicator to the DM peer or the group room (never echoed back)."""
+    user_id = _sid_user.get(sid)
+    context_type = (data or {}).get("context_type")
+    context_id = (data or {}).get("context_id")
+    if not user_id or not context_type or not context_id:
+        return
+
+    payload = {"context_type": context_type, "context_id": str(context_id), "user_id": user_id}
+
+    if context_type == "group":
+        await sio.emit(event, payload, room=f"group:{context_id}", skip_sid=sid)
+        return
+
+    if context_type == "dm":
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(ConversationMember.user_id)
+                .filter(ConversationMember.conversation_id == context_id)
+                .all()
+            )
+        finally:
+            db.close()
+        member_ids = [str(r[0]) for r in rows]
+        if user_id not in member_ids:
+            return  # not a member — refuse to relay
+        for mid in member_ids:
+            if mid != user_id:
+                await sio.emit(event, payload, room=f"user:{mid}")
 
 
 async def emit_to_user(user_id: UUID, event: str, data: dict) -> None:

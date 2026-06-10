@@ -2,11 +2,12 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user_id, get_db
+from app.modules.chat import service as chat_service
 from app.modules.chat.data.repository import ChatRepository
 from app.modules.chat.domain.entities import ConvStatus
 from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user
@@ -15,6 +16,7 @@ from app.modules.chat.presentation.dependencies import (
     get_chat_repo,
     get_conversations_uc,
     get_decline_uc,
+    get_delete_message_uc,
     get_group_message_uc,
     get_group_messages_uc,
     get_mark_read_uc,
@@ -111,12 +113,22 @@ async def send_message(
 
 
 @router.post("/conversations/{conv_id}/read")
-def mark_read(
+async def mark_read(
     conv_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_mark_read_uc),
+    repo: ChatRepository = Depends(get_chat_repo),
 ):
     uc.execute(user_id, conv_id)
+    guard = repo.get_conv_send_info(conv_id, user_id)
+    if guard:
+        background_tasks.add_task(
+            emit_to_user,
+            guard.receiver_id,
+            "read",
+            {"conv_id": str(conv_id), "reader_id": str(user_id)},
+        )
     return {"ok": True}
 
 
@@ -173,6 +185,52 @@ async def create_personal_deal(
     if guard:
         background_tasks.add_task(emit_to_user, guard.receiver_id, "new_message", jsonable_encoder(msg))
     return msg
+
+
+# ── Media upload ──────────────────────────────────────────────────────────────
+
+@router.post("/media/upload-url", status_code=201)
+async def get_chat_media_upload_url(
+    content_type: str = Query(..., description="image/* | video/* | audio/* | application/pdf"),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    """
+    Step 1 of 3 — get a signed upload URL for a chat attachment.
+    Step 2: PUT the bytes directly to upload_url (Content-Type must match).
+    Step 3: send the message with the returned media_url in media_urls.
+    """
+    try:
+        return await chat_service.get_chat_media_upload_url(user_id, content_type)
+    except chat_service.ChatMediaUploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except chat_service.ChatStorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── Delete message ────────────────────────────────────────────────────────────
+
+@router.delete("/messages/{message_id}")
+async def delete_message(
+    message_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_delete_message_uc),
+    repo: ChatRepository = Depends(get_chat_repo),
+):
+    info = uc.execute(user_id, message_id)
+
+    event = {"message_id": str(message_id), "context_id": str(info["context_id"])}
+    if info["context_type"] == "group":
+        background_tasks.add_task(emit_to_group, info["context_id"], "message_deleted", event)
+    else:
+        guard = repo.get_conv_send_info(info["context_id"], user_id)
+        if guard:
+            background_tasks.add_task(emit_to_user, guard.receiver_id, "message_deleted", event)
+
+    if info["storage_paths"]:
+        background_tasks.add_task(chat_service.delete_chat_media, info["storage_paths"])
+
+    return {"ok": True, "message_id": str(message_id)}
 
 
 # ── Group Chat ────────────────────────────────────────────────────────────────

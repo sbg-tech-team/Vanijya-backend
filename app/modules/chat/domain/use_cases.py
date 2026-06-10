@@ -196,3 +196,15 @@ class CreatePersonalDealUseCase:
         if conv.status != ConvStatus.ACTIVE:
             raise HTTPException(status_code=403, detail="Can only create deals in an active conversation.")
         return self.repo.create_personal_deal(conv_id=conv_id, sender_id=sender_id, **deal_fields)
+
+
+class DeleteMessageUseCase:
+    """Soft-delete a message. Only the sender may delete their own message."""
+    def __init__(self, repo):
+        self.repo = repo
+
+    def execute(self, user_id: UUID, message_id: UUID):
+        info = self.repo.soft_delete_message(message_id, user_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="Message not found or you cannot delete it.")
+        return info

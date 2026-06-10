@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -15,6 +16,19 @@ from app.modules.chat.domain.entities import (
 from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.models import Post
 from app.modules.profile.models import Commodity, Profile
+from app.shared.utils.storage import StorageError, path_from_url
+
+_CHAT_STORAGE_BUCKET = os.environ.get("CHAT_STORAGE_BUCKET", "chat")
+
+
+def _storage_path_for(url: str) -> Optional[str]:
+    """Derive the bucket object path from a chat media URL so the object can be
+    cleaned up on delete. Returns None for external/foreign URLs."""
+    try:
+        return path_from_url(_CHAT_STORAGE_BUCKET, url)
+    except StorageError:
+        return None
+
 
 # Fixed lookup dicts — roles and post categories are seeded with stable int IDs
 ROLE_NAMES = {1: "Trader", 2: "Broker", 3: "Exporter"}
@@ -301,6 +315,7 @@ class ChatRepository:
                     message_id=msg.id,
                     media_type=message_type,
                     media_url=url,
+                    storage_path=_storage_path_for(url),
                     created_at=now,
                 ))
 
@@ -324,6 +339,33 @@ class ChatRepository:
             ConversationMember.user_id == user_id,
         ).update({"last_read_at": datetime.now(timezone.utc)})
         self.db.commit()
+
+    def soft_delete_message(self, message_id: UUID, user_id: UUID) -> Optional[dict]:
+        """Flip is_deleted for a message the caller owns. Returns context + the
+        storage object paths to clean up, or None if not found / not owner / already gone."""
+        msg = self.db.query(Message).filter(Message.id == message_id).first()
+        if msg is None or msg.sender_id != user_id or msg.is_deleted:
+            return None
+
+        paths = [
+            a.storage_path
+            for a in self.db.query(ChatAttachment).filter(ChatAttachment.message_id == message_id).all()
+            if a.storage_path
+        ]
+        # Fall back to deriving paths from media_urls for rows saved before storage_path existed.
+        if not paths and msg.media_urls:
+            paths = [p for url in msg.media_urls if (p := _storage_path_for(url))]
+
+        context_type, context_id = msg.context_type, msg.context_id
+        msg.is_deleted = True
+        self.db.commit()
+
+        return {
+            "message_id": message_id,
+            "context_type": context_type,
+            "context_id": context_id,
+            "storage_paths": paths,
+        }
 
     # ── DM membership helpers ──────────────────────────────────────────────────
 
