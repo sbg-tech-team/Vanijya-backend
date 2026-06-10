@@ -12,6 +12,7 @@ from app.modules.chat.data.models import ChatAttachment, Conversation, Conversat
 from app.modules.chat.domain.entities import (
     ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
     DealSnap, MessageEntity, PostSnap, UserSnap,
+    ShareDMItem, ShareGroupItem, ShareRecipientsResult,
 )
 from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.models import Post
@@ -464,6 +465,81 @@ class ChatRepository:
 
     
     
+
+    # ── Post helpers ──────────────────────────────────────────────────────────
+
+    def post_exists(self, post_id: int) -> bool:
+        return self.db.query(Post.id).filter(Post.id == post_id).first() is not None
+
+    # ── Share recipients ───────────────────────────────────────────────────────
+
+    def get_share_recipients(self, user_id: UUID) -> ShareRecipientsResult:
+        """
+        Two queries — no N+1.
+          dm_connections : active DMs sorted by most recent activity
+          groups         : groups user belongs to (unfrozen), sorted by name
+        """
+        cm_me = aliased(ConversationMember)
+        cm_other = aliased(ConversationMember)
+
+        dm_rows = (
+            self.db.query(
+                Conversation.id.label("conv_id"),
+                Conversation.updated_at.label("last_message_at"),
+                cm_other.user_id.label("other_user_id"),
+                Profile.id.label("profile_id"),
+                Profile.name,
+                Profile.avatar_url,
+            )
+            .join(cm_me,   and_(cm_me.conversation_id   == Conversation.id, cm_me.user_id   == user_id))
+            .join(cm_other, and_(cm_other.conversation_id == Conversation.id, cm_other.user_id != user_id))
+            .join(Profile, Profile.users_id == cm_other.user_id)
+            .filter(Conversation.status == ConvStatus.ACTIVE)
+            .order_by(Conversation.updated_at.desc())
+            .all()
+        )
+
+        group_rows = (
+            self.db.query(
+                Group.id.label("group_id"),
+                Group.name,
+                Group.image_url,
+                Group.member_count,
+                Group.chat_perm,
+                GroupMember.role,
+            )
+            .join(GroupMember, and_(
+                GroupMember.group_id == Group.id,
+                GroupMember.user_id  == user_id,
+                GroupMember.is_frozen == False,
+            ))
+            .order_by(Group.name)
+            .all()
+        )
+
+        return ShareRecipientsResult(
+            dm_connections=[
+                ShareDMItem(
+                    conversation_id=row.conv_id,
+                    profile_id=row.profile_id,
+                    user_id=row.other_user_id,
+                    name=row.name,
+                    avatar_url=row.avatar_url,
+                    last_message_at=row.last_message_at,
+                )
+                for row in dm_rows
+            ],
+            groups=[
+                ShareGroupItem(
+                    group_id=row.group_id,
+                    name=row.name,
+                    avatar_url=row.image_url,
+                    member_count=row.member_count,
+                    can_send=row.chat_perm == "all_members" or row.role == "admin",
+                )
+                for row in group_rows
+            ],
+        )
 
     # ── Group helpers ──────────────────────────────────────────────────────────
 

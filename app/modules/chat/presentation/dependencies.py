@@ -36,3 +36,6 @@ def get_personal_deal_uc(repo: ChatRepository = Depends(get_chat_repo)) -> Creat
 
 def get_delete_message_uc(repo: ChatRepository = Depends(get_chat_repo)) -> DeleteMessageUseCase:
     return DeleteMessageUseCase(repo)
+
+def get_share_recipients_uc(repo: ChatRepository = Depends(get_chat_repo)) -> GetShareRecipientsUseCase:
+    return GetShareRecipientsUseCase(repo)

@@ -156,6 +156,9 @@ class SendGroupMessageUseCase:
         if chat_perm == "admins_only" and member_role != "admin":
             raise HTTPException(status_code=403, detail="Only admins can send messages in this group.")
 
+        if post_id is not None and not self.repo.post_exists(post_id):
+            raise HTTPException(status_code=404, detail="Post not found.")
+
         return self.repo.save_message(
             context_type="group",
             context_id=group_id,
@@ -196,6 +199,14 @@ class CreatePersonalDealUseCase:
         if conv.status != ConvStatus.ACTIVE:
             raise HTTPException(status_code=403, detail="Can only create deals in an active conversation.")
         return self.repo.create_personal_deal(conv_id=conv_id, sender_id=sender_id, **deal_fields)
+
+
+class GetShareRecipientsUseCase:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def execute(self, user_id: UUID):
+        return self.repo.get_share_recipients(user_id)
 
 
 class DeleteMessageUseCase:

@@ -153,3 +153,32 @@ class ConvSendGuard:
     sender_snap: UserSnap
 
 
+# ── Share recipients ───────────────────────────────────────────────────────────
+
+@dataclass
+class ShareDMItem:
+    """One active DM connection the current user can forward a post to."""
+    conversation_id: UUID
+    profile_id: int
+    user_id: UUID
+    name: str
+    avatar_url: Optional[str]
+    last_message_at: Optional[datetime]
+
+
+@dataclass
+class ShareGroupItem:
+    """One group the current user belongs to (unfrozen). can_send reflects chat_perm + role."""
+    group_id: UUID
+    name: str
+    avatar_url: Optional[str]
+    member_count: int
+    can_send: bool
+
+
+@dataclass
+class ShareRecipientsResult:
+    dm_connections: list
+    groups: list
+
+

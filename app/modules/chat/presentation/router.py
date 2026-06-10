@@ -23,6 +23,7 @@ from app.modules.chat.presentation.dependencies import (
     get_messages_uc,
     get_open_chat_uc,
     get_personal_deal_uc,
+    get_share_recipients_uc,
 )
 from app.modules.chat.presentation.schema import (
     CreatePersonalDealRequest,
@@ -92,6 +93,9 @@ async def send_message(
         guard.initiator_id is None or user_id != guard.initiator_id
     ):
         raise HTTPException(status_code=403, detail="Waiting for the other person to accept.")
+
+    if body.post_id is not None and not repo.post_exists(body.post_id):
+        raise HTTPException(status_code=404, detail="Post not found.")
 
     msg = repo.save_message(
         context_type="dm",
@@ -231,6 +235,21 @@ async def delete_message(
         background_tasks.add_task(chat_service.delete_chat_media, info["storage_paths"])
 
     return {"ok": True, "message_id": str(message_id)}
+
+
+# ── Share ─────────────────────────────────────────────────────────────────────
+
+@router.get("/share/recipients")
+def get_share_recipients(
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_share_recipients_uc),
+):
+    """
+    Returns the two lists shown in the share bottom sheet:
+      dm_connections — active DMs (conversations the user can forward to), sorted by last activity
+      groups         — groups the user belongs to (unfrozen), with can_send flag
+    """
+    return uc.execute(user_id)
 
 
 # ── Group Chat ────────────────────────────────────────────────────────────────
