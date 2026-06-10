@@ -13,7 +13,7 @@ from app.modules.profile.models import Profile
 from app.modules.connections.models import UserConnection
 from app.modules.post.schemas import (
     PostCreate, PostUpdate, PostResponse, PostDealResponse,
-    FeedPostCard, MyPostCard, MyPostFeedResponse, PostFeedResponse, FollowingFeedResponse,
+    FeedPostCard, MyPostCard, MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
     CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
 )
@@ -931,25 +931,35 @@ def get_following_feed(
     )
 
 
-def get_saved_posts(db: Session, profile_id: int, limit: int = 20, offset: int = 0) -> list[FeedPostCard]:
-    saves = (
+def get_saved_posts(
+    db: Session,
+    profile_id: int,
+    limit: int = 20,
+    cursor_save_id: int | None = None,
+) -> SavedPostFeedResponse:
+    query = (
         db.query(PostSave)
         .filter(PostSave.profile_id == profile_id)
-        .order_by(PostSave.saved_at.desc())
-        .limit(limit)
-        .offset(offset)
-        .all()
     )
+    if cursor_save_id is not None:
+        query = query.filter(PostSave.id < cursor_save_id)
+    saves = query.order_by(PostSave.id.desc()).limit(limit).all()
+
+    next_cursor = saves[-1].id if len(saves) == limit else None
+
     post_ids = [s.post_id for s in saves]
+    if not post_ids:
+        return SavedPostFeedResponse(posts=[], next_cursor=None)
+
     posts = (
         db.query(Post)
         .options(selectinload(Post.deal_details))
-        .filter(
-            Post.id.in_(post_ids),
-            Post.profile_id.in_(_active_profile_ids(db)),
-        )
+        .filter(Post.id.in_(post_ids))
         .all()
     )
     post_map = {p.id: p for p in posts}
     ordered = [post_map[pid] for pid in post_ids if pid in post_map]
-    return _batch_feed_cards(db, ordered, profile_id)
+    return SavedPostFeedResponse(
+        posts=_batch_feed_cards(db, ordered, profile_id),
+        next_cursor=next_cursor,
+    )

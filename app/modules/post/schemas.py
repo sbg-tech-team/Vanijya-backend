@@ -304,6 +304,11 @@ class PostFeedResponse(BaseModel):
     next_cursor: Optional[int] = None
 
 
+class SavedPostFeedResponse(BaseModel):
+    posts: List[FeedPostCard]
+    next_cursor: Optional[int] = None  # last PostSave.id on this page; None = no more
+
+
 # ----------------------------------------------------------------------------
 # Following feed
 # ----------------------------------------------------------------------------
