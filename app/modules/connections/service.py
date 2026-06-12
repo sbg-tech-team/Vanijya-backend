@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from uuid import UUID
+from typing import cast
+from uuid import UUID, uuid4
 
 import redis as redis_lib
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, text
+from sqlalchemy import and_, text
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from app.modules.connections.models import MessageRequest, UserConnection
@@ -177,10 +178,6 @@ def _to_pgvec(vec: list[float]) -> str:
 # ---------------------------------------------------------------------------
 
 def follow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
-    # Local imports keep the chat module dependency contained (mirrors unfollow_user).
-    from app.modules.chat.data.models import Conversation, ConversationMember
-    from app.modules.chat.domain.entities import ConvStatus
-
     if follower_id == following_id:
         raise HTTPException(status_code=400, detail="Cannot follow yourself.")
     existing = db.query(UserConnection).filter(
@@ -198,41 +195,18 @@ def follow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
     db.query(Profile).filter(Profile.users_id == following_id).update(
         {"followers_count": Profile.followers_count + 1}
     )
-
-    # Revive a DM that a prior unfollow blocked between these two users.
-    # Reset it to a fresh request, with the re-follower as the initiator —
-    # the other party must accept again before two-way chat resumes.
-    cm_a = aliased(ConversationMember)
-    cm_b = aliased(ConversationMember)
-    conv = (
-        db.query(Conversation)
-        .join(cm_a, and_(cm_a.conversation_id == Conversation.id, cm_a.user_id == follower_id))
-        .join(cm_b, and_(cm_b.conversation_id == Conversation.id, cm_b.user_id == following_id))
-        .filter(Conversation.type == "dm", Conversation.status == ConvStatus.BLOCKED)
-        .first()
-    )
-    if conv is not None:
-        conv.status = ConvStatus.REQUESTED
-        conv.initiator_id = follower_id
-        conv.updated_at = datetime.now(timezone.utc)
-
     db.commit()
     return {"status": "following", "following_id": str(following_id)}
 
 
 def unfollow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
     """
-    Unfollow fully severs the relationship between the two users:
-      1. Removes the forward follow edge (follower → following).
-      2. Removes the reverse follow edge (following → follower) if it exists.
-      3. Deletes any message requests between them, in both directions.
-      4. Blocks the DM conversation between them, if one exists.
-    All count adjustments floor at 0.
+    One-directional unfollow:
+      - removes the caller's follow edge (follower → following) and adjusts counts
+      - deletes the caller's own outgoing message request to that user, if any
+    The other person's follow-back, their request to the caller, and any shared
+    DM conversation are left untouched.
     """
-    # Local imports to keep the chat module dependency contained (and avoid import cycles).
-    from app.modules.chat.data.models import Conversation, ConversationMember
-    from app.modules.chat.domain.entities import ConvStatus
-
     conn = db.query(UserConnection).filter(
         UserConnection.follower_id == follower_id,
         UserConnection.following_id == following_id,
@@ -240,50 +214,21 @@ def unfollow_user(db: Session, follower_id: UUID, following_id: UUID) -> dict:
     if not conn:
         raise HTTPException(status_code=404, detail="You are not following this user.")
 
-    # 1. forward follow edge
     db.delete(conn)
+    # decrement following_count on the follower's profile (floor at 0)
     db.query(Profile).filter(
         Profile.users_id == follower_id, Profile.following_count > 0
     ).update({"following_count": Profile.following_count - 1})
+    # decrement followers_count on the target's profile (floor at 0)
     db.query(Profile).filter(
         Profile.users_id == following_id, Profile.followers_count > 0
     ).update({"followers_count": Profile.followers_count - 1})
 
-    # 2. reverse follow edge — make the removal mutual
-    reverse = db.query(UserConnection).filter(
-        UserConnection.follower_id == following_id,
-        UserConnection.following_id == follower_id,
-    ).first()
-    if reverse:
-        db.delete(reverse)
-        db.query(Profile).filter(
-            Profile.users_id == following_id, Profile.following_count > 0
-        ).update({"following_count": Profile.following_count - 1})
-        db.query(Profile).filter(
-            Profile.users_id == follower_id, Profile.followers_count > 0
-        ).update({"followers_count": Profile.followers_count - 1})
-
-    # 3. void message requests in both directions
+    # void only the caller's own outgoing message request to this user
     db.query(MessageRequest).filter(
-        or_(
-            and_(MessageRequest.sender_id == follower_id, MessageRequest.receiver_id == following_id),
-            and_(MessageRequest.sender_id == following_id, MessageRequest.receiver_id == follower_id),
-        )
+        MessageRequest.sender_id == follower_id,
+        MessageRequest.receiver_id == following_id,
     ).delete(synchronize_session=False)
-
-    # 4. block the DM conversation between them, if one exists
-    cm_a = aliased(ConversationMember)
-    cm_b = aliased(ConversationMember)
-    conv = (
-        db.query(Conversation)
-        .join(cm_a, and_(cm_a.conversation_id == Conversation.id, cm_a.user_id == follower_id))
-        .join(cm_b, and_(cm_b.conversation_id == Conversation.id, cm_b.user_id == following_id))
-        .filter(Conversation.type == "dm")
-        .first()
-    )
-    if conv is not None and conv.status != ConvStatus.BLOCKED:
-        conv.status = ConvStatus.BLOCKED
-        conv.updated_at = datetime.now(timezone.utc)
 
     db.commit()
     return {"status": "unfollowed", "following_id": str(following_id)}
@@ -344,6 +289,16 @@ def send_message_request(db: Session, sender_id: UUID, receiver_id: UUID) -> dic
         MessageRequest.receiver_id == receiver_id,
     ).first()
     if existing:
+        if existing.status == "declined":
+            # un-stick a previously declined request — reopen it as a fresh pending request
+            existing.status = "pending"
+            existing.sent_at = datetime.now(timezone.utc)
+            existing.acted_at = None
+            db.commit()
+            db.refresh(existing)
+            return {"id": existing.id, "status": existing.status, "sent_at": existing.sent_at}
+        if existing.status == "accepted":
+            raise HTTPException(status_code=409, detail="You are already connected with this user.")
         raise HTTPException(status_code=409, detail="Message request already sent.")
     req = MessageRequest(sender_id=sender_id, receiver_id=receiver_id)
     db.add(req)
@@ -356,17 +311,22 @@ def withdraw_message_request(db: Session, sender_id: UUID, receiver_id: UUID) ->
     req = db.query(MessageRequest).filter(
         MessageRequest.sender_id == sender_id,
         MessageRequest.receiver_id == receiver_id,
-        MessageRequest.status == "pending",
+        MessageRequest.status.in_(["pending", "declined"]),
     ).first()
     if not req:
-        raise HTTPException(status_code=404, detail="No pending request found to withdraw.")
+        raise HTTPException(status_code=404, detail="No pending or declined request found to withdraw.")
     db.delete(req)
     db.commit()
     return {"status": "withdrawn", "receiver_id": str(receiver_id)}
 
 
 def respond_to_request(db: Session, request_id: int, me: UUID, action: str) -> dict:
-    """action must be 'accepted' or 'declined'. Only the receiver can call this."""
+    """action must be 'accepted' or 'declined'. Only the receiver can call this.
+
+    On 'accepted', the DM conversation between the two users is created (or, if one
+    already exists, reactivated) with status 'active' — the message request is the
+    consent, so both sides can chat immediately afterwards.
+    """
     req = db.query(MessageRequest).filter(
         MessageRequest.id == request_id,
         MessageRequest.receiver_id == me,
@@ -379,8 +339,51 @@ def respond_to_request(db: Session, request_id: int, me: UUID, action: str) -> d
         )
     req.status = action
     req.acted_at = datetime.now(timezone.utc)
+
+    conv_id = None
+    if action == "accepted":
+        conv_id = _activate_dm(db, initiator_id=req.sender_id, other_id=req.receiver_id)
+
     db.commit()
-    return {"id": request_id, "status": action}
+    result = {"id": request_id, "status": action}
+    if conv_id is not None:
+        result["conversation_id"] = str(conv_id)
+    return result
+
+
+def _activate_dm(db: Session, initiator_id: UUID, other_id: UUID) -> UUID:
+    """Create or reactivate the DM conversation between two users and return its id.
+    The request sender is recorded as the conversation initiator. Does not commit —
+    the caller owns the transaction."""
+    # Local import keeps the chat-module dependency contained (avoids an import cycle).
+    from app.modules.chat.data.models import Conversation, ConversationMember
+    from app.modules.chat.domain.entities import ConvStatus
+
+    cm_a = aliased(ConversationMember)
+    cm_b = aliased(ConversationMember)
+    conv = (
+        db.query(Conversation)
+        .join(cm_a, and_(cm_a.conversation_id == Conversation.id, cm_a.user_id == initiator_id))
+        .join(cm_b, and_(cm_b.conversation_id == Conversation.id, cm_b.user_id == other_id))
+        .filter(Conversation.type == "dm")
+        .first()
+    )
+
+    now = datetime.now(timezone.utc)
+    if conv is None:
+        conv = Conversation(
+            id=uuid4(), type="dm", status=ConvStatus.ACTIVE,
+            initiator_id=initiator_id, created_at=now, updated_at=now,
+        )
+        db.add(conv)
+        db.flush()  # populate conv.id
+        db.add(ConversationMember(conversation_id=conv.id, user_id=initiator_id, joined_at=now))
+        db.add(ConversationMember(conversation_id=conv.id, user_id=other_id, joined_at=now))
+    else:
+        conv.status = ConvStatus.ACTIVE
+        conv.updated_at = now
+
+    return conv.id
 
 
 def get_received_requests(db: Session, me: UUID) -> list[dict]:
@@ -581,7 +584,9 @@ def mark_recommendations_seen(
 def _get_seen_ids(r: redis_lib.Redis, user_id: UUID) -> list[str]:
     """Fetch the seen set from Redis. Returns [] if Redis is unavailable."""
     try:
-        raw = r.smembers(f"rec:seen:{user_id}")
+        # redis-py types sync returns as possibly-awaitable (ResponseT); cast to the
+        # concrete set the sync client actually returns so the type checker is happy.
+        raw = cast(set, r.smembers(f"rec:seen:{user_id}"))
         return [s.decode() if isinstance(s, bytes) else s for s in raw]
     except Exception:
         return []
