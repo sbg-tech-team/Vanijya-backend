@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, aliased
 
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.entities import (
-    ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
-    DealSnap, MessageEntity, PostSnap, UserSnap,
+    ChatListItem, ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
+    DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity, PostSnap, UserSnap,
     ShareDMItem, ShareGroupItem, ShareRecipientsResult,
 )
 from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
@@ -65,6 +65,26 @@ def _last_message(db: Session, context_id: UUID) -> Optional[DMLastMessage]:
         body=row.body,
         message_type=row.message_type,
         sender_id=row.sender_id,
+        sent_at=row.sent_at,
+    )
+
+
+def _group_last_message(db: Session, group_id: UUID) -> Optional[GroupLastMessage]:
+    row = (
+        db.query(Message)
+        .filter(Message.context_type == "group", Message.context_id == group_id, Message.is_deleted.is_(False))
+        .order_by(Message.sent_at.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    sender = db.query(Profile.name).filter(Profile.users_id == row.sender_id).first()
+    return GroupLastMessage(
+        id=row.id,
+        sender_id=row.sender_id,
+        sender_name=sender[0] if sender else "Unknown",
+        body=row.body,
+        message_type=row.message_type,
         sent_at=row.sent_at,
     )
 
@@ -540,6 +560,69 @@ class ChatRepository:
                 for row in group_rows
             ],
         )
+
+    # ── Group conversations ─────────────────────────────────────────────────────
+
+    def get_group_conversations(self, user_id: UUID) -> list[GroupConversationEntity]:
+        """Every group the user belongs to, built as a chat-list entity.
+
+        Note: groups have no per-user read tracking yet (GroupMember has no
+        last_read_at), so unread_count is 0 until that column exists. updated_at
+        reflects the last group message so the unified list can sort on it."""
+        rows = (
+            self.db.query(Group, GroupMember.is_muted)
+            .join(GroupMember, and_(GroupMember.group_id == Group.id, GroupMember.user_id == user_id))
+            .all()
+        )
+        result = []
+        for group, is_muted in rows:
+            last = _group_last_message(self.db, group.id)
+            result.append(GroupConversationEntity(
+                id=group.id,
+                group_name=group.name,
+                group_avatar=group.image_url,
+                member_count=group.member_count,
+                last_message=last,
+                unread_count=0,
+                is_muted=bool(is_muted),
+                created_at=group.created_at,
+                updated_at=last.sent_at if last else group.created_at,
+            ))
+        return result
+
+    # ── Unified chat list ───────────────────────────────────────────────────────
+
+    def get_all_chats(self, user_id: UUID, page: int, per_page: int) -> list[ChatListItem]:
+        """DMs + groups merged into one list, newest activity first.
+
+        A correct global sort needs every chat gathered before slicing, so this
+        builds all of the user's DMs and groups, sorts by last activity, then
+        paginates in memory (bounded per user — fine for a chat list)."""
+        conv_ids = select(ConversationMember.conversation_id).where(ConversationMember.user_id == user_id)
+        convs = self.db.query(Conversation).filter(Conversation.id.in_(conv_ids)).all()
+
+        items: list[ChatListItem] = []
+        for conv in convs:
+            dm = _build_conversation(self.db, conv, user_id)
+            if dm is None:
+                continue
+            last_activity = dm.last_message.sent_at if dm.last_message else dm.updated_at
+            items.append(ChatListItem(type="dm", last_activity=last_activity, dm=dm))
+
+        for group in self.get_group_conversations(user_id):
+            last_activity = group.last_message.sent_at if group.last_message else group.updated_at
+            items.append(ChatListItem(type="group", last_activity=last_activity, group=group))
+
+        # Strip tzinfo for the comparison so naive (DB-read) and aware datetimes
+        # never collide; None sinks to the bottom.
+        def _key(item: ChatListItem):
+            dt = item.last_activity
+            return dt.replace(tzinfo=None) if dt else datetime.min
+
+        items.sort(key=_key, reverse=True)
+
+        offset = (page - 1) * per_page
+        return items[offset:offset + per_page]
 
     # ── Group helpers ──────────────────────────────────────────────────────────
 

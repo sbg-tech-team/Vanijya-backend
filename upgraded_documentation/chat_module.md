@@ -17,16 +17,17 @@ A complete reference for direct messaging (DM), group chat, deal cards in chat, 
 5. [File Structure](#5-file-structure)
 6. [Socket.IO — Real-Time Connection](#6-socketio--real-time-connection)
 7. [REST API Quick Reference](#7-rest-api-quick-reference)
-8. [DM Conversation APIs](#8-dm-conversation-apis)
-9. [DM Message APIs](#9-dm-message-apis)
-10. [Media Upload & Message Deletion](#10-media-upload--message-deletion)
-11. [Personal Deal APIs](#11-personal-deal-apis)
-12. [Group Chat APIs](#12-group-chat-apis)
-13. [Group Deal APIs (Chat)](#13-group-deal-apis-chat)
-14. [Conversation Status Flow](#14-conversation-status-flow)
-15. [Message Types](#15-message-types)
-16. [Shared Objects](#16-shared-objects)
-17. [Error Reference](#17-error-reference)
+8. [Inbox & Sharing APIs](#8-inbox--sharing-apis)
+9. [DM Conversation APIs](#9-dm-conversation-apis)
+10. [DM Message APIs](#10-dm-message-apis)
+11. [Media Upload & Message Deletion](#11-media-upload--message-deletion)
+12. [Personal Deal APIs](#12-personal-deal-apis)
+13. [Group Chat APIs](#13-group-chat-apis)
+14. [Group Deal APIs (Chat)](#14-group-deal-apis-chat)
+15. [Conversation Status Flow](#15-conversation-status-flow)
+16. [Message Types](#16-message-types)
+17. [Shared Objects](#17-shared-objects)
+18. [Error Reference](#18-error-reference)
 
 ---
 
@@ -38,7 +39,7 @@ The chat module handles:
 - **Group Chat** — real-time messaging scoped to a group. Members send text/media/deal/post cards into the group feed.
 - **Personal Deals** — Deal/Requirement cards posted inside a DM. Visible only to the two participants.
 - **Group Deals (chat entry point)** — Deal/Requirement cards posted into a group chat. `POST /chat/groups/{group_id}/deals` is the canonical endpoint — it creates the deal, inserts a chat card, and pushes a Socket.IO event to the group room all in one call.
-- **Media upload** — images, video, audio, and documents are uploaded **directly from the client to Supabase Storage** via a signed URL minted by the backend. The backend never proxies file bytes — see [Section 10](#10-media-upload--message-deletion).
+- **Media upload** — images, video, audio, and documents are uploaded **directly from the client to Supabase Storage** via a signed URL minted by the backend. The backend never proxies file bytes — see [Section 11](#11-media-upload--message-deletion).
 - **Message deletion** — a sender can soft-delete their own message; the attached media object is removed from the bucket in the background.
 - **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `conversation_accepted`, `conversation_declined`, `message_deleted`, and `read` events to connected clients. Clients also emit `typing` / `stop_typing`, which the server relays to the chat peer / group room.
 
@@ -232,7 +233,7 @@ The server relays the same event name (`typing` / `stop_typing`) to the peer —
 | `read` | `user:{other_member_id}` | A DM was marked read by the other party | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
 | `typing` / `stop_typing` | `user:{peer_id}` (DM) / `group:{group_id}` (group) | A member is composing / stopped | `{"context_type", "context_id", "user_id"}` |
 
-`MessageEntity` and `GroupDealResponse` shapes are in [Shared Objects](#16-shared-objects).
+`MessageEntity` and `GroupDealResponse` shapes are in [Shared Objects](#17-shared-objects).
 
 ### Disconnect
 
@@ -252,6 +253,8 @@ All endpoints require `Authorization: Bearer <access_token>`.
 
 | Method | Endpoint | What it does |
 |---|---|---|
+| `GET` | `/all` | Unified inbox — DMs + groups merged, sorted by last activity |
+| `GET` | `/share/recipients` | Forward-target picker — active DMs + the user's groups |
 | `GET` | `/conversations` | List the authenticated user's DM conversations |
 | `POST` | `/conversations` | Start a new DM (or resume existing) + send first message |
 | `GET` | `/conversations/{conv_id}/messages` | Paginated message history for a DM |
@@ -268,7 +271,122 @@ All endpoints require `Authorization: Bearer <access_token>`.
 
 ---
 
-## 8. DM Conversation APIs
+## 8. Inbox & Sharing APIs
+
+Two list endpoints that span both DMs and groups: the **unified inbox** (the main chat screen) and the **share recipient picker** (the forward bottom-sheet).
+
+### `GET /chat/all`
+
+The unified inbox — every DM and every group the user belongs to, merged into **one list sorted by last activity, newest on top** (a group and a DM interleave purely by recency). This is the endpoint the main chat screen should call; `GET /chat/conversations` (DMs only) and the per-group lists remain available for narrower views.
+
+| Query Param | Type | Default | Description |
+|---|---|---|---|
+| `page` | int | `1` | Page number |
+| `per_page` | int | `20` | Results per page |
+
+Each row carries a `type` discriminator and exactly one populated payload — `dm` (a [`ConversationEntity`](#conversationentity--conversation-list-item)) or `group` (a [`GroupConversationEntity`](#groupconversationentity--group-chat-list-item)). `last_activity` is the timestamp the list is sorted on (the last message's `sent_at`, falling back to the chat's creation time when there are no messages yet).
+
+**Success `200`:**
+```json
+[
+  {
+    "type": "group",
+    "last_activity": "2026-06-11T14:32:00.000000+00:00",
+    "dm": null,
+    "group": {
+      "id": "9b1c...",
+      "group_name": "Maharashtra Sugar Traders",
+      "group_avatar": "https://cdn.supabase.../group.jpg",
+      "member_count": 45,
+      "last_message": {
+        "id": "msg-uuid",
+        "sender_id": "a1b2c3d4-...",
+        "sender_name": "Anita Shah",
+        "body": "New rate list attached.",
+        "message_type": "document",
+        "sent_at": "2026-06-11T14:32:00.000000+00:00"
+      },
+      "unread_count": 0,
+      "is_muted": false,
+      "created_at": "2026-05-01T09:00:00.000000+00:00",
+      "updated_at": "2026-06-11T14:32:00.000000+00:00"
+    }
+  },
+  {
+    "type": "dm",
+    "last_activity": "2026-06-09T10:15:00.000000+00:00",
+    "dm": {
+      "id": "3fa85f64-...",
+      "status": "active",
+      "initiator_id": "c37a3257-...",
+      "participant": { /* UserSnap */ },
+      "last_message": {
+        "id": "msg-uuid",
+        "body": "Sounds good, let me check.",
+        "message_type": "text",
+        "sender_id": "a1b2c3d4-...",
+        "sent_at": "2026-06-09T10:15:00.000000+00:00"
+      },
+      "unread_count": 2,
+      "is_muted": false,
+      "created_at": "2026-06-08T09:00:00.000000+00:00",
+      "updated_at": "2026-06-09T10:15:00.000000+00:00"
+    },
+    "group": null
+  }
+]
+```
+
+- **DM ordering** is backed by `conversations.updated_at`, which is bumped on every DM message.
+- **Group ordering** is computed from the latest group message at read time (groups have no stored last-activity column).
+- **`group.unread_count` is always `0`** for now — groups have no per-user read tracking (`group_members` has no `last_read_at`). DM `unread_count` is accurate. Treat group unread as "not yet implemented" rather than "zero unread".
+- All of the user's DMs and groups are gathered and sorted before paging, so ordering is correct across the DM/group boundary (pagination is applied after the merge).
+- DMs of **every** status are included (`requested` / `active` / `blocked`), matching `GET /chat/conversations`.
+
+---
+
+### `GET /chat/share/recipients`
+
+The forward-target picker shown in the "share to chat" bottom-sheet — the two lists a user can forward a post/deal to. Lighter than `/all`: no last-message bodies or unread counts, just enough to render selectable rows.
+
+No query parameters.
+
+**Success `200`:**
+```json
+{
+  "dm_connections": [
+    {
+      "conversation_id": "3fa85f64-...",
+      "profile_id": 12,
+      "user_id": "a1b2c3d4-...",
+      "name": "Anita Shah",
+      "avatar_url": null,
+      "last_message_at": "2026-06-09T10:15:00.000000+00:00"
+    }
+  ],
+  "groups": [
+    {
+      "group_id": "9b1c...",
+      "name": "Maharashtra Sugar Traders",
+      "avatar_url": "https://cdn.supabase.../group.jpg",
+      "member_count": 45,
+      "can_send": true
+    }
+  ]
+}
+```
+
+| List | Contents | Sort |
+|---|---|---|
+| `dm_connections` | **Active** DMs only (`status = "active"`) | Most recent activity first |
+| `groups` | Groups the user belongs to and is **not frozen** in | By group name |
+
+- `can_send` reflects whether the user may actually post into that group right now: `true` when `chat_perm = "all_members"`, or when the user is an `admin` (so admins can always forward, even into `admins_only` groups). Render a group with `can_send = false` as disabled.
+- `last_message_at` mirrors `conversations.updated_at` — use it only for ordering hints; this endpoint intentionally omits message bodies.
+
+---
+
+## 9. DM Conversation APIs
 
 ### `GET /chat/conversations`
 
@@ -360,7 +478,7 @@ Start a new DM conversation and send the first message. If a DM with this partic
 
 ---
 
-## 9. DM Message APIs
+## 10. DM Message APIs
 
 ### `GET /chat/conversations/{conv_id}/messages`
 
@@ -442,22 +560,27 @@ Send a message in an existing DM. Also fires a `new_message` Socket.IO event to 
 | Field | Required | Type | Notes |
 |---|---|---|---|
 | `body` | Conditional | string | Required for `text`; null for media/deal/post |
-| `message_type` | No | string | Default `"text"` — see [Message Types](#15-message-types) |
+| `message_type` | No | string | Default `"text"` — see [Message Types](#16-message-types) |
 | `media_urls` | No | string[] | CDN URLs of uploaded files |
 | `media_metadata` | No | dict | Arbitrary metadata (filename, duration, etc.) |
 | `location_lat` / `location_lon` | No | float | For `message_type = "location"` |
 | `reply_to_id` | No | UUID | ID of the message being quoted |
 | `deal_id` | No | UUID | FK to `group_deals.id` — share a group deal into DM |
 | `personal_deal_id` | No | UUID | FK to `personal_deals.id` — reference an existing personal deal |
-| `post_id` | No | int | FK to `posts.id` — share a post into DM |
+| `post_id` | No | int | FK to `posts.id` — share a post into DM. Validated: a non-existent id returns `404` |
 
 **Success `201`** — returns a `MessageEntity`.
 
 **WS push:** fires `new_message` to `user:{receiver_id}` with the same `MessageEntity` payload.
 
-**Error `404`:**
+**Error `404`** — conversation not found:
 ```json
 { "detail": "Conversation not found." }
+```
+
+**Error `404`** — `post_id` references a post that doesn't exist (prevents an orphan post card):
+```json
+{ "detail": "Post not found." }
 ```
 
 **Error `403`:**
@@ -511,7 +634,7 @@ No request body.
 
 ---
 
-## 10. Media Upload & Message Deletion
+## 11. Media Upload & Message Deletion
 
 ### Media upload — the 3-step flow
 
@@ -594,7 +717,7 @@ Payload: `{"message_id": "<uuid>", "context_id": "<uuid>"}`. Clients should repl
 
 ---
 
-## 11. Personal Deal APIs
+## 12. Personal Deal APIs
 
 Personal deals are Deal/Requirement cards created inside a DM. The deal is saved and a `message_type = "deal"` chat card is automatically inserted — there is no separate "send the message" step.
 
@@ -647,7 +770,7 @@ After saving, fires a `new_message` Socket.IO event to the receiver with the dea
 
 ---
 
-## 12. Group Chat APIs
+## 13. Group Chat APIs
 
 ### `GET /chat/groups/{group_id}/messages`
 
@@ -697,13 +820,13 @@ Send a message into a group. Also fires a `new_group_message` Socket.IO event to
 | Field | Required | Type | Notes |
 |---|---|---|---|
 | `body` | Conditional | string | Required for `text`; null for other types |
-| `message_type` | No | string | Default `"text"` — see [Message Types](#15-message-types) |
+| `message_type` | No | string | Default `"text"` — see [Message Types](#16-message-types) |
 | `media_urls` | No | string[] | CDN URLs of uploaded files |
 | `media_metadata` | No | dict | Arbitrary metadata |
 | `location_lat` / `location_lon` | No | float | For `message_type = "location"` |
 | `reply_to_id` | No | UUID | Quoted message ID |
 | `deal_id` | No | UUID | Reference an existing group deal (FK → group_deals.id) |
-| `post_id` | No | int | Share a post into group chat |
+| `post_id` | No | int | Share a post into group chat. Validated: a non-existent id returns `404` |
 
 > **Note:** `personal_deal_id` is not accepted in group messages — personal deals belong to DMs only.
 
@@ -711,9 +834,14 @@ Send a message into a group. Also fires a `new_group_message` Socket.IO event to
 
 **WS push:** fires `new_group_message` to `group:{group_id}`.
 
+**Error `404`** — `post_id` references a post that doesn't exist:
+```json
+{ "detail": "Post not found." }
+```
+
 ---
 
-## 13. Group Deal APIs (Chat)
+## 14. Group Deal APIs (Chat)
 
 Group deals live in the `group_deals` table (shared with the groups module) but their **creation endpoint is here** — because creating a deal needs to write a chat card and push a Socket.IO event, which requires the chat module's infrastructure.
 
@@ -779,7 +907,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 14. Conversation Status Flow
+## 15. Conversation Status Flow
 
 ```
 (User A sends first message)
@@ -807,7 +935,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 15. Message Types
+## 16. Message Types
 
 | `message_type` | When to use | Which fields to populate |
 |---|---|---|
@@ -822,7 +950,7 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ---
 
-## 16. Shared Objects
+## 17. Shared Objects
 
 ### `UserSnap` — sender/participant profile
 
@@ -928,7 +1056,93 @@ When `message_type = "post"`, the `post` field is a `PostSnap`:
 
 ---
 
-## 17. Error Reference
+### `GroupConversationEntity` — group chat list item
+
+The group counterpart of `ConversationEntity`, returned inside `GET /chat/all` rows where `type = "group"`.
+
+```json
+{
+  "id": "9b1c...",
+  "group_name": "Maharashtra Sugar Traders",
+  "group_avatar": "https://cdn.supabase.../group.jpg",
+  "member_count": 45,
+  "last_message": {
+    "id": "msg-uuid",
+    "sender_id": "a1b2c3d4-...",
+    "sender_name": "Anita Shah",
+    "body": "New rate list attached.",
+    "message_type": "document",
+    "sent_at": "2026-06-11T14:32:00.000000+00:00"
+  },
+  "unread_count": 0,
+  "is_muted": false,
+  "created_at": "2026-05-01T09:00:00.000000+00:00",
+  "updated_at": "2026-06-11T14:32:00.000000+00:00"
+}
+```
+
+- `last_message` is a `GroupLastMessage` (note it carries `sender_name` so the list can show "Anita: …" without an extra lookup), or `null` if the group has no messages yet.
+- `unread_count` is currently always `0` — see the note under [`GET /chat/all`](#get-chatall).
+- `updated_at` mirrors the last message's `sent_at` (or `created_at` when empty); groups have no stored `updated_at` column.
+
+---
+
+### `ChatListItem` — unified inbox row
+
+The envelope returned by `GET /chat/all`. Exactly one of `dm` / `group` is non-null; `type` tells you which.
+
+```json
+{
+  "type": "dm",
+  "last_activity": "2026-06-09T10:15:00.000000+00:00",
+  "dm": { /* ConversationEntity */ },
+  "group": null
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | `"dm"` or `"group"` |
+| `last_activity` | datetime | Sort key — newest first |
+| `dm` | ConversationEntity \| null | Set when `type = "dm"` |
+| `group` | GroupConversationEntity \| null | Set when `type = "group"` |
+
+---
+
+### `ShareRecipientsResult` — forward picker payload
+
+Returned by `GET /chat/share/recipients`.
+
+```json
+{
+  "dm_connections": [
+    {
+      "conversation_id": "3fa85f64-...",
+      "profile_id": 12,
+      "user_id": "a1b2c3d4-...",
+      "name": "Anita Shah",
+      "avatar_url": null,
+      "last_message_at": "2026-06-09T10:15:00.000000+00:00"
+    }
+  ],
+  "groups": [
+    {
+      "group_id": "9b1c...",
+      "name": "Maharashtra Sugar Traders",
+      "avatar_url": "https://cdn.supabase.../group.jpg",
+      "member_count": 45,
+      "can_send": true
+    }
+  ]
+}
+```
+
+- **`ShareDMItem`** (`dm_connections[]`): `conversation_id`, `profile_id`, `user_id`, `name`, `avatar_url`, `last_message_at`.
+- **`ShareGroupItem`** (`groups[]`): `group_id`, `name`, `avatar_url`, `member_count`, `can_send`.
+
+---
+
+## 18. Error Reference
 
 All errors follow FastAPI's standard shape:
 ```json
@@ -939,6 +1153,6 @@ All errors follow FastAPI's standard shape:
 |---|---|
 | `401` | Missing or invalid Bearer token; Socket.IO connection with invalid token (connection rejected) |
 | `403` | Not a conversation member / conversation is blocked / waiting for acceptance / frozen group member / chat permission violation / deal posted in inactive conversation |
-| `404` | Conversation not found / group not found |
+| `404` | Conversation not found / group not found / shared `post_id` references a non-existent post |
 | `409` | Conversation status already resolved (e.g. accepting an already-active conversation) |
 | `422` | Missing required field, invalid `message_type`, invalid `quantity_unit`, invalid `price_type` |

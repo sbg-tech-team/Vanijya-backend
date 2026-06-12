@@ -13,6 +13,7 @@ from app.modules.chat.domain.entities import ConvStatus
 from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user
 from app.modules.chat.presentation.dependencies import (
     get_accept_uc,
+    get_all_chats_sorted,
     get_chat_repo,
     get_conversations_uc,
     get_decline_uc,
@@ -38,6 +39,21 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 # ── DM Conversations ──────────────────────────────────────────────────────────
+
+@router.get("/all")
+def list_all_chats(
+    page: int = 1,
+    per_page: int = 20,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_all_chats_sorted),
+):
+    """
+    Unified inbox — DMs and groups in one list, sorted by last activity (newest
+    on top). Each item carries `type` ("dm" | "group") and the matching payload
+    in `dm` / `group`.
+    """
+    return uc.execute(user_id, page, per_page)
+
 
 @router.get("/conversations")
 def list_conversations(

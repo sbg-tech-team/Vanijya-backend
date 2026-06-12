@@ -209,6 +209,15 @@ class GetShareRecipientsUseCase:
         return self.repo.get_share_recipients(user_id)
 
 
+class GetAllChatsUseCase:
+    """Unified chat list — DMs and groups merged, newest activity first."""
+    def __init__(self, repo):
+        self.repo = repo
+
+    def execute(self, user_id: UUID, page: int = 1, per_page: int = 20):
+        return self.repo.get_all_chats(user_id, page, per_page)
+
+
 class DeleteMessageUseCase:
     """Soft-delete a message. Only the sender may delete their own message."""
     def __init__(self, repo):

@@ -182,3 +182,15 @@ class ShareRecipientsResult:
     groups: list
 
 
+# ── Unified chat list ───────────────────────────────────────────────────────────
+
+# One row in the combined "all chats" screen — a DM or a group, whichever is more
+# recent floats to the top. Exactly one of `dm` / `group` is set; `type` tells which.
+@dataclass
+class ChatListItem:
+    type: str                                       # "dm" | "group"
+    last_activity: datetime                         # sort key — newest first
+    dm: Optional[ConversationEntity] = None
+    group: Optional[GroupConversationEntity] = None
+
+
