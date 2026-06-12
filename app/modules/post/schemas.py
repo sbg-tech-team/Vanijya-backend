@@ -381,20 +381,20 @@ class ShareResponse(BaseModel):
     share_count: int
 
 
-class PostShareRequest(BaseModel):
-    """Payload for POST /posts/{id}/share — full share with in-app delivery."""
+class PostSendRequest(BaseModel):
+    """Payload for POST /posts/{id}/send — deliver post to selected DMs and groups."""
     dm_conversation_ids: List[UUID] = Field(default_factory=list)
     group_ids: List[UUID] = Field(default_factory=list)
     caption: Optional[str] = Field(None, max_length=4000)
 
     @model_validator(mode="after")
-    def at_least_one_recipient(self) -> "PostShareRequest":
+    def at_least_one_recipient(self) -> "PostSendRequest":
         if not self.dm_conversation_ids and not self.group_ids:
             raise ValueError("Provide at least one DM conversation or group to share to.")
         return self
 
 
-class PostShareResponse(BaseModel):
+class PostSendResponse(BaseModel):
     share_count: int
     delivered_to: int   # number of recipients the message was actually delivered to
 

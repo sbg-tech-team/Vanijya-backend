@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_profile_id, get_current_user_id, get_db
-from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse, PostShareRequest, PostShareResponse
+from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse, PostSendRequest, PostSendResponse
 from app.modules.post import service
 from app.shared.utils.response import ok
 
@@ -206,36 +206,36 @@ def delete_comment_api(
 # Shares
 # ----------------------------------------------------------------------------
 
-@router.get("/share/recipients")
-def get_share_recipients_api(
+@router.get("/{post_id}/share")
+def get_post_share_recipients(
+    post_id: int,
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     """
-    Returns the list of DM connections and groups the user can forward a post to.
-    Call this when the share bottom sheet opens.
+    Called when the user taps Share on a post.
+    Returns the DM connections and groups the user can forward the post to.
     """
     from app.modules.chat.data.repository import ChatRepository
     return ChatRepository(db).get_share_recipients(user_id)
 
 
-@router.post("/{post_id}/share", response_model=PostShareResponse)
-async def share_post_api(
+@router.post("/{post_id}/send", response_model=PostSendResponse)
+async def send_post_api(
     post_id: int,
-    payload: PostShareRequest,
+    payload: PostSendRequest,
     background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     """
-    Full in-app share — delivers the post to selected DMs and groups,
-    then increments share_count once.
-    Call this when the user taps Send on the share sheet.
+    Called when the user taps Send after selecting recipients on the share sheet.
+    Delivers the post to selected DMs and groups, then increments share_count once.
     """
     from app.modules.chat.presentation.connection_manager import emit_to_user, emit_to_group
     try:
-        result = service.share_post(db, post_id, profile_id, user_id, payload)
+        result = service.send_post(db, post_id, profile_id, user_id, payload)
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -244,7 +244,7 @@ async def share_post_api(
     for group_id, msg in result["group_deliveries"]:
         background_tasks.add_task(emit_to_group, group_id, "new_group_message", jsonable_encoder(msg))
 
-    return PostShareResponse(
+    return PostSendResponse(
         share_count=result["share_count"],
         delivered_to=len(result["dm_deliveries"]) + len(result["group_deliveries"]),
     )
