@@ -16,7 +16,7 @@ from app.modules.post.schemas import (
     FeedPostCard, MyPostCard, MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
     CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
-    PostShareRequest, PostShareResponse,
+    PostSendRequest, PostSendResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
 from app.modules.post.post_recommendation_module.models import SeenPost
@@ -767,12 +767,12 @@ def record_share(db: Session, post_id: int, profile_id: int) -> ShareResponse:
     return ShareResponse(share_count=post.share_count)
 
 
-def share_post(
+def send_post(
     db: Session,
     post_id: int,
     profile_id: int,
     user_id: "UUID",
-    payload: PostShareRequest,
+    payload: PostSendRequest,
 ) -> dict:
     """
     Full in-app share:
