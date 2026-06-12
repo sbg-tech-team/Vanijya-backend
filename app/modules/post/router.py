@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_profile_id, get_db
-from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse
+from app.dependencies import get_current_profile_id, get_current_user_id, get_db
+from app.modules.post.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse, PostShareRequest, PostShareResponse
 from app.modules.post import service
 from app.shared.utils.response import ok
 
@@ -203,12 +206,60 @@ def delete_comment_api(
 # Shares
 # ----------------------------------------------------------------------------
 
-@router.post("/{post_id}/share")
+@router.get("/share/recipients")
+def get_share_recipients_api(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the list of DM connections and groups the user can forward a post to.
+    Call this when the share bottom sheet opens.
+    """
+    from app.modules.chat.data.repository import ChatRepository
+    return ChatRepository(db).get_share_recipients(user_id)
+
+
+@router.post("/{post_id}/share", response_model=PostShareResponse)
+async def share_post_api(
+    post_id: int,
+    payload: PostShareRequest,
+    background_tasks: BackgroundTasks,
+    profile_id: int = Depends(get_current_profile_id),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Full in-app share — delivers the post to selected DMs and groups,
+    then increments share_count once.
+    Call this when the user taps Send on the share sheet.
+    """
+    from app.modules.chat.presentation.connection_manager import emit_to_user, emit_to_group
+    try:
+        result = service.share_post(db, post_id, profile_id, user_id, payload)
+    except service.PostNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    for receiver_id, msg in result["dm_deliveries"]:
+        background_tasks.add_task(emit_to_user, receiver_id, "new_message", jsonable_encoder(msg))
+    for group_id, msg in result["group_deliveries"]:
+        background_tasks.add_task(emit_to_group, group_id, "new_group_message", jsonable_encoder(msg))
+
+    return PostShareResponse(
+        share_count=result["share_count"],
+        delivered_to=len(result["dm_deliveries"]) + len(result["group_deliveries"]),
+    )
+
+
+@router.post("/{post_id}/record-share")
 def record_share_api(
     post_id: int,
     profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
+    """
+    External share only — increments share_count without delivering any in-app message.
+    Use when the user shares via WhatsApp, copy link, or any channel outside the app.
+    """
     try:
         result = service.record_share(db, post_id, profile_id)
         return ok(result, "Share recorded")

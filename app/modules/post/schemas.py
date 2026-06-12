@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional, List
+from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
@@ -378,6 +379,24 @@ class SaveResponse(BaseModel):
 
 class ShareResponse(BaseModel):
     share_count: int
+
+
+class PostShareRequest(BaseModel):
+    """Payload for POST /posts/{id}/share — full share with in-app delivery."""
+    dm_conversation_ids: List[UUID] = Field(default_factory=list)
+    group_ids: List[UUID] = Field(default_factory=list)
+    caption: Optional[str] = Field(None, max_length=4000)
+
+    @model_validator(mode="after")
+    def at_least_one_recipient(self) -> "PostShareRequest":
+        if not self.dm_conversation_ids and not self.group_ids:
+            raise ValueError("Provide at least one DM conversation or group to share to.")
+        return self
+
+
+class PostShareResponse(BaseModel):
+    share_count: int
+    delivered_to: int   # number of recipients the message was actually delivered to
 
 
 class DealClosedResponse(BaseModel):

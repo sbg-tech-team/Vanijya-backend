@@ -16,6 +16,7 @@ from app.modules.post.schemas import (
     FeedPostCard, MyPostCard, MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
     CommentCreate, CommentResponse, CommentFeedResponse,
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
+    PostShareRequest, PostShareResponse,
 )
 from app.modules.post.post_recommendation_module import service as rec_service
 from app.modules.post.post_recommendation_module.models import SeenPost
@@ -749,6 +750,7 @@ def delete_comment(db: Session, post_id: int, comment_id: int, profile_id: int) 
 # ----------------------------------------------------------------------------
 
 def record_share(db: Session, post_id: int, profile_id: int) -> ShareResponse:
+    """Increment share_count only — used for external shares (copy link, WhatsApp, etc.)."""
     post = _get_post_or_raise(db, post_id)
 
     db.add(PostShare(post_id=post_id, profile_id=profile_id))
@@ -763,6 +765,78 @@ def record_share(db: Session, post_id: int, profile_id: int) -> ShareResponse:
     except Exception:
         pass
     return ShareResponse(share_count=post.share_count)
+
+
+def share_post(
+    db: Session,
+    post_id: int,
+    profile_id: int,
+    user_id: "UUID",
+    payload: PostShareRequest,
+) -> dict:
+    """
+    Full in-app share:
+      1. Validate post exists.
+      2. Deliver the post as a chat message to each selected DM / group.
+         Silently skips recipients that fail permission checks (partial delivery).
+      3. Increment share_count once regardless of recipient count.
+      4. Return share_count + raw delivery lists so the router can emit WebSocket events.
+    """
+    from uuid import UUID as _UUID
+    from app.modules.chat.data.repository import ChatRepository
+    from app.modules.chat.domain.entities import ConvStatus
+
+    post = _get_post_or_raise(db, post_id)
+    chat_repo = ChatRepository(db)
+
+    dm_deliveries: list[tuple] = []
+    for conv_id in payload.dm_conversation_ids:
+        guard = chat_repo.get_conv_send_info(conv_id, user_id)
+        if guard and guard.status == ConvStatus.ACTIVE:
+            msg = chat_repo.save_message(
+                context_type="dm",
+                context_id=conv_id,
+                sender_id=user_id,
+                message_type="post",
+                post_id=post_id,
+                body=payload.caption,
+            )
+            dm_deliveries.append((guard.receiver_id, msg))
+
+    group_deliveries: list[tuple] = []
+    for group_id in payload.group_ids:
+        chat_perm = chat_repo.get_group_chat_perm(group_id)
+        member_role = chat_repo.get_group_member_role(group_id, user_id)
+        is_frozen = chat_repo.is_group_member_frozen(group_id, user_id)
+        if (chat_perm and member_role and not is_frozen
+                and (chat_perm == "all_members" or member_role == "admin")):
+            msg = chat_repo.save_message(
+                context_type="group",
+                context_id=group_id,
+                sender_id=user_id,
+                message_type="post",
+                post_id=post_id,
+                body=payload.caption,
+            )
+            group_deliveries.append((group_id, msg))
+
+    db.add(PostShare(post_id=post_id, profile_id=profile_id))
+    db.query(Post).filter(Post.id == post_id).update(
+        {Post.share_count: Post.share_count + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    db.refresh(post)
+    try:
+        interaction_service.record_interaction(db, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
+    except Exception:
+        pass
+
+    return {
+        "share_count": post.share_count,
+        "dm_deliveries": dm_deliveries,
+        "group_deliveries": group_deliveries,
+    }
 
 
 # ----------------------------------------------------------------------------
