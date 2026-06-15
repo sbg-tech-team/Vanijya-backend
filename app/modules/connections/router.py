@@ -11,12 +11,12 @@ from client-supplied path or query params.
 from uuid import UUID
 
 import redis as redis_lib
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
 from app.dependencies import get_current_user_id, get_db
-from app.modules.connections.schemas import SearchPayload, SeenPayload
+from app.modules.connections.schemas import MessageRequestCreate, SearchPayload, SeenPayload
 from app.modules.connections import service
 from app.shared.utils.response import ok
 
@@ -102,11 +102,18 @@ def list_following(
 @connections_router.post("/message-request/{target_id}", status_code=201)
 def send_request(
     target_id: UUID,
+    payload: MessageRequestCreate | None = None,
     me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Send a message request to target_id. Returns 409 if one already exists."""
-    result = service.send_message_request(db, sender_id=me, receiver_id=target_id)
+    """Send a message request to target_id. Returns 409 if one already exists.
+    An optional `first_message` becomes the opening line of the DM once accepted."""
+    result = service.send_message_request(
+        db,
+        sender_id=me,
+        receiver_id=target_id,
+        first_message=payload.first_message if payload else None,
+    )
     return ok(result, "Message request sent")
 
 
@@ -124,11 +131,26 @@ def withdraw_request(
 @connections_router.patch("/message-request/{request_id}/accept")
 def accept_request(
     request_id: int,
+    background_tasks: BackgroundTasks,
     me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Accept a message request. Only the receiver can accept."""
+    """Accept a message request. Only the receiver can accept.
+    Activates the DM conversation and notifies the original sender in real time."""
+    # Local import keeps the chat-module dependency contained (avoids an import cycle).
+    from app.modules.chat.presentation.connection_manager import emit_to_user
+
     result = service.respond_to_request(db, request_id=request_id, me=me, action="accepted")
+    background_tasks.add_task(
+        emit_to_user,
+        UUID(result["sender_id"]),
+        "message_request_accepted",
+        {
+            "request_id": result["id"],
+            "conversation_id": result.get("conversation_id"),
+            "accepted_by": str(me),
+        },
+    )
     return ok(result, "Request accepted")
 
 

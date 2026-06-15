@@ -281,7 +281,12 @@ def is_following(db: Session, me: UUID, target: UUID) -> bool:
 # B. Message requests
 # ---------------------------------------------------------------------------
 
-def send_message_request(db: Session, sender_id: UUID, receiver_id: UUID) -> dict:
+def send_message_request(
+    db: Session,
+    sender_id: UUID,
+    receiver_id: UUID,
+    first_message: str | None = None,
+) -> dict:
     if sender_id == receiver_id:
         raise HTTPException(status_code=400, detail="Cannot send a request to yourself.")
     existing = db.query(MessageRequest).filter(
@@ -294,13 +299,14 @@ def send_message_request(db: Session, sender_id: UUID, receiver_id: UUID) -> dic
             existing.status = "pending"
             existing.sent_at = datetime.now(timezone.utc)
             existing.acted_at = None
+            existing.first_message = first_message
             db.commit()
             db.refresh(existing)
             return {"id": existing.id, "status": existing.status, "sent_at": existing.sent_at}
         if existing.status == "accepted":
             raise HTTPException(status_code=409, detail="You are already connected with this user.")
         raise HTTPException(status_code=409, detail="Message request already sent.")
-    req = MessageRequest(sender_id=sender_id, receiver_id=receiver_id)
+    req = MessageRequest(sender_id=sender_id, receiver_id=receiver_id, first_message=first_message)
     db.add(req)
     db.commit()
     db.refresh(req)
@@ -343,12 +349,34 @@ def respond_to_request(db: Session, request_id: int, me: UUID, action: str) -> d
     conv_id = None
     if action == "accepted":
         conv_id = _activate_dm(db, initiator_id=req.sender_id, other_id=req.receiver_id)
+        # Seed the request's opening line as the first message of the conversation,
+        # in the same transaction so the DM is never observed empty after accept.
+        if req.first_message:
+            _seed_first_message(db, conv_id, sender_id=req.sender_id, body=req.first_message)
 
     db.commit()
-    result = {"id": request_id, "status": action}
+    result = {"id": request_id, "status": action, "sender_id": str(req.sender_id)}
     if conv_id is not None:
         result["conversation_id"] = str(conv_id)
     return result
+
+
+def _seed_first_message(db: Session, conv_id: UUID, sender_id: UUID, body: str) -> None:
+    """Insert the request's opening line as the first DM message. Does not commit —
+    the caller owns the transaction."""
+    from app.modules.chat.data.models import Message
+
+    now = datetime.now(timezone.utc)
+    db.add(Message(
+        id=uuid4(),
+        context_type="dm",
+        context_id=conv_id,
+        sender_id=sender_id,
+        message_type="text",
+        body=body,
+        is_deleted=False,
+        sent_at=now,
+    ))
 
 
 def _activate_dm(db: Session, initiator_id: UUID, other_id: UUID) -> UUID:
@@ -396,7 +424,12 @@ def get_received_requests(db: Session, me: UUID) -> list[dict]:
     )
     profiles = _load_profiles_bulk(db, [r.sender_id for r in reqs])
     return [
-        {"request_id": r.id, "from": _fmt_profile(profiles[r.sender_id]), "sent_at": r.sent_at}
+        {
+            "request_id": r.id,
+            "from": _fmt_profile(profiles[r.sender_id]),
+            "first_message": r.first_message,
+            "sent_at": r.sent_at,
+        }
         for r in reqs
         if r.sender_id in profiles
     ]
@@ -413,11 +446,12 @@ def get_sent_requests(db: Session, me: UUID) -> list[dict]:
     profiles = _load_profiles_bulk(db, [r.receiver_id for r in reqs])
     return [
         {
-            "request_id": r.id,
-            "to":         _fmt_profile(profiles[r.receiver_id]),
-            "status":     r.status,
-            "sent_at":    r.sent_at,
-            "acted_at":   r.acted_at,
+            "request_id":    r.id,
+            "to":            _fmt_profile(profiles[r.receiver_id]),
+            "status":        r.status,
+            "first_message": r.first_message,
+            "sent_at":       r.sent_at,
+            "acted_at":      r.acted_at,
         }
         for r in reqs
         if r.receiver_id in profiles

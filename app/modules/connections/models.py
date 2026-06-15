@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +41,9 @@ class MessageRequest(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
     )
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | accepted | declined
+    # Optional opening line the sender attaches to the request. On accept it is
+    # seeded as the first message of the resulting DM conversation.
+    first_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

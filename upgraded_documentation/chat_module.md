@@ -229,6 +229,7 @@ The server relays the same event name (`typing` / `stop_typing`) to the peer —
 | `new_group_deal` | `group:{group_id}` | Group deal created | `GroupDealResponse` |
 | `conversation_accepted` | `user:{initiator_id}` | Recipient accepted the chat request | `{"conv_id": "<uuid>"}` |
 | `conversation_declined` | `user:{initiator_id}` | Recipient declined the chat request | `{"conv_id": "<uuid>"}` |
+| `message_request_accepted` | `user:{sender_id}` | Recipient accepted a **connections message request** (`PATCH /connections/message-request/{id}/accept`) — the DM is now `active` | `{"request_id": <int>, "conversation_id": "<uuid>", "accepted_by": "<uuid>"}` |
 | `message_deleted` | `user:{receiver_id}` (DM) / `group:{group_id}` (group) | A message was soft-deleted | `{"message_id": "<uuid>", "context_id": "<uuid>"}` |
 | `read` | `user:{other_member_id}` | A DM was marked read by the other party | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
 | `typing` / `stop_typing` | `user:{peer_id}` (DM) / `group:{group_id}` (group) | A member is composing / stopped | `{"context_type", "context_id", "user_id"}` |
@@ -932,6 +933,8 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 | `requested` | Initiator only | Receiver sees it as a message request |
 | `active` | Both participants | Normal chat |
 | `blocked` | Nobody | Created when receiver declines |
+
+> **Alternate entry — connections message request:** a DM can also be born **directly `active`**, skipping `requested`, when a [connections message request](connect_interact_document.md#7-message-request-apis) is accepted (`PATCH /connections/message-request/{id}/accept`). In that path the conversation is created `active`, the request's `first_message` (if any) is seeded as the first message, and the original sender gets a `message_request_accepted` Socket.IO push instead of `conversation_accepted`. This is the recommended "request to chat" flow; the chat-native `requested` flow above remains for direct `POST /chat/conversations` starts.
 
 ---
 

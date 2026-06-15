@@ -29,7 +29,7 @@ A complete reference for the follow system, message requests, and user search.
 The connections module handles four things:
 
 - **Follow** — one-directional, no approval needed. User A follows User B instantly.
-- **Message requests** — bidirectional, requires acceptance. User A sends a request, User B must accept or decline.
+- **Message requests** — bidirectional, requires acceptance. User A sends a request (optionally with an opening line), User B must accept or decline. **On accept, a DM conversation is opened in `active` state, the opening line is seeded as its first message, and the original sender receives a `message_request_accepted` Socket.IO push** so both sides can start chatting immediately. This is the canonical "request to chat" gate that feeds the chat module.
 - **Search** — text search across all profiles with optional filters.
 - **Recommendations** — vector-based "people you may know" matching using pgvector HNSW cosine ANN search. Lives under `/recommendations/`.
 
@@ -72,6 +72,7 @@ Composite primary key: `(follower_id, following_id)`. One row = one follow. No s
 | `sender_id` | UUID FK → users.id | User who sent the request |
 | `receiver_id` | UUID FK → users.id | User who needs to accept or decline |
 | `status` | VARCHAR | `pending` → `accepted` or `declined` |
+| `first_message` | TEXT (nullable) | Optional opening line attached to the request; seeded as the first DM message on accept |
 | `sent_at` | TIMESTAMPTZ | When request was sent |
 | `acted_at` | TIMESTAMPTZ | When accepted/declined — `NULL` while pending |
 
@@ -253,14 +254,26 @@ Authorization: Bearer <access_token>
 
 ### `POST /connections/message-request/{target_id}`
 
-Send a message request. Status is `pending` on creation.
+Send a message request. Status is `pending` on creation. Acting user identity comes from `Authorization: Bearer <access_token>`.
 
-No request body. Acting user identity comes from `Authorization: Bearer <access_token>`.
+**Request body (optional):**
+```json
+{ "first_message": "Hi, interested in your 500 MT Basmati listing?" }
+```
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `first_message` | No | string (≤ 2000 chars) | Opening line shown to the receiver and seeded as the conversation's first message once accepted. Omit (or send an empty body) for a bare connect request. |
+
+> Re-sending a previously **declined** request reopens it as `pending` and overwrites `first_message` with the new value.
 
 **Example:**
 ```
 POST /connections/message-request/a1b2c3d4-e5f6-7890-abcd-ef1234567890
 Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{ "first_message": "Hi, interested in your 500 MT Basmati listing?" }
 ```
 
 **Success `201`:**
@@ -304,6 +317,12 @@ Authorization: Bearer <access_token>
 
 Accept a message request. The authenticated user must be the receiver. Use `request_id` from the received inbox.
 
+On accept the backend, in one transaction:
+1. Marks the request `accepted`.
+2. Opens the DM conversation between the two users in **`active`** status (creating it if needed; the request sender is recorded as the conversation `initiator_id`).
+3. If the request carried a `first_message`, seeds it as the conversation's first message (sender = the request sender).
+4. Pushes a `message_request_accepted` Socket.IO event to the **original sender's** `user:{sender_id}` room.
+
 **Example:**
 ```
 PATCH /connections/message-request/4/accept
@@ -315,9 +334,25 @@ Authorization: Bearer <access_token>
 {
   "success": true,
   "message": "Request accepted",
-  "data": { "id": 4, "status": "accepted" }
+  "data": {
+    "id": 4,
+    "status": "accepted",
+    "sender_id": "c37a3257-dc3f-43be-9fb0-33cf918b11ff",
+    "conversation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+  }
 }
 ```
+
+| Field | Notes |
+|---|---|
+| `sender_id` | The user who originally sent the request (and who receives the WS push) |
+| `conversation_id` | The now-active DM conversation — open it with the chat APIs (`GET /chat/conversations/{conversation_id}/messages`) |
+
+**WS push:** fires `message_request_accepted` to `user:{sender_id}` with:
+```json
+{ "request_id": 4, "conversation_id": "3fa85f64-...", "accepted_by": "<receiver-uuid>" }
+```
+The sender's client should open/refresh the conversation on receipt. (See the chat module's [Socket.IO events](chat_module.md#6-socketio--real-time-connection).)
 
 **Error `404`** — not found, already acted on, or wrong receiver:
 ```json
@@ -375,6 +410,7 @@ Authorization: Bearer <access_token>
           "city": "Mumbai",
           "state": "Maharashtra"
         },
+        "first_message": "Hi, interested in your 500 MT Basmati listing?",
         "sent_at": "2026-04-15T10:00:00.000000+00:00"
       }
     ]
@@ -382,7 +418,7 @@ Authorization: Bearer <access_token>
 }
 ```
 
-Use `request_id` when calling accept or decline.
+`first_message` is the opening line the sender attached (or `null` for a bare connect request) — show it as a preview so the receiver can decide before accepting. Use `request_id` when calling accept or decline.
 
 ---
 
@@ -421,6 +457,7 @@ Authorization: Bearer <access_token>
           "state": "Delhi"
         },
         "status": "pending",
+        "first_message": "Hi, interested in your 500 MT Basmati listing?",
         "sent_at": "2026-04-15T10:00:00.000000+00:00",
         "acted_at": null
       }
@@ -747,8 +784,8 @@ Some endpoints also add extra fields on top of the base shape:
 |---|---|
 | `GET /followers` | `followed_at` |
 | `GET /following` | `followed_at` |
-| `GET /message-requests/received` | `sent_at` |
-| `GET /message-requests/sent` | `status`, `sent_at`, `acted_at` |
+| `GET /message-requests/received` | `first_message`, `sent_at` |
+| `GET /message-requests/sent` | `status`, `first_message`, `sent_at`, `acted_at` |
 | `GET /recommendations/` | `similarity` (0–1 cosine score) |
 | `POST /recommendations/search` | `similarity` (0–1 cosine score) |
 

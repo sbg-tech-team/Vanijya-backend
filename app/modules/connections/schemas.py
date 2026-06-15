@@ -6,7 +6,13 @@ The acting user is now always identified via JWT (get_current_user_id dependency
 """
 from __future__ import annotations
 from uuid import UUID
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+
+class MessageRequestCreate(BaseModel):
+    """Optional body for sending a message request — an opening line that becomes
+    the first message of the conversation once the receiver accepts."""
+    first_message: str | None = Field(default=None, max_length=2000)
 
 
 class SearchPayload(BaseModel):
