@@ -1,3 +1,18 @@
+"""Socket.IO server + emit helpers for chat real-time push.
+
+⚠️  SINGLE-WORKER ONLY. State here lives in-process:
+  • `_sid_user` is a plain in-memory dict (not shared across processes), and
+  • `sio` uses the default in-memory client manager (no message queue).
+
+So room membership and `emit_to_user` / `is_online` only see sockets connected
+to *this* process. HTTP handlers emit from background tasks in whatever worker
+served the request — if that's a different worker than the one holding the
+recipient's socket, the push is silently dropped.
+
+➡️  Run the app with a SINGLE worker (e.g. `uvicorn ... --workers 1`). To scale
+to multiple workers later, give socketio a shared backend
+(`socketio.AsyncRedisManager(...)`) and move `_sid_user` into Redis.
+"""
 from uuid import UUID
 import socketio
 from app.core.database.session import SessionLocal

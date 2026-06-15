@@ -232,33 +232,6 @@ class ChatRepository:
 
     # ── Conversations ──────────────────────────────────────────────────────────
 
-    def get_or_create_dm(self, sender_id: UUID, participant_id: UUID) -> tuple[ConversationEntity, bool]:
-        cm1 = aliased(ConversationMember)
-        cm2 = aliased(ConversationMember)
-        existing = (
-            self.db.query(Conversation)
-            .join(cm1, and_(cm1.conversation_id == Conversation.id, cm1.user_id == sender_id))
-            .join(cm2, and_(cm2.conversation_id == Conversation.id, cm2.user_id == participant_id))
-            .filter(Conversation.type == "dm")
-            .first()
-        )
-        if existing:
-            entity = _build_conversation(self.db, existing, sender_id)
-            assert entity is not None
-            return entity, False
-
-        now = datetime.now(timezone.utc)
-        conv = Conversation(id=uuid4(), type="dm", status=ConvStatus.REQUESTED, initiator_id=sender_id, created_at=now, updated_at=now)
-        self.db.add(conv)
-        self.db.flush()
-        self.db.add(ConversationMember(conversation_id=conv.id, user_id=sender_id, joined_at=now))
-        self.db.add(ConversationMember(conversation_id=conv.id, user_id=participant_id, joined_at=now))
-        self.db.commit()
-        self.db.refresh(conv)
-        entity = _build_conversation(self.db, conv, sender_id)
-        assert entity is not None
-        return entity, True
-
     def get_conversation(self, conv_id: UUID, requesting_user_id: UUID) -> Optional[ConversationEntity]:
         conv = self.db.query(Conversation).filter(Conversation.id == conv_id).first()
         if conv is None or not self.is_member(conv_id, requesting_user_id):
@@ -277,17 +250,6 @@ class ChatRepository:
             .all()
         )
         return [e for conv in convs if (e := _build_conversation(self.db, conv, user_id))]
-
-    def set_conversation_status(self, conv_id: UUID, status: str, requesting_user_id: UUID) -> ConversationEntity:
-        conv = self.db.query(Conversation).filter(Conversation.id == conv_id).first()
-        assert conv is not None
-        conv.status = status
-        conv.updated_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(conv)
-        entity = _build_conversation(self.db, conv, requesting_user_id)
-        assert entity is not None
-        return entity
 
     # ── Messages ───────────────────────────────────────────────────────────────
 
@@ -348,7 +310,11 @@ class ChatRepository:
         return _build_message(self.db, msg)
 
     def get_messages(self, context_type: str, context_id: UUID, before: Optional[datetime], limit: int) -> list[MessageEntity]:
-        q = self.db.query(Message).filter(Message.context_type == context_type, Message.context_id == context_id)
+        q = self.db.query(Message).filter(
+            Message.context_type == context_type,
+            Message.context_id == context_id,
+            Message.is_deleted.is_(False),
+        )
         if before is not None:
             q = q.filter(Message.sent_at < before)
         rows = q.order_by(Message.sent_at.desc()).limit(limit).all()

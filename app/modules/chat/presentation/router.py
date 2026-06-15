@@ -9,26 +9,22 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user_id, get_db
 from app.modules.chat import service as chat_service
 from app.modules.chat.data.repository import ChatRepository
-from app.modules.chat.domain.entities import ConvStatus
-from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user
+from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user, is_online
 from app.modules.chat.presentation.dependencies import (
-    get_accept_uc,
     get_all_chats_sorted,
     get_chat_repo,
     get_conversations_uc,
-    get_decline_uc,
     get_delete_message_uc,
     get_group_message_uc,
     get_group_messages_uc,
     get_mark_read_uc,
     get_messages_uc,
-    get_open_chat_uc,
     get_personal_deal_uc,
+    get_send_message_uc,
     get_share_recipients_uc,
 )
 from app.modules.chat.presentation.schema import (
     CreatePersonalDealRequest,
-    OpenChatRequest,
     SendGroupMessageRequest,
     SendMessageRequest,
 )
@@ -52,7 +48,11 @@ def list_all_chats(
     on top). Each item carries `type` ("dm" | "group") and the matching payload
     in `dm` / `group`.
     """
-    return uc.execute(user_id, page, per_page)
+    items = uc.execute(user_id, page, per_page)
+    for item in items:
+        if item.dm is not None:
+            item.dm.participant.is_online = is_online(item.dm.participant.user_id)
+    return items
 
 
 @router.get("/conversations")
@@ -62,23 +62,20 @@ def list_conversations(
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_conversations_uc),
 ):
-    return uc.execute(user_id, page, per_page)
+    convs = uc.execute(user_id, page, per_page)
+    for conv in convs:
+        conv.participant.is_online = is_online(conv.participant.user_id)
+    return convs
 
 
-@router.post("/conversations", status_code=201)
-async def open_chat(
-    body: OpenChatRequest,
-    background_tasks: BackgroundTasks,
-    user_id: UUID = Depends(get_current_user_id),
-    uc=Depends(get_open_chat_uc),
+@router.get("/presence")
+def get_presence(
+    user_ids: list[UUID] = Query(..., description="User IDs to check online status for"),
+    _: UUID = Depends(get_current_user_id),
 ):
-    conv, msg, created = uc.execute(
-        sender_id=user_id,
-        participant_id=body.participant_id,
-        first_message=body.first_message,
-    )
-    background_tasks.add_task(emit_to_user, body.participant_id, "new_message", jsonable_encoder(msg))
-    return {"conversation": conv, "message": msg, "created": created}
+    """Live online status (Socket.IO room membership) for the given users.
+    Returns a `{user_id: bool}` map — used by the chat header and inbox dots."""
+    return {str(uid): is_online(uid) for uid in user_ids}
 
 
 @router.get("/conversations/{conv_id}/messages")
@@ -98,25 +95,11 @@ async def send_message(
     body: SendMessageRequest,
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
-    repo: ChatRepository = Depends(get_chat_repo),
+    uc=Depends(get_send_message_uc),
 ):
-    guard = repo.get_conv_send_info(conv_id, user_id)
-    if not guard:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    if guard.status == ConvStatus.BLOCKED:
-        raise HTTPException(status_code=403, detail="Blocked conversation.")
-    if guard.status == ConvStatus.REQUESTED and (
-        guard.initiator_id is None or user_id != guard.initiator_id
-    ):
-        raise HTTPException(status_code=403, detail="Waiting for the other person to accept.")
-
-    if body.post_id is not None and not repo.post_exists(body.post_id):
-        raise HTTPException(status_code=404, detail="Post not found.")
-
-    msg = repo.save_message(
-        context_type="dm",
-        context_id=conv_id,
+    msg, receiver_id = uc.execute(
         sender_id=user_id,
+        conv_id=conv_id,
         body=body.body,
         message_type=body.message_type,
         media_urls=body.media_urls,
@@ -128,7 +111,7 @@ async def send_message(
         personal_deal_id=body.personal_deal_id,
         post_id=body.post_id,
     )
-    background_tasks.add_task(emit_to_user, guard.receiver_id, "new_message", jsonable_encoder(msg))
+    background_tasks.add_task(emit_to_user, receiver_id, "new_message", jsonable_encoder(msg))
     return msg
 
 
@@ -150,32 +133,6 @@ async def mark_read(
             {"conv_id": str(conv_id), "reader_id": str(user_id)},
         )
     return {"ok": True}
-
-
-@router.post("/conversations/{conv_id}/accept")
-async def accept_conversation(
-    conv_id: UUID,
-    background_tasks: BackgroundTasks,
-    user_id: UUID = Depends(get_current_user_id),
-    uc=Depends(get_accept_uc),
-):
-    conv = uc.execute(user_id, conv_id)
-    if conv.initiator_id:
-        background_tasks.add_task(emit_to_user, conv.initiator_id, "conversation_accepted", {"conv_id": str(conv_id)})
-    return conv
-
-
-@router.post("/conversations/{conv_id}/decline")
-async def decline_conversation(
-    conv_id: UUID,
-    background_tasks: BackgroundTasks,
-    user_id: UUID = Depends(get_current_user_id),
-    uc=Depends(get_decline_uc),
-):
-    conv = uc.execute(user_id, conv_id)
-    if conv.initiator_id:
-        background_tasks.add_task(emit_to_user, conv.initiator_id, "conversation_declined", {"conv_id": str(conv_id)})
-    return conv
 
 
 @router.post("/conversations/{conv_id}/deals", status_code=201)

@@ -48,73 +48,27 @@ class GetMessagesUseCase:
     
 
 
-class AcceptConversationUseCase: 
-    def __init__(self,repo):
-        self.repo=repo
-
-    def execute(self,user_id:UUID,conv_id:UUID):
-        conv=self.repo.get_conversation(conv_id,user_id)
-        if not conv :
-             raise HTTPException(status_code=404,detail="no conversations ")
-        if conv.status != ConvStatus.REQUESTED:
-            raise HTTPException(status_code=409 , detail=f"cannot accept : conversation already - '{conv.status}.'")
-        return self.repo.set_conversation_status(conv_id, ConvStatus.ACTIVE, user_id)
-    
-class DeclineConversationUseCase:
-    def __init__(self,repo):
-        self.repo=repo
-
-    def execute(self,user_id:UUID,conv_id:UUID):
-        converstaion=self.repo.get_conversation(conv_id,user_id)
-        if not converstaion :
-             raise HTTPException(status_code=404,detail="no conversations ")
-        if converstaion.status != ConvStatus.REQUESTED:
-            raise HTTPException(status_code=409 , detail=f"cannot decline : conversation already - '{converstaion.status}.'")
-        return self.repo.set_conversation_status(conv_id, ConvStatus.BLOCKED, user_id)
-
-
-#This is the one that fires when User A clicks "+ New" and sends a first message. It creates the DM if it doesn't exist yet, then saves the first message.
-class OpenChatUseCase:
-    def __init__(self,repo):
-        self.repo=repo
-    
-    def execute(self,sender_id:UUID,participant_id:UUID,first_message:str):
-        if sender_id==participant_id:
-            raise HTTPException(status_code=400,detail="Cannot chat with youself ")
-        conversation,created=self.repo.get_or_create_dm(sender_id,participant_id)
-        # this dm_tuple returns (conversation,created)
-        if conversation.status==ConvStatus.BLOCKED:
-            raise HTTPException(status_code=403,detail="This convo is blocked ")
-        saved_message=self.repo.save_message(context_type="dm", context_id=conversation.id, sender_id=sender_id, body=first_message, message_type="text")
-        return (conversation,saved_message,created)
-        
-
 #SENDING A DM
-# DM send rules: get_conv_send_info — for validating before sending
+# DM send rules (get_conv_send_info validates membership + status in one query):
+#   BLOCKED → nobody can send → 403
+#   ACTIVE  → both members can send freely
+# (REQUESTED is retired — DMs are born ACTIVE via the connections message-request accept.)
 
-
-
-# BLOCKED → nobody can send → 403
-# REQUESTED → only the initiator can send → if sender is NOT the initiator → 403
-# ACTIVE → both can send freely
-    
 class SendMessageUseCase:
-    
-    def __init__(self,repo):
-        self.repo=repo
-    
+
+    def __init__(self, repo):
+        self.repo = repo
+
     def execute(self, sender_id: UUID, conv_id: UUID, body: Optional[str] = None, message_type: str = "text", media_urls: Optional[list[str]] = None, media_metadata: Optional[dict] = None, location_lat: Optional[float] = None, location_lon: Optional[float] = None, reply_to_id: Optional[UUID] = None, deal_id: Optional[UUID] = None, personal_deal_id: Optional[UUID] = None, post_id: Optional[int] = None):
+        guard = self.repo.get_conv_send_info(conv_id, sender_id)
+        if not guard:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if guard.status == ConvStatus.BLOCKED:
+            raise HTTPException(status_code=403, detail="Blocked conversation.")
+        if post_id is not None and not self.repo.post_exists(post_id):
+            raise HTTPException(status_code=404, detail="Post not found.")
 
-       gaurd=self.repo.get_conv_send_info(conv_id,sender_id)
-       if not gaurd:
-           raise HTTPException(status_code=404,detail="This conversaiton does not exist ")
-       if gaurd.status == ConvStatus.BLOCKED:
-           raise HTTPException(status_code=403,detail="Blocked conversation ")
-       if gaurd.status == ConvStatus.REQUESTED:
-            if gaurd.initiator_id is None or sender_id != gaurd.initiator_id:
-                raise HTTPException(status_code=403, detail="Waiting for the other person to accept.")
-
-       return self.repo.save_message(
+        message = self.repo.save_message(
             context_type="dm",
             context_id=conv_id,
             sender_id=sender_id,
@@ -129,6 +83,8 @@ class SendMessageUseCase:
             personal_deal_id=personal_deal_id,
             post_id=post_id,
         )
+        # Return the receiver id too so the router can emit without a second guard query.
+        return message, guard.receiver_id
 
 
 class SendGroupMessageUseCase:

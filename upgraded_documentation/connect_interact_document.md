@@ -363,15 +363,24 @@ The sender's client should open/refresh the conversation on receipt. (See the ch
 
 ### `PATCH /connections/message-request/{request_id}/decline`
 
-Same rules as accept.
+Same receiver-only rules as accept. **Non-permanent** — no conversation is created and nothing is blocked; the sender can re-send later (`POST /connections/message-request/{target_id}`), which reopens the request as `pending`.
 
 **Success `200`:**
 ```json
 {
   "success": true,
   "message": "Request declined",
-  "data": { "id": 4, "status": "declined" }
+  "data": {
+    "id": 4,
+    "status": "declined",
+    "sender_id": "c37a3257-dc3f-43be-9fb0-33cf918b11ff"
+  }
 }
+```
+
+**WS push:** fires `message_request_declined` to `user:{sender_id}` with:
+```json
+{ "request_id": 4, "declined_by": "<receiver-uuid>" }
 ```
 
 ---

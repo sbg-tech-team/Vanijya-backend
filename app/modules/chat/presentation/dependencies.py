@@ -10,20 +10,14 @@ def get_chat_repo(db: Session = Depends(get_db)) -> ChatRepository:
 def get_conversations_uc(repo: ChatRepository = Depends(get_chat_repo)) -> GetConversationsUseCase:
     return GetConversationsUseCase(repo)
 
-def get_open_chat_uc(repo: ChatRepository = Depends(get_chat_repo)) -> OpenChatUseCase:
-    return OpenChatUseCase(repo)
-
 def get_messages_uc(repo: ChatRepository = Depends(get_chat_repo)) -> GetMessagesUseCase:
     return GetMessagesUseCase(repo)
 
+def get_send_message_uc(repo: ChatRepository = Depends(get_chat_repo)) -> SendMessageUseCase:
+    return SendMessageUseCase(repo)
+
 def get_mark_read_uc(repo: ChatRepository = Depends(get_chat_repo)) -> MarkReadUseCase:
     return MarkReadUseCase(repo)
-
-def get_accept_uc(repo: ChatRepository = Depends(get_chat_repo)) -> AcceptConversationUseCase:
-    return AcceptConversationUseCase(repo)
-
-def get_decline_uc(repo: ChatRepository = Depends(get_chat_repo)) -> DeclineConversationUseCase:
-    return DeclineConversationUseCase(repo)
 
 def get_group_message_uc(repo: ChatRepository = Depends(get_chat_repo)) -> SendGroupMessageUseCase:
     return SendGroupMessageUseCase(repo)

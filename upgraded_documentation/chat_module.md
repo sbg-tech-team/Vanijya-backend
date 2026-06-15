@@ -35,13 +35,13 @@ A complete reference for direct messaging (DM), group chat, deal cards in chat, 
 
 The chat module handles:
 
-- **Direct Messaging (DM)** — one-to-one conversations. First message creates the conversation in a `requested` state; receiver must accept before both sides can send freely.
+- **Direct Messaging (DM)** — one-to-one conversations. A DM is opened by accepting a **[connections message request](connect_interact_document.md#7-message-request-apis)** — the conversation is created directly in `active` state, with the request's opening line seeded as its first message. There is no chat-native "start a conversation" endpoint; the message request is the single consent gate.
 - **Group Chat** — real-time messaging scoped to a group. Members send text/media/deal/post cards into the group feed.
 - **Personal Deals** — Deal/Requirement cards posted inside a DM. Visible only to the two participants.
 - **Group Deals (chat entry point)** — Deal/Requirement cards posted into a group chat. `POST /chat/groups/{group_id}/deals` is the canonical endpoint — it creates the deal, inserts a chat card, and pushes a Socket.IO event to the group room all in one call.
 - **Media upload** — images, video, audio, and documents are uploaded **directly from the client to Supabase Storage** via a signed URL minted by the backend. The backend never proxies file bytes — see [Section 11](#11-media-upload--message-deletion).
 - **Message deletion** — a sender can soft-delete their own message; the attached media object is removed from the bucket in the background.
-- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `conversation_accepted`, `conversation_declined`, `message_deleted`, and `read` events to connected clients. Clients also emit `typing` / `stop_typing`, which the server relays to the chat peer / group room.
+- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `message_request_accepted`, `message_request_declined`, `message_deleted`, and `read` events to connected clients. Clients also emit `typing` / `stop_typing`, which the server relays to the chat peer / group room.
 
 ---
 
@@ -77,8 +77,8 @@ REST handles persistence. Socket.IO handles push. They are independent — a cli
 |---|---|---|
 | `id` | UUID PK | Auto-generated |
 | `type` | VARCHAR(10) | Always `"dm"` for now |
-| `status` | VARCHAR(20) | `requested` → `active` or `blocked` |
-| `initiator_id` | UUID FK → users.id SET NULL | The user who sent the first message |
+| `status` | VARCHAR(20) | `active` (normal) or `blocked`. (`requested` is **legacy** — no longer produced; DMs are now born `active` via message-request accept.) |
+| `initiator_id` | UUID FK → users.id SET NULL | The user who sent the message request that opened this DM |
 | `created_at` | TIMESTAMPTZ | |
 | `updated_at` | TIMESTAMPTZ | Bumped on every new message |
 
@@ -227,9 +227,8 @@ The server relays the same event name (`typing` / `stop_typing`) to the peer —
 | `new_message` | `user:{receiver_id}` | DM message or personal deal saved | `MessageEntity` |
 | `new_group_message` | `group:{group_id}` | Group chat message saved | `MessageEntity` |
 | `new_group_deal` | `group:{group_id}` | Group deal created | `GroupDealResponse` |
-| `conversation_accepted` | `user:{initiator_id}` | Recipient accepted the chat request | `{"conv_id": "<uuid>"}` |
-| `conversation_declined` | `user:{initiator_id}` | Recipient declined the chat request | `{"conv_id": "<uuid>"}` |
 | `message_request_accepted` | `user:{sender_id}` | Recipient accepted a **connections message request** (`PATCH /connections/message-request/{id}/accept`) — the DM is now `active` | `{"request_id": <int>, "conversation_id": "<uuid>", "accepted_by": "<uuid>"}` |
+| `message_request_declined` | `user:{sender_id}` | Recipient declined a **connections message request** (`PATCH /connections/message-request/{id}/decline`) — non-permanent, sender may re-send | `{"request_id": <int>, "declined_by": "<uuid>"}` |
 | `message_deleted` | `user:{receiver_id}` (DM) / `group:{group_id}` (group) | A message was soft-deleted | `{"message_id": "<uuid>", "context_id": "<uuid>"}` |
 | `read` | `user:{other_member_id}` | A DM was marked read by the other party | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
 | `typing` / `stop_typing` | `user:{peer_id}` (DM) / `group:{group_id}` (group) | A member is composing / stopped | `{"context_type", "context_id", "user_id"}` |
@@ -242,7 +241,7 @@ No special handling required. Socket.IO automatically removes the socket from al
 
 ### Online presence
 
-`is_online(user_id)` checks whether any socket is in the `user:{user_id}` room. Currently used internally only — not exposed over REST, but can be added.
+`is_online(user_id)` checks whether any socket is in the `user:{user_id}` room. It is surfaced over REST via **`GET /chat/presence`** and used to enrich the `participant.is_online` field on `GET /chat/conversations` and `GET /chat/all`. Presence is **process-local** — see the single-worker warning above; with multiple workers it only reflects sockets on the same process.
 
 ---
 
@@ -257,13 +256,13 @@ All endpoints require `Authorization: Bearer <access_token>`.
 | `GET` | `/all` | Unified inbox — DMs + groups merged, sorted by last activity |
 | `GET` | `/share/recipients` | Forward-target picker — active DMs + the user's groups |
 | `GET` | `/conversations` | List the authenticated user's DM conversations |
-| `POST` | `/conversations` | Start a new DM (or resume existing) + send first message |
-| `GET` | `/conversations/{conv_id}/messages` | Paginated message history for a DM |
+| `GET` | `/presence?user_ids=...` | Live online status (`{user_id: bool}`) for the given users |
+| `GET` | `/conversations/{conv_id}/messages` | Paginated message history for a DM (excludes deleted messages) |
 | `POST` | `/conversations/{conv_id}/messages` | Send a DM message — pushes `new_message` WS event |
 | `POST` | `/conversations/{conv_id}/read` | Mark a DM as read (updates `last_read_at`) — pushes `read` to the other party |
-| `POST` | `/conversations/{conv_id}/accept` | Accept a conversation request — pushes `conversation_accepted` to initiator |
-| `POST` | `/conversations/{conv_id}/decline` | Decline a conversation request (blocks it) — pushes `conversation_declined` to initiator |
 | `POST` | `/conversations/{conv_id}/deals` | Post a deal card into a DM — pushes `new_message` WS event |
+
+> **Removed:** `POST /chat/conversations`, `POST /chat/conversations/{id}/accept`, and `POST /chat/conversations/{id}/decline` no longer exist. DMs are opened by accepting a [connections message request](connect_interact_document.md#7-message-request-apis).
 | `POST` | `/media/upload-url` | Mint a signed Supabase upload URL for a chat attachment |
 | `DELETE` | `/messages/{message_id}` | Soft-delete your own message — pushes `message_deleted`, cleans up media |
 | `GET` | `/groups/{group_id}/messages` | Paginated message history for a group |
@@ -432,50 +431,37 @@ List all DM conversations for the authenticated user, sorted by most recently up
 
 - `participant` — the other user in the conversation (not the caller).
 - `unread_count` — messages received since the caller's `last_read_at`.
-- `is_online` — always `false` from the REST layer; use Socket.IO presence for live state.
+- `is_online` — **live**: populated from Socket.IO room membership at read time (this endpoint and `GET /chat/all` enrich it). It's a snapshot at request time — use `GET /chat/presence` or socket events to keep it fresh on screen.
 
 ---
 
-### `POST /chat/conversations`
+### `GET /chat/presence`
 
-Start a new DM conversation and send the first message. If a DM with this participant already exists, it is reused and the message is appended.
+Live online status for a set of users, computed from Socket.IO room membership. Use it to render presence dots in the inbox or the chat header without re-fetching whole lists.
 
-**Request body:**
+| Query Param | Type | Required | Description |
+|---|---|---|---|
+| `user_ids` | UUID[] | Yes | Repeat the param per user: `?user_ids=<uuid1>&user_ids=<uuid2>` |
+
+**Example:**
+```
+GET /chat/presence?user_ids=a1b2c3d4-...&user_ids=c37a3257-...
+Authorization: Bearer <access_token>
+```
+
+**Success `200`** — a `{user_id: bool}` map:
 ```json
 {
-  "participant_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "first_message": "Hi, are you interested in buying 200 MT rice?"
+  "a1b2c3d4-e5f6-7890-abcd-ef1234567890": true,
+  "c37a3257-dc3f-43be-9fb0-33cf918b11ff": false
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `participant_id` | Yes | UUID of the other user |
-| `first_message` | Yes | 1–4000 characters |
+> Presence is process-local (see the single-worker note in [Section 6](#6-socketio--real-time-connection)).
 
-**Success `201`:**
-```json
-{
-  "conversation": { /* ConversationEntity */ },
-  "message": { /* MessageEntity */ },
-  "created": true
-}
-```
+---
 
-- `created: true` → new conversation was started; `false` → existing conversation was reused.
-- The conversation starts in `status: "requested"`. The receiver must call `/accept` before they can reply.
-
-**WS push:** fires `new_message` to `user:{participant_id}` with the first `MessageEntity`.
-
-**Error `400`** — chatting with yourself:
-```json
-{ "detail": "Cannot chat with yourself" }
-```
-
-**Error `403`** — conversation is blocked:
-```json
-{ "detail": "This convo is blocked" }
-```
+> **How a DM is created:** there is no `POST /chat/conversations`. A DM appears here only after the other user **accepts a [message request](connect_interact_document.md#7-message-request-apis)** — at which point it is already `active`. Use the `conversation_id` returned by the accept call (or carried on the `message_request_accepted` socket event) to open it.
 
 ---
 
@@ -539,8 +525,9 @@ Send a message in an existing DM. Also fires a `new_message` Socket.IO event to 
 | Conversation status | Who can send |
 |---|---|
 | `blocked` | Nobody — `403` |
-| `requested` | Only the initiator (who sent the first message) |
 | `active` | Both participants |
+
+Since DMs are born `active` (via message-request accept), there is no per-message "waiting for acceptance" gate anymore — any member of an `active` conversation can send.
 
 **Request body:**
 ```json
@@ -584,9 +571,9 @@ Send a message in an existing DM. Also fires a `new_message` Socket.IO event to 
 { "detail": "Post not found." }
 ```
 
-**Error `403`:**
+**Error `403`** — conversation is blocked:
 ```json
-{ "detail": "Waiting for the other person to accept." }
+{ "detail": "Blocked conversation." }
 ```
 
 ---
@@ -604,34 +591,7 @@ No request body.
 
 **WS push:** fires `read` to the other member's `user:{id}` room with `{"conv_id": "<uuid>", "reader_id": "<caller-uuid>"}`, so the sender can flip their message ticks to "read".
 
----
-
-### `POST /chat/conversations/{conv_id}/accept`
-
-Accept a pending conversation request. **Must be the receiver** (not the initiator). Changes status from `requested` → `active`. Both participants can now send messages freely.
-
-No request body.
-
-**Success `200`** — returns updated `ConversationEntity`.
-
-**WS push:** fires `conversation_accepted` to `user:{initiator_id}` with `{"conv_id": "<uuid>"}`.
-
-**Error `409`** — conversation is not in `requested` state:
-```json
-{ "detail": "cannot accept : conversation already - 'active'." }
-```
-
----
-
-### `POST /chat/conversations/{conv_id}/decline`
-
-Decline and block a conversation. Changes status from `requested` → `blocked`. Neither participant can send messages after this.
-
-No request body.
-
-**Success `200`** — returns updated `ConversationEntity`.
-
-**WS push:** fires `conversation_declined` to `user:{initiator_id}` with `{"conv_id": "<uuid>"}`.
+> **Accept / decline live in the connections module now.** A DM is accepted or declined via `PATCH /connections/message-request/{id}/accept|decline` — not chat endpoints. Accept opens the `active` DM (`message_request_accepted` push); decline is non-permanent (`message_request_declined` push). See [connect_interact_document.md](connect_interact_document.md#7-message-request-apis).
 
 ---
 
@@ -709,7 +669,7 @@ No request body.
 - DM → fires `message_deleted` to the other member's `user:{id}` room
 - Group → fires `message_deleted` to the `group:{group_id}` room
 
-Payload: `{"message_id": "<uuid>", "context_id": "<uuid>"}`. Clients should replace the bubble with a "This message was deleted" placeholder.
+Payload: `{"message_id": "<uuid>", "context_id": "<uuid>"}`. Clients should replace the bubble with a "This message was deleted" placeholder. Note: deleted messages are **excluded from message history** (`GET .../messages` no longer returns them), so on a history reload the message simply disappears rather than showing a placeholder.
 
 **Error `404`** — message not found, already deleted, or the caller is not the sender:
 ```json
@@ -910,31 +870,31 @@ After the transaction, fires a `new_group_deal` Socket.IO event to the group roo
 
 ## 15. Conversation Status Flow
 
+A DM is created by the **connections message-request flow** — it never starts in `requested` from chat. The conversation comes into existence only when the receiver accepts the request, already `active`.
+
 ```
-(User A sends first message)
-         ↓
-    status: "requested"
-    → Only User A (initiator) can send more messages
-    → User B sees it in their conversation list
-         ↓
-    User B calls POST /conversations/{id}/accept
-         ↓
-    status: "active"
-    → Both can send freely
-         ↓
-    User B calls POST /conversations/{id}/decline
-         ↓
-    status: "blocked"
-    → Nobody can send
+User A → POST /connections/message-request/{B}        (optional first_message)
+                          ↓
+User B → PATCH /connections/message-request/{id}/accept
+                          ↓
+    conversation created  status: "active"
+    → first_message (if any) seeded as the first message
+    → both can send freely
+    → A receives "message_request_accepted" socket push
+
+(decline instead)
+User B → PATCH /connections/message-request/{id}/decline
+    → no conversation created; request marked "declined" (re-requestable)
+    → A receives "message_request_declined" socket push
 ```
 
 | Status | Who can send | Notes |
 |---|---|---|
-| `requested` | Initiator only | Receiver sees it as a message request |
-| `active` | Both participants | Normal chat |
-| `blocked` | Nobody | Created when receiver declines |
+| `active` | Both participants | Normal chat — DMs are born here |
+| `blocked` | Nobody | Reserved for an explicit block; not produced by decline. `_activate_dm` refuses to revive a blocked DM. |
+| `requested` | — | **Legacy.** No longer produced. Old rows (if any) behave like `active` for sending. |
 
-> **Alternate entry — connections message request:** a DM can also be born **directly `active`**, skipping `requested`, when a [connections message request](connect_interact_document.md#7-message-request-apis) is accepted (`PATCH /connections/message-request/{id}/accept`). In that path the conversation is created `active`, the request's `first_message` (if any) is seeded as the first message, and the original sender gets a `message_request_accepted` Socket.IO push instead of `conversation_accepted`. This is the recommended "request to chat" flow; the chat-native `requested` flow above remains for direct `POST /chat/conversations` starts.
+> The chat-native start/accept/decline endpoints (`POST /chat/conversations`, `/accept`, `/decline`) were **removed** — the message request is the single consent gate. See [connect_interact_document.md](connect_interact_document.md#7-message-request-apis).
 
 ---
 
@@ -972,7 +932,7 @@ Embedded inside `MessageEntity` and `ConversationEntity`.
 }
 ```
 
-- `is_online` — live from Socket.IO room membership when set by the presentation layer; `false` in REST list responses.
+- `is_online` — live from Socket.IO room membership. Populated on `GET /chat/conversations` and `GET /chat/all` (dm rows); query `GET /chat/presence` for an on-demand refresh.
 
 ---
 
@@ -1155,7 +1115,6 @@ All errors follow FastAPI's standard shape:
 | Status | When it happens |
 |---|---|
 | `401` | Missing or invalid Bearer token; Socket.IO connection with invalid token (connection rejected) |
-| `403` | Not a conversation member / conversation is blocked / waiting for acceptance / frozen group member / chat permission violation / deal posted in inactive conversation |
+| `403` | Not a conversation member / conversation is blocked / frozen group member / chat permission violation / deal posted in inactive conversation |
 | `404` | Conversation not found / group not found / shared `post_id` references a non-existent post |
-| `409` | Conversation status already resolved (e.g. accepting an already-active conversation) |
 | `422` | Missing required field, invalid `message_type`, invalid `quantity_unit`, invalid `price_type` |

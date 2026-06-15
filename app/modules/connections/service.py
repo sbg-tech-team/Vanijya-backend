@@ -408,6 +408,10 @@ def _activate_dm(db: Session, initiator_id: UUID, other_id: UUID) -> UUID:
         db.add(ConversationMember(conversation_id=conv.id, user_id=initiator_id, joined_at=now))
         db.add(ConversationMember(conversation_id=conv.id, user_id=other_id, joined_at=now))
     else:
+        # Never revive a blocked conversation — an explicit block must not be
+        # silently undone by accepting a message request.
+        if conv.status == ConvStatus.BLOCKED:
+            raise HTTPException(status_code=403, detail="This conversation is blocked.")
         conv.status = ConvStatus.ACTIVE
         conv.updated_at = now
 

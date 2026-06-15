@@ -157,11 +157,22 @@ def accept_request(
 @connections_router.patch("/message-request/{request_id}/decline")
 def decline_request(
     request_id: int,
+    background_tasks: BackgroundTasks,
     me: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """Decline a message request. Only the receiver can decline."""
+    """Decline a message request. Only the receiver can decline.
+    Non-permanent — the sender can re-send later, which reopens it as pending."""
+    # Local import keeps the chat-module dependency contained (avoids an import cycle).
+    from app.modules.chat.presentation.connection_manager import emit_to_user
+
     result = service.respond_to_request(db, request_id=request_id, me=me, action="declined")
+    background_tasks.add_task(
+        emit_to_user,
+        UUID(result["sender_id"]),
+        "message_request_declined",
+        {"request_id": result["id"], "declined_by": str(me)},
+    )
     return ok(result, "Request declined")
 
 

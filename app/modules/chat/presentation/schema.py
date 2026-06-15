@@ -9,13 +9,7 @@ from pydantic import BaseModel, Field
 
 
 
-#start a brand new dm with someone - for the first time 
-class OpenChatRequest(BaseModel):
-    participant_id:UUID
-    first_message: str = Field(..., min_length=1, max_length=4000)
-
-
-#fire every time -- in an existing dm 
+#fire every time -- in an existing dm
 class SendMessageRequest(BaseModel):
     body: Optional[str] =Field(None, max_length=4000)
     message_type: str = Field(default="text", pattern=r"^(text|image|video|document|audio|location|deal|post)$")

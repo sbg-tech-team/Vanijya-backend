@@ -42,60 +42,66 @@ Create an environment with these variables:
 | `sanket_token` | *(from dev-token above)* |
 | `aadya_id` | *(user_id from aadya dev-token response)* |
 | `sanket_id` | *(user_id from sanket dev-token response)* |
-| `conv_id` | *(auto-filled in Step 1)* |
+| `request_id` | *(auto-filled in Step 1)* |
+| `conv_id` | *(auto-filled in Step 3)* |
 | `group_id` | *(auto-filled in Step 7)* |
 
-`conv_id` and `group_id` are the only values generated at runtime; the snippets in Steps 1 and 7 auto-save them.
+`request_id`, `conv_id`, and `group_id` are generated at runtime; the snippets in Steps 1, 3, and 7 auto-save them.
 
 ---
 
 ## Phase 1 — DM request & accept
 
-### Step 1 — A starts the conversation (creates a `requested` DM)
+> DMs are opened through the **connections message-request flow** (the chat-native
+> `POST /chat/conversations` + `/accept` + `/decline` endpoints were removed).
+
+### Step 1 — A sends a message request (with an opening line)
 
 ```
-POST {{base_url}}/chat/conversations
+POST {{base_url}}/connections/message-request/{{sanket_id}}
 Authorization: Bearer {{aadya_token}}
 Content-Type: application/json
 ```
 ```json
-{
-  "participant_id": "{{sanket_id}}",
-  "first_message": "Hi Sanket, interested in 200 MT Basmati?"
-}
+{ "first_message": "Hi Sanket, interested in 200 MT Basmati?" }
 ```
-**Expect `201`** → `{ "conversation": {...}, "message": {...}, "created": true }`, status `requested`.
-**Fires:** `new_message` → `user:{sanket_id}` (Sanket's listener prints it).
+**Expect `201`** → `{ "data": { "id": <request_id>, "status": "pending", "sent_at": "..." } }`.
 
-Postman → *Scripts → Post-response*, auto-save the conversation id:
+Postman → *Scripts → Post-response*, auto-save the request id:
 ```javascript
-pm.environment.set("conv_id", pm.response.json().conversation.id);
+pm.environment.set("request_id", pm.response.json().data.id);
 ```
 
 ---
 
-### Step 2 — S sees it in their conversation list
+### Step 2 — S sees it in their received requests
 
 ```
-GET {{base_url}}/chat/conversations
+GET {{base_url}}/connections/message-requests/received
 Authorization: Bearer {{sanket_token}}
 ```
-**Expect `200`** → array containing the conversation with `status: "requested"`. This is the
-"see it in my requests" view.
-
-> Send rule check (optional): if **S** tries `POST .../{{conv_id}}/messages` now, it returns
-> `403` — only the initiator can send while status is `requested`. Expected behaviour.
+**Expect `200`** → array containing the request, with `first_message` shown as a preview
+("Hi Sanket, interested in 200 MT Basmati?").
 
 ---
 
 ### Step 3 — S accepts the request
 
 ```
-POST {{base_url}}/chat/conversations/{{conv_id}}/accept
+PATCH {{base_url}}/connections/message-request/{{request_id}}/accept
 Authorization: Bearer {{sanket_token}}
 ```
-**Expect `200`** → updated conversation, status now `active`. Both can send freely.
-**Fires:** `conversation_accepted` → `user:{aadya_id}` (Aadya's listener prints it).
+**Expect `200`** → `{ "data": { "id": ..., "status": "accepted", "sender_id": "...", "conversation_id": "..." } }`.
+The DM is now `active` and the opening line is already its first message.
+**Fires:** `message_request_accepted` → `user:{aadya_id}` (Aadya's listener prints it).
+
+Postman → *Scripts → Post-response*, auto-save the conversation id:
+```javascript
+pm.environment.set("conv_id", pm.response.json().data.conversation_id);
+```
+
+> Decline instead with `PATCH .../{{request_id}}/decline` — no conversation is created,
+> the request is re-sendable later, and `message_request_declined` fires to `user:{aadya_id}`.
 
 ---
 
@@ -285,8 +291,8 @@ Content-Type: application/json
 
 | Step | Endpoint | Event | Room | Who receives |
 |---|---|---|---|---|
-| 1 | `POST /chat/conversations` | `new_message` | `user:{sanket_id}` | S |
-| 3 | `POST .../{conv_id}/accept` | `conversation_accepted` | `user:{aadya_id}` | A |
+| 1 | `POST /connections/message-request/{id}` | *(none — request send emits no socket event)* | — | — |
+| 3 | `PATCH /connections/message-request/{id}/accept` | `message_request_accepted` | `user:{aadya_id}` | A |
 | 4 | `POST .../{conv_id}/messages` (S) | `new_message` | `user:{aadya_id}` | A |
 | 5 | `POST .../{conv_id}/messages` (A) | `new_message` | `user:{sanket_id}` | S |
 | 9,10 | `POST /chat/groups/{group_id}/messages` | `new_group_message` | `group:{group_id}` | all members in room |
@@ -300,4 +306,4 @@ Content-Type: application/json
 - **Token expiry (Render):** if you get `401`, re-fetch from the login response and update your Postman variables.
 - **Group rooms:** group pushes only arrive at a socket that has emitted `join_group` — set `GROUP_ID` in `socket_listner.py` and re-run after Step 8. The server silently ignores `join_group` if the user is not a DB member.
 - **DM rooms:** no `join_group` needed — the server auto-joins `user:{user_id}` on connect, so DM pushes work immediately.
-- **`conversation_accepted` / `conversation_declined`:** only the conversation initiator (A) receives these — the receiver (S) who called accept/decline doesn't get a push back.
+- **`message_request_accepted` / `message_request_declined`:** only the request **sender** (A) receives these — the receiver (S) who called accept/decline doesn't get a push back. (The old chat-native `conversation_accepted` / `conversation_declined` events and their endpoints have been removed.)
