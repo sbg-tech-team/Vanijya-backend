@@ -143,6 +143,10 @@ class MessageEntity:
     sent_at: datetime
     deal:Optional[DealSnap]
     post:Optional[PostSnap]
+    # Receipt state for the sender's ticks (DM only; None for group / not-applicable).
+    # delivered = peer.last_delivered_at >= sent_at ; read = peer.last_read_at >= sent_at
+    delivered: Optional[bool] = None
+    read: Optional[bool] = None
 
 @dataclass
 class ConvSendGuard:

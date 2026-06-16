@@ -191,7 +191,12 @@ def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
     )
 
 
-def _build_message(db: Session, msg: Message) -> MessageEntity:
+def _build_message(
+    db: Session,
+    msg: Message,
+    delivered: Optional[bool] = None,
+    read: Optional[bool] = None,
+) -> MessageEntity:
     sender_profile = db.query(Profile).filter(Profile.users_id == msg.sender_id).first()
     sender_snap = (
         _profile_snap(sender_profile)
@@ -220,6 +225,8 @@ def _build_message(db: Session, msg: Message) -> MessageEntity:
             _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
         ),
         post=_post_snap(db, msg.post_id) if msg.post_id else None,
+        delivered=delivered,
+        read=read,
     )
 
 
@@ -320,7 +327,28 @@ class ChatRepository:
         if before is not None:
             q = q.filter(Message.sent_at < before)
         rows = q.order_by(Message.sent_at.desc()).limit(limit).all()
-        return [_build_message(self.db, m) for m in rows]
+
+        if context_type != "dm":
+            # Group receipts aren't tracked yet (no per-member cursors on group_members).
+            return [_build_message(self.db, m) for m in rows]
+
+        # DM: derive each message's delivered/read tick from the *peer's* cursors.
+        # peer = the member who did not send the message (exactly one in a DM).
+        members = (
+            self.db.query(ConversationMember.user_id, ConversationMember.last_delivered_at, ConversationMember.last_read_at)
+            .filter(ConversationMember.conversation_id == context_id)
+            .all()
+        )
+        cursors = {m.user_id: (m.last_delivered_at, m.last_read_at) for m in members}
+
+        out: list[MessageEntity] = []
+        for m in rows:
+            peer = next((c for uid, c in cursors.items() if uid != m.sender_id), (None, None))
+            last_delivered_at, last_read_at = peer
+            delivered = last_delivered_at is not None and last_delivered_at >= m.sent_at
+            read = last_read_at is not None and last_read_at >= m.sent_at
+            out.append(_build_message(self.db, m, delivered=delivered, read=read))
+        return out
 
     def mark_read(self, conv_id: UUID, user_id: UUID) -> None:
         self.db.query(ConversationMember).filter(

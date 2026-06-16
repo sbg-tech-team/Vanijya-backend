@@ -13,6 +13,7 @@ recipient's socket, the push is silently dropped.
 to multiple workers later, give socketio a shared backend
 (`socketio.AsyncRedisManager(...)`) and move `_sid_user` into Redis.
 """
+from datetime import datetime, timezone
 from uuid import UUID
 import socketio
 from app.core.database.session import SessionLocal
@@ -105,6 +106,52 @@ async def _relay_typing(sid, data, event: str) -> None:
         for mid in member_ids:
             if mid != user_id:
                 await sio.emit(event, payload, room=f"user:{mid}")
+
+
+@sio.event
+async def message_delivered(sid, data):
+    """Receiver acks that a DM's messages reached their device. Bumps this member's
+    delivery high-water mark (last_delivered_at) and notifies the sender so they can
+    flip their grey ticks. Cursor-based: one timestamp covers every message sent up to
+    now, so the client acks once per batch — on receiving `new_message` and after a REST
+    load of unseen messages (which covers the offline case)."""
+    user_id = _sid_user.get(sid)
+    conv_id = (data or {}).get("conv_id")
+    if not user_id or not conv_id:
+        return
+
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        updated = (
+            db.query(ConversationMember)
+            .filter(
+                ConversationMember.conversation_id == conv_id,
+                ConversationMember.user_id == user_id,
+            )
+            .update({"last_delivered_at": now}, synchronize_session=False)
+        )
+        if not updated:
+            db.rollback()
+            return  # not a member — ignore
+        peer = (
+            db.query(ConversationMember.user_id)
+            .filter(
+                ConversationMember.conversation_id == conv_id,
+                ConversationMember.user_id != user_id,
+            )
+            .first()
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    if peer:
+        await sio.emit(
+            "delivered",
+            {"conv_id": str(conv_id), "delivered_to": user_id, "last_delivered_at": now.isoformat()},
+            room=f"user:{peer[0]}",
+        )
 
 
 async def emit_to_user(user_id: UUID, event: str, data: dict) -> None:
