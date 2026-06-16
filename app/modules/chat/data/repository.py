@@ -296,6 +296,8 @@ class ChatRepository:
                 self.db.add(ChatAttachment(
                     id=uuid4(),
                     message_id=msg.id,
+                    context_type=context_type,
+                    context_id=context_id,
                     media_type=message_type,
                     media_url=url,
                     storage_path=_storage_path_for(url),

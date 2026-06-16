@@ -126,10 +126,14 @@ Media files attached to a message. One row per URL in `media_urls`.
 |---|---|---|
 | `id` | UUID PK | Auto-generated |
 | `message_id` | UUID FK → messages.id CASCADE | |
+| `context_type` | VARCHAR(10) | Denormalized from the parent message (`"dm"` or `"group"`) — set server-side, **not** client-supplied |
+| `context_id` | UUID | Denormalized from the parent message — set server-side, **not** client-supplied |
 | `media_type` | VARCHAR(20) | `image` \| `video` \| `document` \| `audio` |
 | `media_url` | VARCHAR(500) | CDN URL |
 | `storage_path` | VARCHAR(500) | Internal Supabase path |
 | `created_at` | TIMESTAMPTZ | |
+
+> `context_type` / `context_id` mirror the parent message's context; the backend fills them from the message on insert. They are internal denormalized columns — the media upload and send-message APIs are unaffected and the client sends nothing extra.
 
 ### `personal_deals`
 

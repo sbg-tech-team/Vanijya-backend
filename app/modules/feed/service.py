@@ -60,7 +60,7 @@ def _seen_key(item_type: str, profile_id: int) -> str:
 
 
 # def _get_seen_ids(rc, item_type: str, profile_id: int) -> set[str]:
-#     key = _seen_key(item_type, profile_id)
+#     key = _seen_key(item_type, profile_id) , this 
 #     raw = rc.smembers(key)
 #     return {s.decode() if isinstance(s, bytes) else s for s in raw}
 

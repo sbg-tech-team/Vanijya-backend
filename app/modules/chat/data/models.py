@@ -88,6 +88,9 @@ class ChatAttachment(Base):
     message_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
     )
+    # Denormalized copy of the parent message's context (NOT NULL in the DB).
+    context_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    context_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     media_type: Mapped[str] = mapped_column(String(20), nullable=False)
     media_url: Mapped[str] = mapped_column(String(500), nullable=False)
     storage_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
