@@ -41,7 +41,8 @@ The chat module handles:
 - **Group Deals (chat entry point)** — Deal/Requirement cards posted into a group chat. `POST /chat/groups/{group_id}/deals` is the canonical endpoint — it creates the deal, inserts a chat card, and pushes a Socket.IO event to the group room all in one call.
 - **Media upload** — images, video, audio, and documents are uploaded **directly from the client to Supabase Storage** via a signed URL minted by the backend. The backend never proxies file bytes — see [Section 11](#11-media-upload--message-deletion).
 - **Message deletion** — a sender can soft-delete their own message; the attached media object is removed from the bucket in the background.
-- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `message_request_accepted`, `message_request_declined`, `message_deleted`, and `read` events to connected clients. Clients also emit `typing` / `stop_typing`, which the server relays to the chat peer / group room.
+- **Real-time push** — Socket.IO rooms (`user:{user_id}`, `group:{group_id}`) push `new_message`, `new_group_message`, `new_group_deal`, `message_request_accepted`, `message_request_declined`, `message_deleted`, `delivered`, and `read` events to connected clients. Clients emit `typing` / `stop_typing` (relayed to the peer / group) and `message_delivered` (DM delivery ack that drives the grey tick).
+- **Message receipts (ticks)** — single tick = sent (`201`), grey double = delivered, blue double = read. Delivered/read are tracked as per-member **cursors** (`conversation_members.last_delivered_at` / `last_read_at`), not per-message flags — see [Section 4](#4-database-schema).
 
 ---
 
@@ -88,11 +89,14 @@ REST handles persistence. Socket.IO handles push. They are independent — a cli
 |---|---|---|
 | `conversation_id` | UUID FK → conversations.id CASCADE | |
 | `user_id` | UUID FK → users.id CASCADE | |
-| `last_read_at` | TIMESTAMPTZ | Nullable — null means never read |
+| `last_read_at` | TIMESTAMPTZ | Nullable — read high-water mark. A message is **read** by this member when `last_read_at >= message.sent_at`. Drives the blue tick. |
+| `last_delivered_at` | TIMESTAMPTZ | Nullable — delivery high-water mark. A message is **delivered** to this member when `last_delivered_at >= message.sent_at`. Drives the grey tick. |
 | `is_muted` | BOOL | Per-user notification mute |
 | `joined_at` | TIMESTAMPTZ | |
 
 Composite PK: `(conversation_id, user_id)`. Exactly two rows per DM conversation.
+
+> **Receipts are cursor-based, not per-message.** `delivered`/`read` state for every message is *derived* by comparing the message's `sent_at` to the **peer's** two watermarks above — there is no per-message `delivered_at`/`read_at` flag. Marking "delivered/read up to now" is a single-row update regardless of message count.
 
 ### `messages`
 
@@ -224,6 +228,25 @@ socket.emit('stop_typing', {'context_type': 'group', 'context_id': groupId});
 
 The server relays the same event name (`typing` / `stop_typing`) to the peer — to the other DM member's `user:` room, or to the `group:` room (excluding the sender). For DMs the server verifies the sender is a conversation member before relaying. Relayed payload: `{"context_type", "context_id", "user_id"}` (the `user_id` of whoever is typing).
 
+### Delivery acknowledgment (client → server) — DM grey tick
+
+When the **recipient's** device receives a DM message, it emits `message_delivered` so the sender can show the grey (delivered) double tick:
+
+```dart
+socket.emit('message_delivered', {'conv_id': convId});
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `conv_id` | UUID | The DM conversation whose messages were received |
+
+The server bumps the **caller's** `last_delivered_at` to now (one row update — covers every message in the conversation sent up to now) and emits `delivered` to the sender (see below). Membership is verified; non-members are ignored. Cursor-based, so the client acks **once per batch**, not per message:
+
+- Emit it when a `new_message` arrives for a DM, **and**
+- Emit it after a REST load (`GET .../messages`) that pulled previously-unseen incoming messages — this covers the case where the device was offline when the live push was sent.
+
+> Read receipts use the same idea but via REST: `POST /chat/conversations/{conv_id}/read` bumps `last_read_at` and fires the `read` event. There is no separate read socket emit from the client.
+
 ### Events emitted by the server
 
 | Event | Room | Fired when | Payload |
@@ -234,7 +257,8 @@ The server relays the same event name (`typing` / `stop_typing`) to the peer —
 | `message_request_accepted` | `user:{sender_id}` | Recipient accepted a **connections message request** (`PATCH /connections/message-request/{id}/accept`) — the DM is now `active` | `{"request_id": <int>, "conversation_id": "<uuid>", "accepted_by": "<uuid>"}` |
 | `message_request_declined` | `user:{sender_id}` | Recipient declined a **connections message request** (`PATCH /connections/message-request/{id}/decline`) — non-permanent, sender may re-send | `{"request_id": <int>, "declined_by": "<uuid>"}` |
 | `message_deleted` | `user:{receiver_id}` (DM) / `group:{group_id}` (group) | A message was soft-deleted | `{"message_id": "<uuid>", "context_id": "<uuid>"}` |
-| `read` | `user:{other_member_id}` | A DM was marked read by the other party | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
+| `delivered` | `user:{sender_id}` | The peer's device acked delivery (via `message_delivered`) — flip grey ticks for messages with `sent_at <= last_delivered_at` | `{"conv_id": "<uuid>", "delivered_to": "<uuid>", "last_delivered_at": "<iso8601>"}` |
+| `read` | `user:{other_member_id}` | A DM was marked read by the other party — flip blue ticks for messages with `sent_at <= last_read_at` | `{"conv_id": "<uuid>", "reader_id": "<uuid>"}` |
 | `typing` / `stop_typing` | `user:{peer_id}` (DM) / `group:{group_id}` (group) | A member is composing / stopped | `{"context_type", "context_id", "user_id"}` |
 
 `MessageEntity` and `GroupDealResponse` shapes are in [Shared Objects](#17-shared-objects).
@@ -960,9 +984,19 @@ Returned by send/get message endpoints and carried by `new_message` / `new_group
   "is_deleted": false,
   "sent_at": "2026-06-09T10:15:00.000000+00:00",
   "deal": null,
-  "post": null
+  "post": null,
+  "delivered": false,
+  "read": false
 }
 ```
+
+- `delivered` / `read` — receipt state of the message **for the sender's ticks** (DM only). Derived from the peer's `last_delivered_at` / `last_read_at` watermarks vs this message's `sent_at`:
+  - `false` + `false` → single tick (sent)
+  - `true` + `false` → grey double tick (delivered)
+  - `true` + `true` → blue double tick (read)
+  - `null` → not applicable (group messages, or freshly sent over the `new_message` push before any ack) — treat as not-yet-delivered.
+
+  These appear on `GET /chat/conversations/{id}/messages` so ticks render correctly on reload. Live updates arrive via the `delivered` and `read` socket events.
 
 When `message_type = "deal"`, the `deal` field is a `DealSnap`:
 
