@@ -1,9 +1,6 @@
 """
 Groups service layer — pure business logic, no FastAPI imports.
 
-Verification gate:
-  Only users whose profile.is_verified == True may create a group.
-
 Role mapping (matches existing lookup table seeds):
   1 = Trader   → "trader"
   2 = Broker   → "broker"
@@ -267,16 +264,9 @@ def _store_embedding(db: Session, group: Group) -> None:
 
 def create_group(db: Session, user_id: UUID, payload: GroupCreate) -> GroupOut:
     """
-    Creates a group.  Only verified users (profile.is_verified == True) may create.
-    Creator is automatically added as admin.
+    Creates a group.  Creator is automatically added as admin.
     """
-    profile = _get_profile_or_raise(db, user_id)
-
-    if not (profile.is_user_verified and profile.is_business_verified):
-        raise GroupPermissionError(
-            "Only fully verified users (KYC + KYB) can create groups. "
-            "Complete profile verification first."
-        )
+    _get_profile_or_raise(db, user_id)
 
     try:
         group = Group(

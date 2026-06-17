@@ -146,7 +146,7 @@ def list_groups_api(
     return ok(result, "Groups fetched")
 
 
-# ── 3. POST / — create group (verified users only) ───────────────────────────
+# ── 3. POST / — create group ──────────────────────────────────────────────────
 
 @router.post("/", status_code=201)
 def create_group_api(
