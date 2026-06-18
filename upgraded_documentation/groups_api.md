@@ -12,7 +12,7 @@ A complete reference for group creation, membership management, join requests, p
 
 1. [Module Overview](#1-module-overview)
 2. [How User Identity Works](#2-how-user-identity-works)
-3. [Verification Gate](#3-verification-gate)
+3. [Group Creation Access](#3-group-creation-access)
 4. [Database Schema](#4-database-schema)
 5. [File Structure](#5-file-structure)
 6. [API Quick Reference](#6-api-quick-reference)
@@ -59,17 +59,11 @@ The caller's membership context (`is_member`, `member_role`, `is_muted`, `is_fav
 
 ---
 
-## 3. Verification Gate
+## 3. Group Creation Access
 
-**Only users who have passed both KYC (`is_user_verified = true`) and KYB (`is_business_verified = true`) can create a group.**
+**Any authenticated user can create a group** — there is no KYC/KYB verification gate. The only requirement is a valid Bearer token and an existing profile.
 
-Attempting to create a group without full verification returns `403`:
-
-```json
-{ "detail": "Only fully verified users (KYC + KYB) can create groups. Complete profile verification first." }
-```
-
-Joining an existing group has no verification requirement.
+Verification status (`is_user_verified`, `is_business_verified`) is still surfaced per member in member lists for display purposes, but it does **not** restrict group creation or joining.
 
 ---
 
@@ -207,11 +201,11 @@ All endpoints require `Authorization: Bearer <access_token>`.
 
 | Method | Endpoint | Who can call | What it does |
 |---|---|---|---|
-| `POST` | `/upload-image` | Any verified user | Get signed upload URL for group cover image |
+| `POST` | `/upload-image` | Any authenticated user | Get signed upload URL for group cover image |
 | `GET` | `/suggestions` | Any member | Vector-matched group suggestions |
 | `GET` | `/my-pending-requests` | Any member | Aggregated pending join requests across all groups caller admins |
 | `GET` | `/` | Any member | List groups with filters |
-| `POST` | `/` | KYC + KYB verified only | Create a group — **201** |
+| `POST` | `/` | Any authenticated user | Create a group — **201** |
 | `POST` | `/join-by-link/{token}` | Any member | Join via invite token |
 | `GET` | `/{group_id}` | Any member | Get group detail |
 | `PATCH` | `/{group_id}` | Admin only | Update group info |
@@ -278,7 +272,7 @@ After receiving this, PUT the image bytes to `upload_url` with `Content-Type: im
 
 ### `POST /api/v1/groups/`
 
-Create a new group. **Requires KYC + KYB verification.** Creator is automatically added as admin.
+Create a new group. **Any authenticated user can create a group** — no verification required. Creator is automatically added as admin.
 
 **Request body:**
 ```json
@@ -342,11 +336,6 @@ Create a new group. **Requires KYC + KYB verification.** Creator is automaticall
     "is_favorite": false
   }
 }
-```
-
-**Error `403`** — not fully verified:
-```json
-{ "detail": "Only fully verified users (KYC + KYB) can create groups. Complete profile verification first." }
 ```
 
 ---
@@ -1444,7 +1433,7 @@ All errors follow FastAPI's standard shape:
 | Status | When it happens |
 |---|---|
 | `401` | Missing or invalid Bearer token |
-| `403` | Not an admin / not a member / not KYC+KYB verified (group creation) / only admins or uploader can delete media / not deal author / deal is closed (PATCH) / frozen member posting deal |
+| `403` | Not an admin / not a member / only admins or uploader can delete media / not deal author / deal is closed (PATCH) / frozen member posting deal |
 | `404` | Group not found / profile not found / member not found / invalid invite token / join request not found / media not found / deal not found |
 | `409` | Already a member / join request already pending / join request already resolved / deal already published to feed |
 | `422` | Missing required field, wrong data type, or unsupported media content-type / invalid `quantity_unit` or `price_type` value |
