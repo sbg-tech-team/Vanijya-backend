@@ -7,12 +7,9 @@ from pydantic import BaseModel
 # ── Cursor ────────────────────────────────────────────────────────────────────
 
 class FeedCursor(BaseModel):
-    post_cursor: Optional[str] = None        # "ISO_TIMESTAMP|post_id"
-    news_cursor: Optional[str] = None        # "ISO_TIMESTAMP|news_id"
-    group_cursor: Optional[str] = None       # "ISO_TIMESTAMP|post_id"
-    connection_cursor: int = 0               # simple offset
+    # Recommenders are page-based, so the feed cursor is just a page counter.
+    # (Timestamp/offset cursors removed — pagination is delegated to each source.)
     page_num: int = 1
-    # session_id: str  # re-add when session taste / Redis is enabled
 
 
 # ── Engagement signals (client → backend) ────────────────────────────────────

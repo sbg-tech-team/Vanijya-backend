@@ -10,10 +10,13 @@ import json
 from typing import Optional
 from uuid import UUID
 
+import redis
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user_id, get_db
+from app.dependencies import CurrentUser, get_current_user, get_current_user_id, get_db
+from app.core.redis_client import get_redis
 from app.modules.feed.schemas import EngagementBatch, FeedCursor
 from app.modules.feed.service import (
     ProfileNotFoundError,
@@ -27,14 +30,15 @@ router = APIRouter(prefix="/feed", tags=["Home Feed"])
 
 @router.get("/home")
 def home_feed(
-    user_id: UUID = Depends(get_current_user_id),
+    current: CurrentUser = Depends(get_current_user),
     cursor: Optional[str] = Query(None, description="JSON-encoded FeedCursor from previous page"),
     db: Session = Depends(get_db),
+    r: redis.Redis = Depends(get_redis),
 ):
     """
     Returns a paginated, mixed home feed.
 
-    - First call: omit `cursor` — priority pins are resolved and prepended.
+    - First call: omit `cursor` — breaking-news pins are prepended.
     - Subsequent calls: pass the `cursor` returned from the previous response.
     """
     parsed_cursor: Optional[FeedCursor] = None
@@ -45,7 +49,9 @@ def home_feed(
             raise HTTPException(status_code=400, detail="Invalid cursor format")
 
     try:
-        result = get_home_feed(db, user_id, parsed_cursor)
+        result = get_home_feed(
+            db, current.user_id, current.profile_id, r, parsed_cursor
+        )
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
