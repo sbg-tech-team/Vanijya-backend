@@ -1,0 +1,1 @@
+# Models: NewsArticle, NewsCategory
