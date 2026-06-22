@@ -8,12 +8,14 @@ weighted-random mixer with the existing max-consecutive caps.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 import redis
 from sqlalchemy.orm import Session
 
+from app.core.database.session import SessionLocal
 from app.modules.feed.schemas import (
     EngagementBatch,
     FeedCursor,
@@ -27,6 +29,22 @@ from app.modules.feed.pipelines import (
     fetch_post_candidates,
 )
 from app.modules.feed.mixer import mix_feed
+
+_T = TypeVar("_T")
+
+
+def _in_own_session(fn: Callable[[Session], _T]) -> _T:
+    """Run `fn` with a fresh, dedicated DB session.
+
+    The source pipelines run in parallel threads, and a SQLAlchemy Session is not
+    thread-safe — each pipeline must own its session. Pool is 5+10, so 4 concurrent
+    sessions are well within budget.
+    """
+    db = SessionLocal()
+    try:
+        return fn(db)
+    finally:
+        db.close()
 
 # Static type-mix ratio (no taste yet). Mixer normalises + applies consecutive caps.
 FEED_WEIGHTS: dict[str, float] = {
@@ -60,15 +78,37 @@ def get_home_feed(
         cursor = FeedCursor()
     page_num = cursor.page_num
 
-    # Source pipelines — each calls the owning module's recommender.
-    post_candidates = fetch_post_candidates(db, profile_id, limit=POST_LIMIT)
-    breaking_pins, news_candidates = fetch_news_feed(db, user_id)
-    conn_candidates = fetch_connection_candidates(
-        db, r, user_id, page=page_num, limit=CONNECTION_LIMIT
-    )
-    group_candidates = fetch_group_candidates(
-        db, user_id, page=page_num, limit=GROUP_LIMIT
-    )
+    # Source pipelines run in PARALLEL — they are independent, and each owns its own
+    # DB session (see _in_own_session). Wall-time ≈ slowest pipeline, not the sum.
+    # The request-scoped `db` is intentionally not used here (it isn't thread-safe).
+    tasks: dict[str, Callable[[], object]] = {
+        "post": lambda: _in_own_session(
+            lambda s: fetch_post_candidates(s, profile_id, limit=POST_LIMIT)
+        ),
+        "news": lambda: _in_own_session(
+            lambda s: fetch_news_feed(s, user_id)
+        ),
+        "connection": lambda: _in_own_session(
+            lambda s: fetch_connection_candidates(s, r, user_id, page=page_num, limit=CONNECTION_LIMIT)
+        ),
+        "group": lambda: _in_own_session(
+            lambda s: fetch_group_candidates(s, user_id, page=page_num, limit=GROUP_LIMIT)
+        ),
+    }
+
+    results: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {key: pool.submit(fn) for key, fn in tasks.items()}
+        for key, fut in futures.items():
+            try:
+                results[key] = fut.result()
+            except Exception:
+                results[key] = ([], []) if key == "news" else []
+
+    post_candidates = results["post"]
+    breaking_pins, news_candidates = results["news"]
+    conn_candidates = results["connection"]
+    group_candidates = results["group"]
 
     # Breaking news → priority pins, first load only. Avoid double-serving.
     priority_pins: list[FeedItem] = breaking_pins if is_first_load else []
