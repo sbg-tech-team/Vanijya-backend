@@ -43,3 +43,15 @@ TASTE_DIMENSIONS = frozenset({"category", "source", "tag"})
 
 # Minimum events before taste profile is considered bootstrapped
 TASTE_BOOTSTRAP_EVENTS = 20
+
+# Exponential decay lambda (~30-day half-life): ln(2) / 30
+import math as _math
+TASTE_DECAY_LAMBDA: float = _math.log(2) / 30
+
+# Default taste seeding per role (1=Trader, 2=Broker, 3=Exporter).
+# Derived from RELEVANCY_MATRIX in config so roles and matrix stay in sync.
+from app.modules.news_new.config import RELEVANCY_MATRIX as _MATRIX
+DEFAULT_TASTE: dict[int, dict[str, float]] = {
+    role_id: {factor: _MATRIX[factor][role_name] for factor in _MATRIX}
+    for role_id, role_name in ((1, "trader"), (2, "broker"), (3, "exporter"))
+}

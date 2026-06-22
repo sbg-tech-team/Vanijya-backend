@@ -1,23 +1,239 @@
-# Service + DB queries
-#
-# process_interaction_batch(db, user_id, events) → {accepted, dropped}
-#   - filters stale events (> MAX_EVENT_AGE_HOURS)
-#   - validates article_ids
-#   - caps dwell value_ms at DWELL_VALUE_CAP_MS
-#   - bulk inserts into NewsInteractionEvent with processed_at=NULL
-#   - upserts NewsView for open_article events (revisit detection)
-#
-# toggle_like(db, user_id, article_id) → is_liked bool
-# toggle_save(db, user_id, article_id) → is_saved bool
-# record_share(db, user_id, article_id, platform)
-#
-# _record_revisit_event(db, user_id, article_id)  ← called when NewsView unique constraint fires
-#
-# --- DB queries ---
-# insert_events_bulk(db, events)
-# get_view(db, user_id, article_id)           → NewsView | None
-# upsert_view(db, user_id, article_id)
-# get_article_stats(db, article_id)           → NewsArticleStats | None
-# increment_stats(db, article_id, field, delta)
-# get_trending(db, limit, cursor)             → list[NewsTrending]
-# upsert_trending(db, article_id, fields)
+from datetime import datetime, timezone, timedelta
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.modules.news_new.news_user_interaction.constants import (
+    DWELL_BOUNCE_MS,
+    DWELL_MEDIUM_MS,
+    DWELL_SEEN_MS,
+    DWELL_SHORT_MS,
+    DWELL_VALUE_CAP_MS,
+    MAX_EVENT_AGE_HOURS,
+    SIGNAL_WEIGHTS,
+)
+from app.modules.news_new.news_user_interaction.models import (
+    NewsArticleStats,
+    NewsInteractionEvent,
+    NewsLike,
+    NewsSave,
+    NewsShare,
+    NewsView,
+)
+from app.modules.news_new.news_user_interaction.schemas import NewsInteractionEventItem
+from app.modules.news_new.news_user_interaction import taste_service
+from app.modules.news_new.ingestion.models import RawArticle
+
+
+def classify_dwell(value_ms: int) -> str:
+    if value_ms < DWELL_BOUNCE_MS:
+        return "dwell_bounce"
+    if value_ms < DWELL_SHORT_MS:
+        return "dwell_short"
+    if value_ms < DWELL_MEDIUM_MS:
+        return "dwell_medium"
+    return "dwell_long"
+
+
+def derive_signal(event_type: str, value_ms: int | None = None) -> tuple[float, float]:
+    if event_type == "dwell" and value_ms is not None:
+        key = classify_dwell(value_ms)
+    else:
+        key = event_type
+    return SIGNAL_WEIGHTS.get(key, (0.0, 0.0))
+
+
+def process_interaction_batch(
+    db: Session,
+    profile_id: int,
+    events: list[NewsInteractionEventItem],
+) -> dict:
+    """
+    Accepts a client event batch. Drops stale events and events for unknown
+    articles. Upserts NewsView and fires revisit events on open_article.
+    Bulk-inserts valid events; caller does NOT need to commit separately.
+    """
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(hours=MAX_EVENT_AGE_HOURS)
+
+    raw_article_ids = list({e.article_id for e in events})
+    valid_ids: set[UUID] = {
+        row[0]
+        for row in db.execute(
+            select(RawArticle.id).where(RawArticle.id.in_(raw_article_ids))
+        ).all()
+    }
+
+    rows: list[NewsInteractionEvent] = []
+    dropped = 0
+
+    for event in events:
+        occurred = event.occurred_at
+        if occurred.tzinfo is None:
+            occurred = occurred.replace(tzinfo=timezone.utc)
+
+        if occurred < stale_cutoff:
+            dropped += 1
+            continue
+
+        if event.article_id not in valid_ids:
+            dropped += 1
+            continue
+
+        value_ms = None
+        if event.value_ms is not None:
+            value_ms = min(event.value_ms, DWELL_VALUE_CAP_MS)
+
+        rows.append(NewsInteractionEvent(
+            profile_id=profile_id,
+            article_id=event.article_id,
+            event_type=event.event_type,
+            value_ms=value_ms,
+            occurred_at=occurred,
+        ))
+
+        if event.event_type == "open_article":
+            is_revisit = upsert_view(db, profile_id, event.article_id)
+            if is_revisit:
+                _record_revisit_event(db, profile_id, event.article_id)
+
+    if rows:
+        db.bulk_save_objects(rows)
+
+    db.commit()
+    return {"accepted": len(rows), "dropped": dropped}
+
+
+def upsert_view(db: Session, profile_id: int, article_id: UUID) -> bool:
+    """
+    Creates or updates the NewsView row.
+    Returns True if this is a revisit (view already existed).
+    Does NOT commit — caller owns the transaction.
+    """
+    view = get_view(db, profile_id, article_id)
+    if view is None:
+        db.add(NewsView(profile_id=profile_id, article_id=article_id))
+        return False
+
+    view.view_count += 1
+    view.last_viewed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add(view)
+    return True
+
+
+def _record_revisit_event(db: Session, profile_id: int, article_id: UUID) -> None:
+    """
+    Server-generated revisit event. Inserts a processed event (no async job
+    needed) and synchronously updates category taste.
+    """
+    from app.modules.news_new.intelligence.models import EnrichedArticle
+
+    now = datetime.now(timezone.utc)
+    db.add(NewsInteractionEvent(
+        profile_id=profile_id,
+        article_id=article_id,
+        event_type="revisit",
+        occurred_at=now,
+        processed_at=now,
+    ))
+
+    factor = db.execute(
+        select(EnrichedArticle.primary_factor).where(EnrichedArticle.raw_article_id == article_id)
+    ).scalar_one_or_none()
+    if factor:
+        pos, neg = SIGNAL_WEIGHTS.get("revisit", (0.0, 0.0))
+        taste_service.update_taste(db, profile_id, "category", factor, pos, neg)
+
+
+def toggle_like(db: Session, profile_id: int, article_id: UUID) -> bool:
+    """Toggle like. Returns the new is_liked state."""
+    existing = db.execute(
+        select(NewsLike).where(
+            NewsLike.profile_id == profile_id,
+            NewsLike.article_id == article_id,
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        db.delete(existing)
+        _adjust_stats(db, article_id, "like_count", -1)
+        db.commit()
+        return False
+
+    db.add(NewsLike(profile_id=profile_id, article_id=article_id))
+    _adjust_stats(db, article_id, "like_count", 1)
+    _taste_from_article(db, profile_id, article_id, "like")
+    db.commit()
+    return True
+
+
+def toggle_save(db: Session, profile_id: int, article_id: UUID) -> bool:
+    """Toggle save. Returns the new is_saved state."""
+    existing = db.execute(
+        select(NewsSave).where(
+            NewsSave.profile_id == profile_id,
+            NewsSave.article_id == article_id,
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        db.delete(existing)
+        _adjust_stats(db, article_id, "save_count", -1)
+        db.commit()
+        return False
+
+    db.add(NewsSave(profile_id=profile_id, article_id=article_id))
+    _adjust_stats(db, article_id, "save_count", 1)
+    _taste_from_article(db, profile_id, article_id, "save")
+    db.commit()
+    return True
+
+
+def record_share(db: Session, profile_id: int, article_id: UUID, platform: str | None = None) -> None:
+    db.add(NewsShare(profile_id=profile_id, article_id=article_id, platform=platform))
+    _adjust_stats(db, article_id, "share_count", 1)
+    _taste_from_article(db, profile_id, article_id, "share_tap")
+    db.commit()
+
+
+def _taste_from_article(db: Session, profile_id: int, article_id: UUID, signal_type: str) -> None:
+    """Look up article's primary_factor from EnrichedArticle and write a taste delta."""
+    from app.modules.news_new.intelligence.models import EnrichedArticle
+
+    factor = db.execute(
+        select(EnrichedArticle.primary_factor).where(EnrichedArticle.raw_article_id == article_id)
+    ).scalar_one_or_none()
+    if factor:
+        pos, neg = SIGNAL_WEIGHTS.get(signal_type, (0.0, 0.0))
+        taste_service.update_taste(db, profile_id, "category", factor, pos, neg)
+
+
+# ── Read helpers ─────────────────────────────────────────────────────────────
+
+
+def get_view(db: Session, profile_id: int, article_id: UUID) -> NewsView | None:
+    return db.execute(
+        select(NewsView).where(
+            NewsView.profile_id == profile_id,
+            NewsView.article_id == article_id,
+        )
+    ).scalar_one_or_none()
+
+
+def get_article_stats(db: Session, article_id: UUID) -> NewsArticleStats | None:
+    return db.execute(
+        select(NewsArticleStats).where(NewsArticleStats.article_id == article_id)
+    ).scalar_one_or_none()
+
+
+def _adjust_stats(db: Session, article_id: UUID, field: str, delta: int) -> None:
+    stats = get_article_stats(db, article_id)
+    if stats is None:
+        stats = NewsArticleStats(article_id=article_id)
+        db.add(stats)
+        db.flush()
+    current = getattr(stats, field, 0) or 0
+    setattr(stats, field, max(0, current + delta))
+    stats.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add(stats)
