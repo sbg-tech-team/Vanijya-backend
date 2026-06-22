@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import logging
 from contextlib import asynccontextmanager
 import socketio
 from fastapi import FastAPI
@@ -25,25 +24,18 @@ from app.modules.chat.presentation.connection_manager import sio
 from app.modules.deeplink.router import router as deeplink_router
 from app.modules.safety.router import router as safety_router
 from app.modules.verification.router import router as verification_router
-from app.modules.news.tasks import ingest
 from app.core import scheduler as _scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _scheduler.start()
-
-    try:
-        ingest()
-    except Exception as exc:
-        logging.getLogger(__name__).warning("Startup ingest failed (non-fatal): %s", exc)
-
     yield
-
     _scheduler.stop()
 
 
 app = FastAPI(title="Vanijyaa API", lifespan=lifespan)
+
 
 
 app.get("/", status_code=200)(lambda: {"message": "Server is up and running!"})

@@ -40,6 +40,8 @@ from app.modules.news.models import (  # noqa: F401
     UserClusterTaste,
     NewsTrending,
 )
+from app.modules.news_new.ingestion.models import RawArticle  # noqa: F401
+from app.modules.news_new.intelligence.models import EnrichedArticle  # noqa: F401
 from app.modules.chat.data.models import (  # noqa: F401
     Conversation,
     ConversationMember,

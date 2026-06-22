@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: Optional[str] = None
 
+    # news_new pipeline — provider fetch + LLM enrichment
+    GNEWS_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+
     class Config:
         env_file = ".env"
         extra = "ignore"
