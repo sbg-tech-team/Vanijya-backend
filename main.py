@@ -15,7 +15,6 @@ from app.modules.connections.router import (
     connections_router,
     recommendations_router,
 )
-from app.modules.news.router import router as news_router
 from app.modules.news_new import router as news_new_router
 from app.modules.feed.router import router as feed_router
 
@@ -48,7 +47,6 @@ app.include_router(post_rec_router)
 app.include_router(post_interaction_router)
 app.include_router(connections_router)
 app.include_router(recommendations_router)
-app.include_router(news_router)
 app.include_router(news_new_router)
 app.include_router(feed_router)
 app.include_router(chat_router)

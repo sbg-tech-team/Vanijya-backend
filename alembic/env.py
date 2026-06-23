@@ -33,15 +33,23 @@ from app.modules.groups.models import (  # noqa: F401
     GroupEmbedding,
     GroupMedia,
 )
-from app.modules.news.models import (  # noqa: F401
-    NewsSource,
-    NewsArticle,
-    NewsEngagement,
-    UserClusterTaste,
-    NewsTrending,
-)
 from app.modules.news_new.ingestion.models import RawArticle  # noqa: F401
 from app.modules.news_new.intelligence.models import EnrichedArticle  # noqa: F401
+from app.modules.news_new.news_user_interaction.models import (  # noqa: F401
+    NewsInteractionEvent,
+    NewsView,
+    NewsLike,
+    NewsSave,
+    NewsShare,
+    NewsArticleStats,
+    NewsTrending,
+    UserNewsTaste,
+    UserNewsTasteProfile,
+)
+from app.modules.news_new.news_recommendation_engine.models import (  # noqa: F401
+    ArticleRecommendationScore,
+    FeedRankingCache,
+)
 from app.modules.chat.data.models import (  # noqa: F401
     Conversation,
     ConversationMember,

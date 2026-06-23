@@ -6,7 +6,7 @@ owning module's recommendation function and maps the result into FeedItem.
 The "which items" decision belongs to the source modules:
 
   post        -> post_recommendation_module.get_recommended_posts
-  news        -> news.get_news_feed              (right_now + for_you_today sections)
+  news        -> news_new.feed.service.get_trending_feed
   connection  -> connections.get_recommendations  (sync; needs a Redis handle)
   group       -> groups.get_group_suggestions     (groups to join)
 
@@ -18,15 +18,17 @@ from __future__ import annotations
 from uuid import UUID
 
 import redis
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.feed.schemas import FeedItem
 from app.modules.post.post_recommendation_module.service import get_recommended_posts
-from app.modules.news.service import get_news_feed
 from app.modules.connections.service import (
     get_recommendations as get_connection_recommendations,
 )
 from app.modules.groups.service import get_group_suggestions
+from app.modules.profile.models import Profile
+from app.modules.news_new.feed.service import get_trending_feed as _get_news_trending_feed
 
 
 # ── Post pipeline ───────────────────────────────────────────────────────────────
@@ -62,31 +64,34 @@ def fetch_news_feed(
     state: str = "",
     scope: str = "national",
 ) -> tuple[list[FeedItem], list[FeedItem]]:
-    """
-    Single get_news_feed call → (breaking_pins, news_pool).
+    """Trending news from news_new for the home feed.
 
-      'right_now'     section → priority pins  (is_priority=True)
-      'for_you_today' section → regular news pool
+    Looks up the caller's profile to resolve role_id, then delegates to the
+    news_new trending pipeline. Breaking news is omitted by design — returns
+    (breaking_pins=[], news_pool=<trending articles>).
     """
     try:
-        feed = get_news_feed(db, user_id, state=state, scope=scope)
+        profile = db.execute(
+            select(Profile).where(Profile.users_id == user_id)
+        ).scalar_one_or_none()
+        if profile is None:
+            return [], []
+
+        feed_page = _get_news_trending_feed(
+            db, profile_id=profile.id, role_id=profile.role_id, limit=20
+        )
+        news_items = [
+            FeedItem(
+                item_type="news",
+                item_id=str(card.article_id),
+                content_type_label="news",
+                data=card.model_dump(mode="json"),
+            )
+            for card in feed_page.items
+        ]
+        return [], news_items
     except Exception:
         return [], []
-
-    sections = {s.key: s.articles for s in feed.sections}
-
-    def _to_item(article, *, is_priority: bool) -> FeedItem:
-        return FeedItem(
-            item_type="news",
-            item_id=str(article.id),
-            is_priority=is_priority,
-            content_type_label="breaking_news" if is_priority else "news",
-            data=article.model_dump(mode="json"),
-        )
-
-    breaking = [_to_item(a, is_priority=True) for a in sections.get("right_now", [])]
-    news_pool = [_to_item(a, is_priority=False) for a in sections.get("for_you_today", [])]
-    return breaking, news_pool
 
 
 # ── Connection pipeline ──────────────────────────────────────────────────────────

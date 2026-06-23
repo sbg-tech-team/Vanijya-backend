@@ -3,7 +3,7 @@ import uuid as _uuid
 from sqlalchemy.orm import Session
 
 from app.modules.post.models import Post
-from app.modules.news.models import NewsArticle
+from app.modules.news_new.ingestion.models import RawArticle
 from app.modules.profile.models import Profile
 
 APP_SCHEME = "vanijyaa"
@@ -54,12 +54,13 @@ def get_news_share_link(db: Session, article_id: str) -> dict:
     except ValueError:
         raise DeepLinkNotFoundError("Invalid article ID")
 
-    article = db.query(NewsArticle).filter(NewsArticle.id == uid).first()
+    article = db.query(RawArticle).filter(RawArticle.id == uid).first()
     if not article:
         raise DeepLinkNotFoundError("Article not found")
 
     deep_link = f"{APP_SCHEME}://news/{article_id}"
-    description = (article.summary[:120] + "...") if article.summary and len(article.summary) > 120 else article.summary
+    summary = article.description or article.api_summary
+    description = (summary[:120] + "...") if summary and len(summary) > 120 else summary
     share_text = (
         f"{article.title}\n\n"
         f"{description or ''}\n\n"
