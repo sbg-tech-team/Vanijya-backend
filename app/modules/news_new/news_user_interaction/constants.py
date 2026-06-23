@@ -44,6 +44,10 @@ TASTE_DIMENSIONS = frozenset({"category", "source", "tag"})
 # Minimum events before taste profile is considered bootstrapped
 TASTE_BOOTSTRAP_EVENTS = 20
 
+# Trending job
+TRENDING_LOOKBACK_H = 6       # hours of interactions to score
+TRENDING_MIN_UNIQUE_USERS = 2 # minimum distinct profiles for an article to appear in trending
+
 # Exponential decay lambda (~30-day half-life): ln(2) / 30
 import math as _math
 TASTE_DECAY_LAMBDA: float = _math.log(2) / 30

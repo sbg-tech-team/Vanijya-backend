@@ -139,7 +139,7 @@ class NewsArticleStats(Base):
 
 class NewsTrending(Base):
     """Velocity-ranked trending snapshot; computed by a background job, not inline."""
-    __tablename__ = "news_trending"
+    __tablename__ = "news_raw_trending"
 
     article_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -150,7 +150,7 @@ class NewsTrending(Base):
     trending_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
-    __table_args__ = (Index("ix_nt_velocity_score", "velocity_score"),)
+    __table_args__ = (Index("ix_nrt_velocity_score", "velocity_score"),)
 
 
 class UserNewsTaste(Base):

@@ -117,6 +117,9 @@ ENRICH_BATCH_LIMIT = 20
 # Cap the content slice sent to the LLM to keep token cost predictable.
 LLM_CONTENT_CHAR_CAP = 1000
 
+# Archive: articles older than this many days are soft-deleted (is_active=False).
+ARCHIVE_AFTER_DAYS = 30
+
 # --------------------------------------------------------------------------- #
 # System prompt — the LLM returns classification + summary + impact ONLY.
 # It must NOT return role_relevance (that's computed from RELEVANCY_MATRIX).

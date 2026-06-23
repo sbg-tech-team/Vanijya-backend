@@ -3,8 +3,8 @@ import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.database.session import SessionLocal
-from app.modules.news.tasks import recalc_trending, update_taste, archive_old
-from app.modules.news_new.ingestion.jobs import run_news_pipeline
+from app.modules.news_new.ingestion.jobs import archive_old_articles, run_news_pipeline
+from app.modules.news_new.news_user_interaction.jobs import recalc_trending as _recalc_trending
 from app.modules.post.post_recommendation_module import jobs as post_rec_jobs
 from app.modules.post.post_user_interaction import jobs as post_interaction_jobs
 
@@ -53,12 +53,11 @@ def _run_ignore_detection():
 
 
 def start():
-    scheduler.add_job(run_news_pipeline, "interval", minutes=30, id="news_new.pipeline",
+    scheduler.add_job(run_news_pipeline,    "interval", minutes=30, id="news_new.pipeline",
                       max_instances=1, coalesce=True)
-    scheduler.add_job(recalc_trending,  "interval", minutes=5,   id="news.trending")
-    scheduler.add_job(update_taste,     "interval", hours=1,     id="news.taste")
-    scheduler.add_job(archive_old,      "cron",     hour=2,      id="news.archive")
-
+    scheduler.add_job(_recalc_trending,     "interval", minutes=5,  id="news_new.trending",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(archive_old_articles, "cron",     hour=2,     id="news_new.archive")
     scheduler.add_job(_run_expiry_job,    "interval", hours=1,    id="posts.expiry")
     scheduler.add_job(_run_popular_sync,  "interval", minutes=15, id="posts.popular")
     scheduler.add_job(_run_taste_update,    "interval", minutes=15, id="posts.taste_update")

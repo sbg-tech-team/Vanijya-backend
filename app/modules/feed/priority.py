@@ -17,7 +17,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.modules.feed.schemas import FeedItem
-from app.modules.news.models import NewsArticle
 from app.modules.connections.models import UserConnection
 from app.modules.post.models import Post, PostLike, PostSave
 from app.modules.profile.models import Profile
@@ -116,60 +115,5 @@ def _breaking_news(
     commodity_names: list[str],
     role_name: str,
 ) -> list[FeedItem]:
-    # seen_ids from Redis disabled — using empty set for now
-    # seen_key = f"seen:news:{profile_id}"
-    # seen_ids = {s.decode() if isinstance(s, bytes) else s for s in rc.smembers(seen_key)}
-    seen_ids: set[str] = set()
-
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=BREAKING_NEWS_WINDOW_H)
-    upper_commodities = [c.upper() for c in commodity_names]
-
-    articles = (
-        db.query(NewsArticle)
-        .filter(NewsArticle.severity >= BREAKING_SEVERITY_THRESHOLD)
-        .filter(NewsArticle.published_at > cutoff)
-        .filter(NewsArticle.is_archived == False)
-        .order_by(NewsArticle.severity.desc(), NewsArticle.published_at.desc())
-        .limit(MAX_BREAKING_PINS * 5)
-        .all()
-    )
-
-    items: list[FeedItem] = []
-    for a in articles:
-        aid = str(a.id)
-        if aid in seen_ids or len(items) >= MAX_BREAKING_PINS:
-            break
-        if a.commodities and upper_commodities:
-            article_upper = [c.upper() for c in a.commodities]
-            if not any(c in article_upper for c in upper_commodities):
-                continue
-
-        role_impact = None
-        if role_name == "trader":
-            role_impact = a.trader_impact
-        elif role_name == "broker":
-            role_impact = a.broker_impact
-        elif role_name == "exporter":
-            role_impact = a.exporter_impact
-
-        items.append(FeedItem(
-            item_type="news",
-            item_id=aid,
-            is_priority=True,
-            content_type_label="breaking_news",
-            data={
-                "id": aid,
-                "title": a.title,
-                "summary": a.summary,
-                "url": a.url,
-                "image_url": a.image_url,
-                "published_at": a.published_at.isoformat(),
-                "severity": a.severity,
-                "commodities": a.commodities or [],
-                "regions": a.regions or [],
-                "role_impact": role_impact,
-                "cluster_id": a.cluster_id,
-                "is_breaking": True,
-            },
-        ))
-    return items
+    # Breaking news is omitted from news_new by design.
+    return []
