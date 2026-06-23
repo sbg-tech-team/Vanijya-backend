@@ -97,17 +97,30 @@ def enrich_pending(db: Session, limit: int, enricher: GroqEnricher | None = None
     """Enrich up to `limit` pending articles, paced by the enricher's limiter."""
     enricher = enricher or GroqEnricher()
     pending = ingestion_service.get_pending_articles(db, limit)
+    total = len(pending)
     enriched = failed = 0
-    for article in pending:
+    if total:
+        log.info("news_new.enrich: starting — %d pending article(s) to enrich (limit %d)", total, limit)
+    calls_before = enricher.calls
+    for i, article in enumerate(pending, 1):
         result = enrich_article(db, article, enricher)
         if result is None:
             failed += 1
+            log.info("news_new.enrich [%d/%d] FAILED — %s", i, total, (article.title or "")[:70])
         else:
             enriched += 1
+            log.info("news_new.enrich [%d/%d] OK — %s/%s — %s",
+                     i, total, result.primary_factor, result.impact_direction, (article.title or "")[:70])
+    remaining = ingestion_service.count_pending(db)
+    groq_calls = enricher.calls - calls_before
+    if total:
+        log.info("news_new.enrich: done — %d Groq call(s), %d enriched, %d failed, %d still pending",
+                 groq_calls, enriched, failed, remaining)
     return {
         "enriched": enriched,
         "failed": failed,
-        "remaining_pending": ingestion_service.count_pending(db),
+        "groq_calls": groq_calls,
+        "remaining_pending": remaining,
     }
 
 

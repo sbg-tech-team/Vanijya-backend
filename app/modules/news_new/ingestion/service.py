@@ -94,7 +94,10 @@ def ingest_rotation(
         for k in agg:
             agg[k] += res[k]
         per_query.append({"query": spec["q"], "country": spec.get("country"), **{k: res[k] for k in agg}})
-    log.info("news_new.ingest_rotation: queries=%d %s", len(specs), agg)
+    log.info(
+        "news_new.ingest: %d new article(s) added (fetched %d, skipped %d) across %d queries",
+        agg["new"], agg["fetched"], agg["skipped"], len(specs),
+    )
     return {"provider": provider.name, "queries": len(specs), **agg, "per_query": per_query}
 
 

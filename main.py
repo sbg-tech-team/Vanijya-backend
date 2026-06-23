@@ -1,6 +1,17 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+# Ensure the news_new pipeline + scheduler emit at INFO even if a library
+# reconfigures the root logger.
+logging.getLogger("app.modules.news_new").setLevel(logging.INFO)
+logging.getLogger("app.core.scheduler").setLevel(logging.INFO)
+
 from contextlib import asynccontextmanager
 import socketio
 from fastapi import FastAPI

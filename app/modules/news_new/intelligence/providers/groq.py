@@ -48,6 +48,7 @@ class GroqEnricher:
         self.api_key = api_key or settings.GROQ_API_KEY
         self.model = model
         self.limiter = RateLimiter(per_min)
+        self.calls = 0  # total HTTP requests made to Groq (incl. retries)
 
     def enrich(self, text: str) -> dict:
         """Single LLM call. Returns parsed JSON dict (unvalidated enums)."""
@@ -68,6 +69,7 @@ class GroqEnricher:
         }
         for attempt in range(GROQ_MAX_RETRIES):
             self.limiter.wait()
+            self.calls += 1
             r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=GROQ_TIMEOUT_S)
             if r.status_code == 429:
                 retry = float(r.headers.get("retry-after", 2 ** attempt))
