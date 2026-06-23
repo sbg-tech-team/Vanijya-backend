@@ -1,11 +1,11 @@
-"""add news_new tables
+"""add news_new interaction and ranking tables
 
 Revision ID: n5o6p7q8r9s0
-Revises: m4n5o6p7q8r9
+Revises: 1373b3c3b0de
 Create Date: 2026-06-23
 
-Creates all tables for the news_new module:
-  news_raw_articles, news_enriched_articles,
+news_raw_articles + news_enriched_articles already created by 1373b3c3b0de.
+This migration adds the remaining 11 tables:
   news_interaction_events, news_views, news_likes, news_saves, news_shares,
   news_article_stats, news_raw_trending,
   user_news_taste, user_news_taste_profiles,
@@ -21,68 +21,13 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "n5o6p7q8r9s0"
-down_revision: Union[str, None] = "m4n5o6p7q8r9"
+down_revision: Union[str, None] = "1373b3c3b0de"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # ── news_raw_articles ─────────────────────────────────────────────────────
-    op.create_table(
-        "news_raw_articles",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("external_id", sa.String(128), nullable=False, unique=True),
-        sa.Column("title", sa.String(500), nullable=False),
-        sa.Column("description", sa.Text, nullable=True),
-        sa.Column("content", sa.Text, nullable=True),
-        sa.Column("article_url", sa.String(1000), nullable=False),
-        sa.Column("image_url", sa.String(1000), nullable=True),
-        sa.Column("published_at", sa.DateTime, nullable=False),
-        sa.Column("language", sa.String(20), nullable=True),
-        sa.Column("source_name", sa.String(200), nullable=True),
-        sa.Column("source_url", sa.String(500), nullable=True),
-        sa.Column("source_country", sa.String(80), nullable=True),
-        sa.Column("authors", postgresql.ARRAY(sa.String), nullable=True),
-        sa.Column("is_duplicate", sa.Boolean, nullable=False, server_default="false"),
-        sa.Column("api_summary", sa.Text, nullable=True),
-        sa.Column("raw_metadata", postgresql.JSONB, nullable=True),
-        sa.Column("intelligence_status", sa.String(20), nullable=False, server_default="pending"),
-        sa.Column("platform_arrived_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-        sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-    )
-    op.create_index("ix_news_raw_articles_status", "news_raw_articles", ["intelligence_status"])
-    op.create_index("ix_news_raw_articles_published_at", "news_raw_articles", ["published_at"])
-    op.create_index("ix_news_raw_articles_arrived_at", "news_raw_articles", ["platform_arrived_at"])
-
-    # ── news_enriched_articles ────────────────────────────────────────────────
-    op.create_table(
-        "news_enriched_articles",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "raw_article_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("news_raw_articles.id", ondelete="CASCADE"),
-            nullable=False,
-            unique=True,
-        ),
-        sa.Column("primary_factor", sa.String(40), nullable=False),
-        sa.Column("factor_scores", postgresql.JSONB, nullable=True),
-        sa.Column("geo_category", sa.String(20), nullable=False),
-        sa.Column("summary_bullets", postgresql.JSONB, nullable=True),
-        sa.Column("summary_long", sa.Text, nullable=True),
-        sa.Column("impact_direction", sa.String(20), nullable=False),
-        sa.Column("impact_score", sa.Float, nullable=False),
-        sa.Column("impact_factor", sa.String(120), nullable=True),
-        sa.Column("impact_explanation", sa.Text, nullable=True),
-        sa.Column("role_trader", sa.Float, nullable=False),
-        sa.Column("role_broker", sa.Float, nullable=False),
-        sa.Column("role_exporter", sa.Float, nullable=False),
-        sa.Column("model_version", sa.String(80), nullable=True),
-        sa.Column("generated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-    )
+    # news_raw_articles + news_enriched_articles handled by 1373b3c3b0de
 
     # ── news_interaction_events ───────────────────────────────────────────────
     op.create_table(
@@ -320,5 +265,4 @@ def downgrade() -> None:
     op.drop_table("news_likes")
     op.drop_table("news_views")
     op.drop_table("news_interaction_events")
-    op.drop_table("news_enriched_articles")
-    op.drop_table("news_raw_articles")
+    # news_enriched_articles + news_raw_articles owned by 1373b3c3b0de
