@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import (
-    DateTime, Float, ForeignKey, String, Text,
+    Boolean, DateTime, Float, ForeignKey, String, Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,7 +34,9 @@ class EnrichedArticle(Base):
     # ── Classification ───────────────────────────────────────────────────────
     primary_factor: Mapped[str] = mapped_column(String(40), nullable=False)  # one of the 10 slugs
     factor_scores: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # [{factor, score}], top 2-3
-    geo_category: Mapped[str] = mapped_column(String(20), nullable=False)     # global|domestic|regional
+    geo_category: Mapped[str] = mapped_column(String(20), nullable=False)     # global|domestic
+    # Independent axis: is this primarily a government/regulator/policy story? (any country)
+    is_government: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Summary (OUR generated bullets; provider summary stays on RawArticle) ─
     summary_bullets: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # ["...", "...", "..."]

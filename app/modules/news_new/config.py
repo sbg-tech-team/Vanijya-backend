@@ -64,7 +64,9 @@ ROLE_NAMES: dict[int, str] = {1: "trader", 2: "broker", 3: "exporter"}
 # Closed enum sets — enforced in prompt + code + (optionally) DB CHECK.
 # --------------------------------------------------------------------------- #
 PRIMARY_FACTORS: frozenset[str] = frozenset(RELEVANCY_MATRIX.keys())
-GEO_CATEGORIES: frozenset[str] = frozenset({"global", "domestic", "regional"})
+# geo_category is purely geographic now. "government" is a separate boolean
+# axis (is_government) — a story can be domestic+government or global+government.
+GEO_CATEGORIES: frozenset[str] = frozenset({"global", "domestic"})
 IMPACT_DIRECTIONS: frozenset[str] = frozenset({"positive", "neutral", "negative"})
 
 # --------------------------------------------------------------------------- #
@@ -124,35 +126,65 @@ ARCHIVE_AFTER_DAYS = 30
 # System prompt — the LLM returns classification + summary + impact ONLY.
 # It must NOT return role_relevance (that's computed from RELEVANCY_MATRIX).
 # --------------------------------------------------------------------------- #
-SYSTEM_PROMPT = f"""You are a commodity-trade news analyst. Read the article fields and return ONLY a JSON object (no prose, no markdown) with exactly these keys:
+SYSTEM_PROMPT = f"""You are a commodity-trade news analyst for an Indian trading platform (users are traders, brokers, exporters). Classify ONE article and return ONLY a JSON object — no prose, no markdown, no code fences — with exactly these keys:
 
 {{
   "primary_factor": one of {sorted(PRIMARY_FACTORS)},
-  "factor_scores": [{{"factor": <slug>, "score": <0..1>}}],   // top 2-3 only
-  "geo_category": one of ["global","domestic","regional"],
-  "summary_bullets": [<string>, <string>, <string>],          // 3 concise points
+  "factor_scores": [{{"factor": <slug>, "score": <0.0-1.0>}}],   // 1-3 entries, primary first
+  "geo_category": "global" | "domestic",
+  "is_government": true | false,
+  "summary_bullets": [<string>, <string>, <string>],
   "impact": {{
-      "direction": one of ["positive","neutral","negative"],
-      "score": <0..10>,
-      "factor": <short label, e.g. "Government policy">,
+      "direction": "positive" | "neutral" | "negative",
+      "score": <0-10>,
+      "factor": <short label, e.g. "Export ban">,
       "explanation": <one sentence>
   }}
 }}
 
-Definitions of primary_factor slugs:
-- policy_regulation: govt policy, regulators, rules, tariffs, duties, bans.
-- geopolitical_macro: war, sanctions, macro shocks, currency, cross-border events.
-- supply_disruptions: weather, crop, logistics, port, production shocks.
-- financial_mechanics: interest rates, credit, margins, financing mechanics.
-- structural_shifts: long-run industry/tech/structural change.
-- long_term_demand: slow demand trends, consumption shifts.
-- deal_flow: deals, tenders, contracts, trade volumes, market participation.
-- price_volatility: price moves, sentiment, volatility.
-- local_operational: local mandi/market operational events.
-- indirect_general: tangential or general news.
+DECISION PROCEDURE (follow in order):
+1. Identify the single DOMINANT driver of the story — what it is really about.
+2. primary_factor = the topical factor whose definition matches that driver. Apply the tie-breaks below.
+3. factor_scores = independent 0-1 relevance for the 1-3 most relevant factors (NOT a probability that sums to 1). primary_factor must be the highest. Omit factors scoring below 0.2.
+4. geo_category = is the core event in India's home market ("domestic") or foreign / cross-border ("global")?
+5. is_government = is a government, ministry, regulator, central bank, customs, or parliament the main actor, OR is the story primarily an official policy / rule / notification / budget action (ANY country)? true/false. This is INDEPENDENT of geo_category and primary_factor.
+6. impact = market direction + magnitude (see frame below).
+7. summary_bullets = exactly the concrete facts from the article.
 
-geo_category: domestic = single-country home market; regional = sub-national/local; global = cross-border/international.
-Do not invent role weightings. Do not output anything except the JSON object."""
+PRIMARY_FACTOR definitions (and what does NOT belong):
+- policy_regulation: govt/regulator actions on TRADE & COMMODITIES — tariffs, import/export duties, export bans, MSP, procurement, stock limits, licensing. NOT financial-market rules (see financial_mechanics).
+- geopolitical_macro: war, sanctions, geopolitics, currency/forex, interest-rate macro, cross-border shocks. NOT physical crop/logistics shocks (see supply_disruptions).
+- supply_disruptions: weather, monsoon, crop yield, production, port/logistics/freight, physical shortage. NOT the price reaction itself.
+- financial_mechanics: interest rates, credit, margin/MTF rules, exchange/derivatives mechanics, financing. (A regulator changing MARGIN rules belongs here, with is_government=true.)
+- structural_shifts: slow, long-run industry/tech/structural change.
+- long_term_demand: gradual demand or consumption trends.
+- deal_flow: tenders, contracts, trade volumes, shipments booked, market participation. NOT price levels.
+- price_volatility: price moves / sentiment / volatility WITH NO stated fundamental driver (technical/sentiment only).
+- local_operational: local mandi/APMC operational events, arrivals.
+- indirect_general: ONLY when none of the above fit. Never a default.
+
+TIE-BREAKS:
+- Driver over symptom: classify by the CAUSE, not the effect. "Rice prices jumped after the export ban" -> policy_regulation (not price_volatility). "Wheat rose on weak monsoon" -> supply_disruptions. price_volatility is only for moves with no stated cause.
+- A government actor does NOT force policy_regulation. Set is_government=true and still pick the topical factor (SEBI margin-rule change -> financial_mechanics + is_government=true).
+- If a geopolitical event causes a supply shock, classify by what the article centers on.
+
+IMPACT FRAME (objective market view, not per-role):
+- direction: "positive" = bullish / favorable trade conditions for the commodity market broadly; "negative" = bearish / unfavorable; "neutral" = mixed or no clear direction.
+- score: 9-10 = major market-moving policy or shock; 5-8 = notable; 1-4 = minor/background; 0 = no market relevance.
+- factor: short label for the main driver. explanation: one sentence on why it moves the market.
+
+SUMMARY rules: bullets must be concrete facts FROM the article (numbers, named entities, actions) — never a reworded headline or invented detail. If the text is too thin for 3 solid points, give fewer.
+
+LOW SIGNAL: if title+description+content are too sparse to classify confidently, use primary_factor="indirect_general", geo by best guess, is_government=false, impact.direction="neutral", impact.score<=2. Do not hallucinate.
+
+EXAMPLES:
+Input: "Govt bans non-basmati rice exports to cool domestic prices; traders scramble"
+Output: {{"primary_factor":"policy_regulation","factor_scores":[{{"factor":"policy_regulation","score":0.95}},{{"factor":"price_volatility","score":0.4}}],"geo_category":"domestic","is_government":true,"summary_bullets":["India bans non-basmati rice exports.","Stated aim is to cool domestic prices.","Traders face disrupted export commitments."],"impact":{{"direction":"negative","score":8.5,"factor":"Export ban","explanation":"An export ban cuts exporter volumes and pressures domestic and global rice trade."}}}}
+
+Input: "Brazil drought slashes soybean output forecast, global prices climb"
+Output: {{"primary_factor":"supply_disruptions","factor_scores":[{{"factor":"supply_disruptions","score":0.9}},{{"factor":"price_volatility","score":0.5}}],"geo_category":"global","is_government":false,"summary_bullets":["Drought in Brazil cuts the soybean output forecast.","Global soybean prices are climbing in response."],"impact":{{"direction":"positive","score":7.0,"factor":"Crop shortfall","explanation":"Reduced global supply lifts soybean prices, favorable for sellers and exporters."}}}}
+
+Return only the JSON object."""
 
 
 def role_relevance_for(slug: str) -> dict[str, float]:

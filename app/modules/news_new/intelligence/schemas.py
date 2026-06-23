@@ -34,6 +34,7 @@ class LLMEnrichment(BaseModel):
     primary_factor: str
     factor_scores: list[FactorScore] = []
     geo_category: str
+    is_government: bool = False
     summary_bullets: list[str] = []
     impact: ImpactPayload
 
@@ -60,6 +61,7 @@ class EnrichedArticleOut(BaseModel):
     primary_factor: str
     factor_scores: list | None = None
     geo_category: str
+    is_government: bool
     summary_bullets: list | None = None
     impact_direction: str
     impact_score: float

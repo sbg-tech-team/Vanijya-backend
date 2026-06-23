@@ -77,6 +77,7 @@ def enrich_article(
         primary_factor=out.primary_factor,
         factor_scores=[fs.model_dump() for fs in out.factor_scores],
         geo_category=out.geo_category,
+        is_government=out.is_government,
         summary_bullets=out.summary_bullets,
         impact_direction=out.impact.direction,
         impact_score=out.impact.score,
