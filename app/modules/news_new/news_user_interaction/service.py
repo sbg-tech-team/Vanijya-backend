@@ -21,7 +21,7 @@ from app.modules.news_new.news_user_interaction.models import (
     NewsShare,
     NewsView,
 )
-from app.modules.news_new.news_user_interaction.schemas import NewsInteractionEventItem
+from app.modules.news_new.news_user_interaction.schemas import NewsInteractionEventItem, NewsSendRequest
 from app.modules.news_new.news_user_interaction import taste_service
 from app.modules.news_new.ingestion.models import RawArticle
 
@@ -237,3 +237,87 @@ def _adjust_stats(db: Session, article_id: UUID, field: str, delta: int) -> None
     setattr(stats, field, max(0, current + delta))
     stats.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.add(stats)
+
+
+# ── In-app share ──────────────────────────────────────────────────────────────
+
+
+class ArticleNotFoundError(Exception):
+    pass
+
+
+def send_article(
+    db: Session,
+    article_id: UUID,
+    user_id: UUID,
+    profile_id: int,
+    payload: NewsSendRequest,
+) -> dict:
+    """
+    Full in-app share of a news article:
+      1. Validate article exists.
+      2. Deliver as a 'news_article' chat message to each selected DM / group.
+         Silently skips recipients that fail permission checks (partial delivery).
+      3. Increment share_count once regardless of recipient count.
+      4. Return share_count + raw delivery lists so the router can emit WebSocket events.
+    """
+    from app.modules.chat.data.repository import ChatRepository
+    from app.modules.chat.domain.entities import ConvStatus
+
+    article = db.execute(
+        select(RawArticle).where(RawArticle.id == article_id)
+    ).scalar_one_or_none()
+    if article is None:
+        raise ArticleNotFoundError(f"Article {article_id} not found.")
+
+    chat_repo = ChatRepository(db)
+
+    dm_deliveries: list[tuple] = []
+    for conv_id in payload.dm_conversation_ids:
+        guard = chat_repo.get_conv_send_info(conv_id, user_id)
+        if guard and guard.status == ConvStatus.ACTIVE:
+            msg = chat_repo.save_message(
+                context_type="dm",
+                context_id=conv_id,
+                sender_id=user_id,
+                message_type="news_article",
+                article_id=article_id,
+                body=payload.caption,
+            )
+            dm_deliveries.append((guard.receiver_id, msg))
+
+    group_deliveries: list[tuple] = []
+    for group_id in payload.group_ids:
+        chat_perm = chat_repo.get_group_chat_perm(group_id)
+        member_role = chat_repo.get_group_member_role(group_id, user_id)
+        is_frozen = chat_repo.is_group_member_frozen(group_id, user_id)
+        if (chat_perm and member_role and not is_frozen
+                and (chat_perm == "all_members" or member_role == "admin")):
+            msg = chat_repo.save_message(
+                context_type="group",
+                context_id=group_id,
+                sender_id=user_id,
+                message_type="news_article",
+                article_id=article_id,
+                body=payload.caption,
+            )
+            group_deliveries.append((group_id, msg))
+
+    db.add(NewsShare(profile_id=profile_id, article_id=article_id))
+    _adjust_stats(db, article_id, "share_count", 1)
+    db.commit()
+
+    try:
+        _taste_from_article(db, profile_id, article_id, "share_tap")
+        db.commit()
+    except Exception:
+        pass
+
+    stats = get_article_stats(db, article_id)
+    share_count = stats.share_count if stats else 0
+
+    return {
+        "share_count": share_count,
+        "dm_deliveries": dm_deliveries,
+        "group_deliveries": group_deliveries,
+    }

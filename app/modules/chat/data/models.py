@@ -76,6 +76,9 @@ class Message(Base):
     post_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
     )
+    article_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("news_raw_articles.id", ondelete="SET NULL"), nullable=True
+    )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

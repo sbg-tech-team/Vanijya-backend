@@ -196,6 +196,23 @@ def sent_requests(
     return ok({"total": len(requests), "requests": requests}, "Sent requests fetched")
 
 
+# ── Share recipients ──────────────────────────────────────────────────────────
+
+@connections_router.get("/share-recipients")
+def get_share_recipients(
+    me: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns DM connections and groups the current user can forward content to.
+    Used by both post and news share sheets — call once, reuse the result for
+    either share flow.
+    """
+    from app.modules.chat.data.repository import ChatRepository
+    result = ChatRepository(db).get_share_recipients(me)
+    return ok(result, "Share recipients fetched")
+
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 @connections_router.get("/search")

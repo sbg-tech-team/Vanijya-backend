@@ -1,7 +1,8 @@
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.modules.news_new.news_user_interaction.constants import VALID_CLIENT_EVENT_TYPES
 
@@ -61,3 +62,20 @@ class NewsSaveOut(BaseModel):
 class NewsShareOut(BaseModel):
     article_id: UUID
     platform: str | None = None
+
+
+class NewsSendRequest(BaseModel):
+    dm_conversation_ids: list[UUID] = Field(default_factory=list)
+    group_ids: list[UUID] = Field(default_factory=list)
+    caption: Optional[str] = Field(None, max_length=4000)
+
+    @model_validator(mode="after")
+    def at_least_one_recipient(self) -> "NewsSendRequest":
+        if not self.dm_conversation_ids and not self.group_ids:
+            raise ValueError("Provide at least one DM conversation or group to share to.")
+        return self
+
+
+class NewsSendResponse(BaseModel):
+    share_count: int
+    delivered_to: int

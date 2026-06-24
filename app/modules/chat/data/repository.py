@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session, aliased
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.entities import (
     ChatListItem, ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
-    DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity, PostSnap, UserSnap,
-    ShareDMItem, ShareGroupItem, ShareRecipientsResult,
+    DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity, NewsArticleSnap,
+    PostSnap, UserSnap, ShareDMItem, ShareGroupItem, ShareRecipientsResult,
 )
 from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.models import Post
@@ -191,6 +191,29 @@ def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
     )
 
 
+def _news_article_snap(db: Session, article_id: UUID) -> Optional[NewsArticleSnap]:
+    from app.modules.news_new.ingestion.models import RawArticle
+    from app.modules.news_new.intelligence.models import EnrichedArticle
+    article = db.query(RawArticle).filter(RawArticle.id == article_id).first()
+    if article is None:
+        return None
+    enriched = db.query(EnrichedArticle).filter(EnrichedArticle.raw_article_id == article_id).first()
+    first_bullet: Optional[str] = None
+    if enriched and enriched.summary_bullets:
+        bullets = enriched.summary_bullets
+        first_bullet = bullets[0] if isinstance(bullets, list) and bullets else None
+    return NewsArticleSnap(
+        article_id=article.id,
+        title=article.title,
+        image_url=article.image_url,
+        source_name=article.source_name,
+        primary_factor=enriched.primary_factor if enriched else None,
+        impact_direction=enriched.impact_direction if enriched else None,
+        impact_score=enriched.impact_score if enriched else None,
+        first_bullet=first_bullet,
+    )
+
+
 def _build_message(
     db: Session,
     msg: Message,
@@ -225,6 +248,7 @@ def _build_message(
             _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
         ),
         post=_post_snap(db, msg.post_id) if msg.post_id else None,
+        news_article=_news_article_snap(db, msg.article_id) if msg.article_id else None,
         delivered=delivered,
         read=read,
     )
@@ -275,6 +299,7 @@ class ChatRepository:
         deal_id: Optional[UUID] = None,
         personal_deal_id: Optional[UUID] = None,
         post_id: Optional[int] = None,
+        article_id: Optional[UUID] = None,
     ) -> MessageEntity:
         now = datetime.now(timezone.utc)
         msg = Message(
@@ -292,6 +317,7 @@ class ChatRepository:
             deal_id=deal_id,
             personal_deal_id=personal_deal_id,
             post_id=post_id,
+            article_id=article_id,
             is_deleted=False,
             sent_at=now,
         )

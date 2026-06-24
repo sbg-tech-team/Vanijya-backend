@@ -103,8 +103,20 @@ class PostSnap:
     category_id:int
     category_name:str
     author_name:str
-    #need to add author_avatar_url too 
-    # and a follow button if needed     
+    #need to add author_avatar_url too
+    # and a follow button if needed
+
+# For sharing a news article in dm or group chat
+@dataclass
+class NewsArticleSnap:
+    article_id: UUID
+    title: str
+    image_url: Optional[str]
+    source_name: Optional[str]
+    primary_factor: Optional[str]
+    impact_direction: Optional[str]
+    impact_score: Optional[float]
+    first_bullet: Optional[str]   # first summary bullet, for chat card preview
 
 
 @dataclass
@@ -141,8 +153,9 @@ class MessageEntity:
     reply_to_id: Optional[UUID]
     is_deleted: bool
     sent_at: datetime
-    deal:Optional[DealSnap]
-    post:Optional[PostSnap]
+    deal: Optional[DealSnap]
+    post: Optional[PostSnap]
+    news_article: Optional[NewsArticleSnap]
     # Receipt state for the sender's ticks (DM only; None for group / not-applicable).
     # delivered = peer.last_delivered_at >= sent_at ; read = peer.last_read_at >= sent_at
     delivered: Optional[bool] = None
