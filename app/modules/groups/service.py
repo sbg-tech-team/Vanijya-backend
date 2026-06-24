@@ -343,8 +343,11 @@ def list_groups(
     if commodity:
         query = query.filter(Group.commodity.contains([commodity]))
 
-    if accessibility:
-        query = query.filter(Group.accessibility == accessibility)
+    # Hard-force public-only discovery for now: private groups require admin
+    # approval and invite_only groups require a link, so neither should surface
+    # in listings until the frontend supports those flows. The `accessibility`
+    # param is intentionally ignored here.
+    query = query.filter(Group.accessibility == "public")
 
     if name_q:
         # search group name AND region_market so bare city names (e.g. "nagpur") hit both
@@ -872,7 +875,9 @@ def get_group_suggestions(
         .all()
     }
 
-    # ── 3. HNSW ANN: fetch top candidates, excluding private groups ─────────
+    # ── 3. HNSW ANN: fetch top candidates, public groups only ───────────────
+    # Only public groups are discoverable for now — private needs admin
+    # approval and invite_only needs a link, so neither belongs in suggestions.
     # Overfetch (top_k * 4) to allow Python-side member filtering.
     candidate_rows = db.execute(
         text("""
@@ -881,7 +886,7 @@ def get_group_suggestions(
             FROM group_embeddings ge
             JOIN groups g ON g.id = ge.group_id
             WHERE ge.embedding IS NOT NULL
-              AND g.accessibility != 'private'
+              AND g.accessibility = 'public'
             ORDER BY ge.embedding <=> CAST(:vec AS vector)
             LIMIT :limit
         """),
