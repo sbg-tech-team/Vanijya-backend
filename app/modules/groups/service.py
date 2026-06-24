@@ -1206,6 +1206,7 @@ def _insert_deal_chat_card(db: Session, deal: GroupDeal) -> None:
             "title": deal.title,
             "commodity_id": deal.commodity_id,
         },
+        sent_at=datetime.now(timezone.utc),
     )
     db.add(msg)
 
