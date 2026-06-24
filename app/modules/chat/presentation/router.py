@@ -26,6 +26,8 @@ from app.modules.chat.presentation.dependencies import (
 )
 from app.modules.chat.presentation.schema import (
     CreatePersonalDealRequest,
+    OpenConversationRequest,
+    OpenConversationResponse,
     SendGroupMessageRequest,
     SendMessageRequest,
 )
@@ -36,6 +38,22 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 # ── DM Conversations ──────────────────────────────────────────────────────────
+
+@router.post("/conversations", response_model=OpenConversationResponse, status_code=200)
+def open_conversation(
+    body: OpenConversationRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Get or create a direct DM conversation with target_user_id.
+    Idempotent — safe to call multiple times, returns the same conversation.
+    created=true means a new conversation was just created.
+    """
+    repo = ChatRepository(db)
+    result = repo.get_or_create_dm(user_id, body.participant_id)
+    return {"id": result["conversation_id"], "status": result["status"], "created": result["created"]}
+
 
 @router.get("/all")
 def list_all_chats(

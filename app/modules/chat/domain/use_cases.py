@@ -63,8 +63,8 @@ class SendMessageUseCase:
         guard = self.repo.get_conv_send_info(conv_id, sender_id)
         if not guard:
             raise HTTPException(status_code=404, detail="Conversation not found.")
-        if guard.status == ConvStatus.BLOCKED:
-            raise HTTPException(status_code=403, detail="Blocked conversation.")
+        # if guard.status == ConvStatus.BLOCKED:
+        #     raise HTTPException(status_code=403, detail="Blocked conversation.")
         if post_id is not None and not self.repo.post_exists(post_id):
             raise HTTPException(status_code=404, detail="Post not found.")
 
@@ -152,8 +152,8 @@ class CreatePersonalDealUseCase:
         conv = self.repo.get_conversation(conv_id, sender_id)
         if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found.")
-        if conv.status != ConvStatus.ACTIVE:
-            raise HTTPException(status_code=403, detail="Can only create deals in an active conversation.")
+        # if conv.status != ConvStatus.ACTIVE:
+        #     raise HTTPException(status_code=403, detail="Can only create deals in an active conversation.")
         return self.repo.create_personal_deal(conv_id=conv_id, sender_id=sender_id, **deal_fields)
 
 

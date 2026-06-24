@@ -515,29 +515,117 @@ class ChatRepository:
 
     # ── Share recipients ───────────────────────────────────────────────────────
 
+    # def get_share_recipients(self, user_id: UUID) -> ShareRecipientsResult:
+    #     """
+    #     Two queries — no N+1.
+    #       dm_connections : active DMs sorted by most recent activity
+    #       groups         : groups user belongs to (unfrozen), sorted by name
+    #     """
+    #     cm_me = aliased(ConversationMember)
+    #     cm_other = aliased(ConversationMember)
+    #
+    #     dm_rows = (
+    #         self.db.query(
+    #             Conversation.id.label("conv_id"),
+    #             Conversation.updated_at.label("last_message_at"),
+    #             cm_other.user_id.label("other_user_id"),
+    #             Profile.id.label("profile_id"),
+    #             Profile.name,
+    #             Profile.avatar_url,
+    #         )
+    #         .join(cm_me,   and_(cm_me.conversation_id   == Conversation.id, cm_me.user_id   == user_id))
+    #         .join(cm_other, and_(cm_other.conversation_id == Conversation.id, cm_other.user_id != user_id))
+    #         .join(Profile, Profile.users_id == cm_other.user_id)
+    #         .filter(Conversation.status == ConvStatus.ACTIVE)
+    #         .order_by(Conversation.updated_at.desc())
+    #         .all()
+    #     )
+    #
+    #     group_rows = (
+    #         self.db.query(
+    #             Group.id.label("group_id"),
+    #             Group.name,
+    #             Group.image_url,
+    #             Group.member_count,
+    #             Group.chat_perm,
+    #             GroupMember.role,
+    #         )
+    #         .join(GroupMember, and_(
+    #             GroupMember.group_id == Group.id,
+    #             GroupMember.user_id  == user_id,
+    #             GroupMember.is_frozen == False,
+    #         ))
+    #         .order_by(Group.name)
+    #         .all()
+    #     )
+    #
+    #     return ShareRecipientsResult(
+    #         dm_connections=[
+    #             ShareDMItem(
+    #                 conversation_id=row.conv_id,
+    #                 profile_id=row.profile_id,
+    #                 user_id=row.other_user_id,
+    #                 name=row.name,
+    #                 avatar_url=row.avatar_url,
+    #                 last_message_at=row.last_message_at,
+    #             )
+    #             for row in dm_rows
+    #         ],
+    #         groups=[
+    #             ShareGroupItem(
+    #                 group_id=row.group_id,
+    #                 name=row.name,
+    #                 avatar_url=row.image_url,
+    #                 member_count=row.member_count,
+    #                 can_send=row.chat_perm == "all_members" or row.role == "admin",
+    #             )
+    #             for row in group_rows
+    #         ],
+    #     )
+
     def get_share_recipients(self, user_id: UUID) -> ShareRecipientsResult:
         """
-        Two queries — no N+1.
-          dm_connections : active DMs sorted by most recent activity
-          groups         : groups user belongs to (unfrozen), sorted by name
+        DM source: everyone the user follows, left-joined with existing DM conversations.
+          - conversation_id is None if no DM exists yet (frontend calls POST /chat/conversations first).
+          - Sorted: most recently active DM first, then alphabetically by name.
+        Groups: unfrozen memberships, sorted by name.
         """
-        cm_me = aliased(ConversationMember)
-        cm_other = aliased(ConversationMember)
+        from app.modules.connections.models import UserConnection
+
+        _cm_me = aliased(ConversationMember)
+        _cm_other = aliased(ConversationMember)
+
+        my_dm_convs = (
+            self.db.query(
+                _cm_me.conversation_id.label("conv_id"),
+                _cm_other.user_id.label("other_user_id"),
+                Conversation.updated_at,
+            )
+            .join(Conversation, and_(
+                Conversation.id == _cm_me.conversation_id,
+                Conversation.type == "dm",
+            ))
+            .join(_cm_other, and_(
+                _cm_other.conversation_id == _cm_me.conversation_id,
+                _cm_other.user_id != user_id,
+            ))
+            .filter(_cm_me.user_id == user_id)
+            .subquery()
+        )
 
         dm_rows = (
             self.db.query(
-                Conversation.id.label("conv_id"),
-                Conversation.updated_at.label("last_message_at"),
-                cm_other.user_id.label("other_user_id"),
+                UserConnection.following_id.label("other_user_id"),
                 Profile.id.label("profile_id"),
                 Profile.name,
                 Profile.avatar_url,
+                my_dm_convs.c.conv_id.label("conv_id"),
+                my_dm_convs.c.updated_at.label("last_message_at"),
             )
-            .join(cm_me,   and_(cm_me.conversation_id   == Conversation.id, cm_me.user_id   == user_id))
-            .join(cm_other, and_(cm_other.conversation_id == Conversation.id, cm_other.user_id != user_id))
-            .join(Profile, Profile.users_id == cm_other.user_id)
-            .filter(Conversation.status == ConvStatus.ACTIVE)
-            .order_by(Conversation.updated_at.desc())
+            .join(Profile, Profile.users_id == UserConnection.following_id)
+            .outerjoin(my_dm_convs, my_dm_convs.c.other_user_id == UserConnection.following_id)
+            .filter(UserConnection.follower_id == user_id)
+            .order_by(my_dm_convs.c.updated_at.desc(), Profile.name.asc())
             .all()
         )
 
@@ -582,6 +670,37 @@ class ChatRepository:
                 for row in group_rows
             ],
         )
+
+    def get_or_create_dm(self, user_id: UUID, target_user_id: UUID) -> dict:
+        """Get existing DM between user and target, or create a new ACTIVE one. Idempotent."""
+        from uuid import uuid4 as _uuid4
+        from app.modules.chat.domain.entities import ConvStatus
+
+        cm_a = aliased(ConversationMember)
+        cm_b = aliased(ConversationMember)
+        conv = (
+            self.db.query(Conversation)
+            .join(cm_a, and_(cm_a.conversation_id == Conversation.id, cm_a.user_id == user_id))
+            .join(cm_b, and_(cm_b.conversation_id == Conversation.id, cm_b.user_id == target_user_id))
+            .filter(Conversation.type == "dm")
+            .first()
+        )
+
+        now = datetime.now(timezone.utc)
+        created = False
+        if conv is None:
+            conv = Conversation(
+                id=_uuid4(), type="dm", status=ConvStatus.ACTIVE,
+                initiator_id=user_id, created_at=now, updated_at=now,
+            )
+            self.db.add(conv)
+            self.db.flush()
+            self.db.add(ConversationMember(conversation_id=conv.id, user_id=user_id, joined_at=now))
+            self.db.add(ConversationMember(conversation_id=conv.id, user_id=target_user_id, joined_at=now))
+            self.db.commit()
+            created = True
+
+        return {"conversation_id": conv.id, "status": conv.status, "created": created}
 
     # ── Group conversations ─────────────────────────────────────────────────────
 

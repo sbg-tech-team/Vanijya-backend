@@ -792,7 +792,7 @@ def send_post(
     dm_deliveries: list[tuple] = []
     for conv_id in payload.dm_conversation_ids:
         guard = chat_repo.get_conv_send_info(conv_id, user_id)
-        if guard and guard.status == ConvStatus.ACTIVE:
+        if guard:  # and guard.status == ConvStatus.ACTIVE:
             msg = chat_repo.save_message(
                 context_type="dm",
                 context_id=conv_id,

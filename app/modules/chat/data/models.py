@@ -14,7 +14,7 @@ class Conversation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type: Mapped[str] = mapped_column(String(10), nullable=False, default="dm")
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="requested")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # was "requested" — message request gate bypassed
     initiator_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

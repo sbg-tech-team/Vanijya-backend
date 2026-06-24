@@ -175,7 +175,7 @@ class ConvSendGuard:
 @dataclass
 class ShareDMItem:
     """One active DM connection the current user can forward a post to."""
-    conversation_id: UUID
+    conversation_id: Optional[UUID]  # None if no DM exists yet — frontend calls POST /chat/conversations first
     profile_id: int
     user_id: UUID
     name: str

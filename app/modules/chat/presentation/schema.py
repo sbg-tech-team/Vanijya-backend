@@ -38,6 +38,16 @@ class SendGroupMessageRequest(BaseModel):
 
 
 
+class OpenConversationRequest(BaseModel):
+    participant_id: UUID
+
+
+class OpenConversationResponse(BaseModel):
+    id: UUID
+    status: str
+    created: bool
+
+
 class CreatePersonalDealRequest(BaseModel):
     commodity_id: int
     title: str = Field(..., min_length=1, max_length=200)
