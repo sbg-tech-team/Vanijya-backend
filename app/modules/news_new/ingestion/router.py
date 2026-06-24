@@ -8,6 +8,7 @@ from app.modules.news_new.config import (
     ENRICH_BATCH_LIMIT,
     GNEWS_DEFAULT_COUNTRY,
 )
+from app.modules.news_new.ingestion.providers.base import ProviderQuotaError
 from app.modules.news_new.ingestion.providers.gnews import GNewsProvider
 from app.modules.news_new.ingestion.service import (
     get_stats,
@@ -32,9 +33,12 @@ def trigger_ingest(
     without → the rotating batch of platform queries (same as the scheduled run).
     """
     if query:
-        result = ingest_from_provider(db, GNewsProvider(), query, country=country or None)
+        try:
+            result = ingest_from_provider(db, GNewsProvider(), query, country=country or None)
+        except ProviderQuotaError as e:
+            return ok({"quota_exhausted": True, "detail": str(e)}, "GNews daily budget exhausted — try after 00:00 UTC")
     else:
-        result = ingest_rotation(db, GNewsProvider())
+        result = ingest_rotation(db, GNewsProvider())  # handles quota gracefully
     return ok(result, "Ingestion complete")
 
 

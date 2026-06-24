@@ -19,6 +19,7 @@ class NewsCard(BaseModel):
     summary_bullets: list[str] | None = None
     primary_factor: str | None = None
     geo_category: str | None = None
+    is_government: bool = False
     impact_direction: str | None = None
     impact_score: float | None = None
     like_count: int = 0

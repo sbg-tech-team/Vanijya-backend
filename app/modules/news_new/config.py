@@ -91,6 +91,10 @@ GNEWS_PARAMS: dict = {
     "sortby": "publishedAt",    # freshness
 }
 GNEWS_TIMEOUT_S = 30
+# GNews free tier throttles bursts (~1 req/sec). Space rotation queries out and
+# retry a transient 429 before giving up. (403 = daily cap → give up for the run.)
+GNEWS_INTER_QUERY_DELAY_S = 5.0
+GNEWS_FETCH_RETRIES = 3
 
 # How many queries from the rotation pool to run per scheduled ingest.
 # QUOTA: free tier = 100 requests/day. At a 30-min cadence (48 runs/day),

@@ -5,6 +5,7 @@ NO repository layer: DB queries live here directly. Dedup is on `external_id`
 only (title-similarity near-dup detection is deferred).
 """
 import logging
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.news_new.config import (
     GNEWS_DEFAULT_COUNTRY,
+    GNEWS_INTER_QUERY_DELAY_S,
     GNEWS_QUERIES_PER_RUN,
     STATUS_ENRICHED,
     STATUS_FAILED,
@@ -19,7 +21,7 @@ from app.modules.news_new.config import (
 )
 from app.modules.news_new.ingestion.models import RawArticle
 from app.modules.news_new.ingestion.news_queries import QUERIES
-from app.modules.news_new.ingestion.providers.base import BaseNewsProvider
+from app.modules.news_new.ingestion.providers.base import BaseNewsProvider, ProviderQuotaError
 
 log = logging.getLogger(__name__)
 
@@ -89,16 +91,37 @@ def ingest_rotation(
     specs = select_queries_for_run(per_run)
     agg = {"fetched": 0, "new": 0, "skipped": 0}
     per_query: list[dict] = []
-    for spec in specs:
-        res = ingest_from_provider(db, provider, spec["q"], country=spec.get("country"))
+    quota_exhausted = False
+    for i, spec in enumerate(specs):
+        if i > 0 and GNEWS_INTER_QUERY_DELAY_S > 0:
+            time.sleep(GNEWS_INTER_QUERY_DELAY_S)  # space requests to avoid burst 429
+        try:
+            res = ingest_from_provider(db, provider, spec["q"], country=spec.get("country"))
+        except ProviderQuotaError as e:
+            # Daily cap hit — pointless to try the rest of the rotation this run.
+            # The scheduler still fires next run; fetching resumes after reset.
+            log.warning("news_new.ingest: provider quota exhausted, skipping remaining queries this run (%s)", e)
+            quota_exhausted = True
+            break
+        except Exception as e:
+            # One bad query shouldn't kill the rest of the rotation.
+            log.warning("news_new.ingest: query failed, skipping (%r): %s", spec["q"][:50], e)
+            continue
         for k in agg:
             agg[k] += res[k]
         per_query.append({"query": spec["q"], "country": spec.get("country"), **{k: res[k] for k in agg}})
     log.info(
-        "news_new.ingest: %d new article(s) added (fetched %d, skipped %d) across %d queries",
-        agg["new"], agg["fetched"], agg["skipped"], len(specs),
+        "news_new.ingest: %d new article(s) added (fetched %d, skipped %d) across %d/%d queries%s",
+        agg["new"], agg["fetched"], agg["skipped"], len(per_query), len(specs),
+        " [quota exhausted]" if quota_exhausted else "",
     )
-    return {"provider": provider.name, "queries": len(specs), **agg, "per_query": per_query}
+    return {
+        "provider": provider.name,
+        "queries": len(per_query),
+        "quota_exhausted": quota_exhausted,
+        **agg,
+        "per_query": per_query,
+    }
 
 
 def _exists(db: Session, external_id: str) -> bool:

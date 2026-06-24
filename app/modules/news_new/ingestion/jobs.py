@@ -52,14 +52,26 @@ def run_news_pipeline() -> dict:
     then enrich the freshly-pending rows. Safe to call from the scheduler.
     """
     db = SessionLocal()
+    ingest: dict = {}
+    enrich: dict = {}
     try:
-        ingest = ingest_rotation(db, GNewsProvider())
-        enrich = enrich_pending(db, ENRICH_BATCH_LIMIT)
+        # Ingest and enrich are independent: a fetch problem (e.g. GNews daily
+        # cap) must NOT stop us from enriching the existing pending backlog.
+        try:
+            ingest = ingest_rotation(db, GNewsProvider())
+        except Exception:
+            db.rollback()
+            log.exception("news_new pipeline: ingest step failed (continuing to enrich)")
+            ingest = {"error": "ingest_failed"}
+
+        try:
+            enrich = enrich_pending(db, ENRICH_BATCH_LIMIT)
+        except Exception:
+            db.rollback()
+            log.exception("news_new pipeline: enrich step failed")
+            enrich = {"error": "enrich_failed"}
+
         log.info("news_new pipeline: ingest=%s enrich=%s", ingest, enrich)
         return {"ingest": ingest, "enrich": enrich}
-    except Exception:
-        db.rollback()
-        log.exception("news_new pipeline run failed")
-        raise
     finally:
         db.close()

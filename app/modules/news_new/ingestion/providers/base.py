@@ -1,6 +1,14 @@
 from abc import ABC, abstractmethod
 
 
+class ProviderError(RuntimeError):
+    """Base for provider fetch errors."""
+
+
+class ProviderQuotaError(ProviderError):
+    """Daily request budget / rate cap exhausted (e.g. GNews 429/403). Stop fetching THIS run."""
+
+
 class BaseNewsProvider(ABC):
     """
     A news source provider. Each provider knows how to fetch from its API and

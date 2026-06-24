@@ -72,17 +72,17 @@ def get_domestic_feed(
     return ok(result.model_dump(mode="json"), "Domestic feed fetched")
 
 
-@router.get("/feed/regional")
-def get_regional_feed(
+@router.get("/feed/government")
+def get_government_feed(
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor: str | None = Query(None),
     profile_id: int = Depends(get_current_profile_id),
     db: Session = Depends(get_db),
 ):
-    """Articles classified as regional geo_category."""
+    """Articles flagged is_government=True (government/regulator/policy, any geo)."""
     role_id = _get_role_id(profile_id, db)
-    result = feed_service.get_filtered_feed(db, profile_id, "regional", role_id, limit, cursor)
-    return ok(result.model_dump(mode="json"), "Regional feed fetched")
+    result = feed_service.get_filtered_feed(db, profile_id, "government", role_id, limit, cursor)
+    return ok(result.model_dump(mode="json"), "Government feed fetched")
 
 
 @router.get("/articles/{article_id}")

@@ -65,6 +65,7 @@ def assemble_card(
         summary_bullets=enriched.summary_bullets if enriched else None,
         primary_factor=enriched.primary_factor if enriched else None,
         geo_category=enriched.geo_category if enriched else None,
+        is_government=enriched.is_government if enriched else False,
         impact_direction=enriched.impact_direction if enriched else None,
         impact_score=enriched.impact_score if enriched else None,
         like_count=stats.like_count if stats else 0,
@@ -94,6 +95,7 @@ def assemble_card_detail(
         summary_bullets=enriched.summary_bullets if enriched else None,
         primary_factor=enriched.primary_factor if enriched else None,
         geo_category=enriched.geo_category if enriched else None,
+        is_government=enriched.is_government if enriched else False,
         impact_direction=enriched.impact_direction if enriched else None,
         impact_score=enriched.impact_score if enriched else None,
         impact_explanation=enriched.impact_explanation if enriched else None,
@@ -208,13 +210,23 @@ def get_filtered_feed(
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
 ) -> FeedPage:
-    """Filter by geo_category (global | domestic | regional) via EnrichedArticle."""
+    """
+    Filter via EnrichedArticle:
+      - "global" / "domestic" -> geo_category match
+      - "government"          -> is_government = True (independent axis, any geo)
+    """
     limit = min(limit, MAX_PAGE_SIZE)
 
-    enriched_ids_q = (
-        select(EnrichedArticle.raw_article_id)
-        .where(EnrichedArticle.geo_category == feed_filter)
-    )
+    if feed_filter == "government":
+        enriched_ids_q = (
+            select(EnrichedArticle.raw_article_id)
+            .where(EnrichedArticle.is_government == True)  # noqa: E712
+        )
+    else:
+        enriched_ids_q = (
+            select(EnrichedArticle.raw_article_id)
+            .where(EnrichedArticle.geo_category == feed_filter)
+        )
     filtered_ids = [row[0] for row in db.execute(enriched_ids_q).all()]
 
     if not filtered_ids:
