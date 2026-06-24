@@ -15,6 +15,7 @@ from app.modules.chat.presentation.dependencies import (
     get_chat_repo,
     get_conversations_uc,
     get_delete_message_uc,
+    get_group_conversations_uc,
     get_group_message_uc,
     get_group_messages_uc,
     get_mark_read_uc,
@@ -53,6 +54,18 @@ def list_all_chats(
         if item.dm is not None:
             item.dm.participant.is_online = is_online(item.dm.participant.user_id)
     return items
+
+
+@router.get("/groups")
+def list_group_chats(
+    page: int = 1,
+    per_page: int = 20,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_group_conversations_uc),
+):
+    """Groups-only chat list — every group the caller is a member of, sorted by
+    last activity (newest on top). The group-chat counterpart to /conversations."""
+    return uc.execute(user_id, page, per_page)
 
 
 @router.get("/conversations")

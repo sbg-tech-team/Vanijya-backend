@@ -36,3 +36,6 @@ def get_share_recipients_uc(repo: ChatRepository = Depends(get_chat_repo)) -> Ge
 
 def get_all_chats_sorted(repo: ChatRepository = Depends(get_chat_repo)) -> GetAllChatsUseCase:
     return GetAllChatsUseCase(repo)
+
+def get_group_conversations_uc(repo: ChatRepository = Depends(get_chat_repo)) -> GetGroupConversationsUseCase:
+    return GetGroupConversationsUseCase(repo)
