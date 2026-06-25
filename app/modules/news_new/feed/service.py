@@ -1,23 +1,53 @@
-import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.modules.news_new.feed.schemas import CursorMeta, FeedPage, NewsCard, NewsCardDetail
+from app.modules.news_new.feed.schemas import NewsFeedPage, NewsCard, NewsCardDetail
 from app.modules.news_new.ingestion.models import RawArticle
 from app.modules.news_new.intelligence.models import EnrichedArticle
 from app.modules.news_new.news_user_interaction.models import (
     NewsArticleStats,
     NewsLike,
     NewsSave,
+    NewsTrending,
 )
+from app.modules.news_new.news_recommendation_engine.profile_scorer import (
+    apply_profile_boost,
+    compute_profile_boost,
+)
+from app.modules.profile.models import Business, Commodity, Profile, Profile_Commodity
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 
 _ROLE_COL = {1: "role_trader", 2: "role_broker", 3: "role_exporter"}
+
+_BUCKET_HOURS = [12, 24, 48]
+_MIN_POOL_SIZE = 30
+_RECOMMENDATION_CAP = 500
+
+
+def _get_profile_context(db: Session, profile_id: int) -> tuple[int | None, list[str], str | None]:
+    """Fetches (role_id, commodity_names, state) for the recommended feed."""
+    profile = db.execute(
+        select(Profile).where(Profile.id == profile_id)
+    ).scalar_one_or_none()
+    role_id = profile.role_id if profile else None
+
+    commodity_names: list[str] = list(
+        db.execute(
+            select(Commodity.name)
+            .join(Profile_Commodity, Profile_Commodity.commodity_id == Commodity.id)
+            .where(Profile_Commodity.profile_id == profile_id)
+        ).scalars()
+    )
+    state: str | None = db.execute(
+        select(Business.state).where(Business.profile_id == profile_id)
+    ).scalar_one_or_none()
+
+    return role_id, commodity_names, state
 
 
 def compute_time_on_platform(platform_arrived_at: datetime) -> str:
@@ -32,28 +62,12 @@ def compute_time_on_platform(platform_arrived_at: datetime) -> str:
     return f"{days} days ago"
 
 
-def encode_cursor(article: RawArticle) -> str:
-    raw = f"{article.platform_arrived_at.isoformat()}|{article.id}"
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
-def decode_cursor(cursor: str) -> tuple[datetime, UUID] | None:
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        ts_str, uid_str = raw.split("|", 1)
-        return datetime.fromisoformat(ts_str), UUID(uid_str)
-    except Exception:
-        return None
-
-
 def assemble_card(
     article: RawArticle,
     enriched: EnrichedArticle | None,
     stats: NewsArticleStats | None,
     is_liked: bool,
     is_saved: bool,
-    role_score: float | None = None,
-    final_score: float | None = None,
 ) -> NewsCard:
     return NewsCard(
         article_id=article.id,
@@ -72,8 +86,6 @@ def assemble_card(
         share_count=stats.share_count if stats else 0,
         is_liked=is_liked,
         is_saved=is_saved,
-        role_score=role_score,
-        final_score=final_score,
     )
 
 
@@ -83,7 +95,6 @@ def assemble_card_detail(
     stats: NewsArticleStats | None,
     is_liked: bool,
     is_saved: bool,
-    role_score: float | None = None,
 ) -> NewsCardDetail:
     return NewsCardDetail(
         article_id=article.id,
@@ -105,8 +116,6 @@ def assemble_card_detail(
         share_count=stats.share_count if stats else 0,
         is_liked=is_liked,
         is_saved=is_saved,
-        role_score=role_score,
-        final_score=role_score,
         description=article.description,
         article_url=article.article_url,
         source_url=article.source_url,
@@ -116,104 +125,227 @@ def assemble_card_detail(
     )
 
 
-def get_trending_feed(
+# ── Feed service functions ────────────────────────────────────────────────────
+
+def get_recommended_feed(
     db: Session,
     profile_id: int,
-    role_id: int | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
-    cursor: str | None = None,
-) -> FeedPage:
-    """Reverse-chronological feed of enriched articles, ordered by platform_arrived_at."""
+    cursor_article_id: str | None = None,
+) -> NewsFeedPage:
+    """
+    Landing-page recommended feed (GET /news/feed).
+
+    Time-bucketed pool (<=12h → <=24h → <=48h) scored by Layer 1 + Layer 2 and
+    returned sorted by final_score DESC. Scores stay server-side.
+
+    Cursor is the article_id of the last returned article (same pattern as
+    cursor_post_id in get_following_feed — find position, slice forward).
+    """
     limit = min(limit, MAX_PAGE_SIZE)
 
-    q = (
-        select(RawArticle)
-        .where(
-            RawArticle.is_active == True,
-            RawArticle.intelligence_status == "enriched",
+    role_id, user_commodities, user_state = _get_profile_context(db, profile_id)
+
+    candidates: list[RawArticle] = []
+    for hours in _BUCKET_HOURS:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+        candidates = list(
+            db.execute(
+                select(RawArticle)
+                .where(
+                    RawArticle.is_active == True,
+                    RawArticle.intelligence_status == "enriched",
+                    RawArticle.platform_arrived_at >= cutoff,
+                )
+                .limit(_RECOMMENDATION_CAP)
+            ).scalars()
         )
-        .order_by(RawArticle.platform_arrived_at.desc(), RawArticle.id.desc())
-        .limit(limit + 1)
+        if len(candidates) >= _MIN_POOL_SIZE:
+            break
+
+    if not candidates:
+        return NewsFeedPage(articles=[], next_cursor=None)
+
+    article_ids = [a.id for a in candidates]
+    enriched_map = {
+        e.raw_article_id: e
+        for e in db.execute(
+            select(EnrichedArticle).where(EnrichedArticle.raw_article_id.in_(article_ids))
+        ).scalars()
+    }
+    stats_map = {
+        s.article_id: s
+        for s in db.execute(
+            select(NewsArticleStats).where(NewsArticleStats.article_id.in_(article_ids))
+        ).scalars()
+    }
+    liked_ids = {
+        row[0]
+        for row in db.execute(
+            select(NewsLike.article_id).where(
+                NewsLike.profile_id == profile_id,
+                NewsLike.article_id.in_(article_ids),
+            )
+        ).all()
+    }
+    saved_ids_set = {
+        row[0]
+        for row in db.execute(
+            select(NewsSave.article_id).where(
+                NewsSave.profile_id == profile_id,
+                NewsSave.article_id.in_(article_ids),
+            )
+        ).all()
+    }
+
+    scored: list[tuple[float, RawArticle, EnrichedArticle | None]] = []
+    for article in candidates:
+        enriched = enriched_map.get(article.id)
+        role_score = 0.0
+        if enriched and role_id:
+            col = _ROLE_COL.get(role_id)
+            if col:
+                role_score = float(getattr(enriched, col, 0.0))
+        profile_boost = compute_profile_boost(user_commodities, user_state, enriched)
+        scored.append((apply_profile_boost(role_score, profile_boost), article, enriched))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    start = 0
+    if cursor_article_id:
+        try:
+            cid = UUID(cursor_article_id)
+            ranked_ids = [art.id for _, art, _ in scored]
+            try:
+                start = ranked_ids.index(cid) + 1
+            except ValueError:
+                start = 0  # article aged out of window; restart
+        except (ValueError, AttributeError):
+            start = 0
+
+    page = scored[start: start + limit]
+    next_cursor = str(page[-1][1].id) if len(page) == limit else None
+
+    articles = [
+        assemble_card(
+            article, enriched,
+            stats_map.get(article.id),
+            is_liked=article.id in liked_ids,
+            is_saved=article.id in saved_ids_set,
+        )
+        for _, article, enriched in page
+    ]
+    return NewsFeedPage(articles=articles, next_cursor=next_cursor)
+
+
+def get_trending_news(
+    db: Session,
+    profile_id: int,
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor_article_id: str | None = None,
+) -> NewsFeedPage:
+    """
+    Platform-wide trending news (GET /news/trending).
+
+    Pure velocity query from news_raw_trending ordered by velocity_score DESC.
+    No profile scoring. Cursor is the article_id of the last returned article.
+    """
+    limit = min(limit, MAX_PAGE_SIZE)
+
+    all_articles: list[RawArticle] = list(
+        db.execute(
+            select(RawArticle)
+            .join(NewsTrending, NewsTrending.article_id == RawArticle.id)
+            .where(
+                RawArticle.is_active == True,
+                NewsTrending.velocity_score > 0,
+            )
+            .order_by(NewsTrending.velocity_score.desc(), RawArticle.platform_arrived_at.desc())
+        ).scalars()
     )
 
-    if cursor:
-        parsed = decode_cursor(cursor)
-        if parsed:
-            ts, uid = parsed
-            q = q.where(
-                (RawArticle.platform_arrived_at < ts)
-                | (
-                    (RawArticle.platform_arrived_at == ts)
-                    & (RawArticle.id < uid)
-                )
-            )
+    if not all_articles:
+        return NewsFeedPage(articles=[], next_cursor=None)
 
-    articles = list(db.execute(q).scalars())
-    has_more = len(articles) > limit
-    if has_more:
-        articles = articles[:limit]
+    start = 0
+    if cursor_article_id:
+        try:
+            cid = UUID(cursor_article_id)
+            all_ids = [a.id for a in all_articles]
+            try:
+                start = all_ids.index(cid) + 1
+            except ValueError:
+                start = 0
+        except (ValueError, AttributeError):
+            start = 0
 
-    if not articles:
-        return FeedPage(items=[], cursor=CursorMeta(next_cursor=None, has_more=False))
+    page = all_articles[start: start + limit]
+    next_cursor = str(page[-1].id) if len(page) == limit else None
 
-    return _build_feed_page(db, articles, profile_id, role_id, has_more)
+    result = _build_feed_page(db, page, profile_id)
+    return NewsFeedPage(articles=result.articles, next_cursor=next_cursor)
 
 
 def get_saved_feed(
     db: Session,
     profile_id: int,
-    role_id: int | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
-    cursor: str | None = None,
-) -> FeedPage:
+    cursor_article_id: str | None = None,
+) -> NewsFeedPage:
     """Articles the user has saved, most-recently-saved first."""
     limit = min(limit, MAX_PAGE_SIZE)
 
-    saved_q = (
-        select(NewsSave.article_id)
-        .where(NewsSave.profile_id == profile_id)
-        .order_by(NewsSave.created_at.desc())
-    )
-    saved_ids = [row[0] for row in db.execute(saved_q).all()]
+    saved_ids = [
+        row[0]
+        for row in db.execute(
+            select(NewsSave.article_id)
+            .where(NewsSave.profile_id == profile_id)
+            .order_by(NewsSave.created_at.desc())
+        ).all()
+    ]
 
     if not saved_ids:
-        return FeedPage(items=[], cursor=CursorMeta(next_cursor=None, has_more=False))
+        return NewsFeedPage(articles=[], next_cursor=None)
 
     articles_map = {
-        a.id: a for a in db.execute(
+        a.id: a
+        for a in db.execute(
             select(RawArticle).where(RawArticle.id.in_(saved_ids))
         ).scalars()
     }
-    # Preserve save order
-    articles = [articles_map[sid] for sid in saved_ids if sid in articles_map]
+    all_articles = [articles_map[sid] for sid in saved_ids if sid in articles_map]
 
-    if cursor:
-        parsed = decode_cursor(cursor)
-        if parsed:
-            ts, uid = parsed
-            articles = [
-                a for a in articles
-                if a.platform_arrived_at < ts or (a.platform_arrived_at == ts and a.id < uid)
-            ]
+    start = 0
+    if cursor_article_id:
+        try:
+            cid = UUID(cursor_article_id)
+            all_ids = [a.id for a in all_articles]
+            try:
+                start = all_ids.index(cid) + 1
+            except ValueError:
+                start = 0
+        except (ValueError, AttributeError):
+            start = 0
 
-    has_more = len(articles) > limit
-    articles = articles[:limit]
+    page = all_articles[start: start + limit]
+    next_cursor = str(page[-1].id) if len(page) == limit else None
 
-    return _build_feed_page(db, articles, profile_id, role_id, has_more)
+    result = _build_feed_page(db, page, profile_id)
+    return NewsFeedPage(articles=result.articles, next_cursor=next_cursor)
 
 
 def get_filtered_feed(
     db: Session,
     profile_id: int,
     feed_filter: str,
-    role_id: int | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
-    cursor: str | None = None,
-) -> FeedPage:
+    cursor_article_id: str | None = None,
+) -> NewsFeedPage:
     """
-    Filter via EnrichedArticle:
-      - "global" / "domestic" -> geo_category match
-      - "government"          -> is_government = True (independent axis, any geo)
+    Pure DB filter for global/domestic/government tabs — no recommendation, no scoring.
+      - "global" / "domestic"  -> geo_category match
+      - "government"           -> is_government = True (any geo)
+    Ordered by platform_arrived_at DESC. Cursor is last article's id.
     """
     limit = min(limit, MAX_PAGE_SIZE)
 
@@ -230,7 +362,7 @@ def get_filtered_feed(
     filtered_ids = [row[0] for row in db.execute(enriched_ids_q).all()]
 
     if not filtered_ids:
-        return FeedPage(items=[], cursor=CursorMeta(next_cursor=None, has_more=False))
+        return NewsFeedPage(articles=[], next_cursor=None)
 
     q = (
         select(RawArticle)
@@ -242,31 +374,38 @@ def get_filtered_feed(
         .limit(limit + 1)
     )
 
-    if cursor:
-        parsed = decode_cursor(cursor)
-        if parsed:
-            ts, uid = parsed
-            q = q.where(
-                (RawArticle.platform_arrived_at < ts)
-                | (
-                    (RawArticle.platform_arrived_at == ts)
-                    & (RawArticle.id < uid)
+    if cursor_article_id:
+        try:
+            cid = UUID(cursor_article_id)
+            cursor_article = db.execute(
+                select(RawArticle).where(RawArticle.id == cid)
+            ).scalar_one_or_none()
+            if cursor_article:
+                ts = cursor_article.platform_arrived_at
+                q = q.where(
+                    (RawArticle.platform_arrived_at < ts)
+                    | ((RawArticle.platform_arrived_at == ts) & (RawArticle.id < cid))
                 )
-            )
+        except (ValueError, AttributeError):
+            pass
 
     articles = list(db.execute(q).scalars())
-    has_more = len(articles) > limit
-    if has_more:
+    has_next = len(articles) > limit
+    if has_next:
         articles = articles[:limit]
 
-    return _build_feed_page(db, articles, profile_id, role_id, has_more)
+    if not articles:
+        return NewsFeedPage(articles=[], next_cursor=None)
+
+    next_cursor = str(articles[-1].id) if has_next else None
+    result = _build_feed_page(db, articles, profile_id)
+    return NewsFeedPage(articles=result.articles, next_cursor=next_cursor)
 
 
 def get_article_detail(
     db: Session,
     article_id: UUID,
     profile_id: int,
-    role_id: int | None = None,
 ) -> NewsCardDetail | None:
     article = db.execute(
         select(RawArticle).where(RawArticle.id == article_id)
@@ -296,25 +435,21 @@ def get_article_detail(
         )
     ).scalar_one_or_none() is not None
 
-    role_score: float | None = None
-    if enriched and role_id:
-        col = _ROLE_COL.get(role_id)
-        if col:
-            role_score = float(getattr(enriched, col, 0.0))
-
-    return assemble_card_detail(article, enriched, stats, is_liked, is_saved, role_score)
+    return assemble_card_detail(article, enriched, stats, is_liked, is_saved)
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────
-
 
 def _build_feed_page(
     db: Session,
     articles: list[RawArticle],
     profile_id: int,
-    role_id: int | None,
-    has_more: bool,
-) -> FeedPage:
+) -> NewsFeedPage:
+    """
+    Batch-loads enriched/stats/liked/saved and builds NewsCards preserving input order.
+    No scoring. Used by get_trending_news, get_filtered_feed, get_saved_feed.
+    Callers set next_cursor themselves; this always returns next_cursor=None.
+    """
     article_ids = [a.id for a in articles]
 
     enriched_map = {
@@ -348,24 +483,14 @@ def _build_feed_page(
         ).all()
     }
 
-    items = []
-    for article in articles:
-        enriched = enriched_map.get(article.id)
-        role_score: float | None = None
-        if enriched and role_id:
-            col = _ROLE_COL.get(role_id)
-            if col:
-                role_score = float(getattr(enriched, col, 0.0))
-
-        items.append(assemble_card(
+    cards = [
+        assemble_card(
             article,
-            enriched,
+            enriched_map.get(article.id),
             stats_map.get(article.id),
             is_liked=article.id in liked_ids,
             is_saved=article.id in saved_ids,
-            role_score=role_score,
-            final_score=role_score,
-        ))
-
-    next_cursor = encode_cursor(articles[-1]) if has_more else None
-    return FeedPage(items=items, cursor=CursorMeta(next_cursor=next_cursor, has_more=has_more))
+        )
+        for article in articles
+    ]
+    return NewsFeedPage(articles=cards, next_cursor=None)

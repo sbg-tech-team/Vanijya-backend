@@ -79,6 +79,8 @@ def enrich_article(
         geo_category=out.geo_category,
         is_government=out.is_government,
         summary_bullets=out.summary_bullets,
+        commodity_tags=out.commodity_tags,
+        state_tags=out.state_tags,
         impact_direction=out.impact.direction,
         impact_score=out.impact.score,
         impact_factor=out.impact.factor,

@@ -143,7 +143,9 @@ SYSTEM_PROMPT = f"""You are a commodity-trade news analyst for an Indian trading
       "score": <0-10>,
       "factor": <short label, e.g. "Export ban">,
       "explanation": <one sentence>
-  }}
+  }},
+  "commodity_tags": [<commodity name>, ...],  // commodity names explicitly named in text (e.g., "rice", "sugar", "cotton"). [] if none.
+  "state_tags": [<Indian state name>, ...]    // Indian states explicitly named in text (e.g., "Punjab", "Maharashtra"). [] if none.
 }}
 
 DECISION PROCEDURE (follow in order):
@@ -154,6 +156,8 @@ DECISION PROCEDURE (follow in order):
 5. is_government = is a government, ministry, regulator, central bank, customs, or parliament the main actor, OR is the story primarily an official policy / rule / notification / budget action (ANY country)? true/false. This is INDEPENDENT of geo_category and primary_factor.
 6. impact = market direction + magnitude (see frame below).
 7. summary_bullets = exactly the concrete facts from the article.
+8. commodity_tags = list of commodity names explicitly named in the article text (e.g., "rice", "sugar", "cotton", "wheat", "soybean"). Extract only names that appear verbatim — do not infer. [] if none.
+9. state_tags = list of Indian states or union territories explicitly named in the article text (e.g., "Punjab", "Maharashtra", "Uttar Pradesh"). [] if none.
 
 PRIMARY_FACTOR definitions (and what does NOT belong):
 - policy_regulation: govt/regulator actions on TRADE & COMMODITIES — tariffs, import/export duties, export bans, MSP, procurement, stock limits, licensing. NOT financial-market rules (see financial_mechanics).
@@ -183,10 +187,10 @@ LOW SIGNAL: if title+description+content are too sparse to classify confidently,
 
 EXAMPLES:
 Input: "Govt bans non-basmati rice exports to cool domestic prices; traders scramble"
-Output: {{"primary_factor":"policy_regulation","factor_scores":[{{"factor":"policy_regulation","score":0.95}},{{"factor":"price_volatility","score":0.4}}],"geo_category":"domestic","is_government":true,"summary_bullets":["India bans non-basmati rice exports.","Stated aim is to cool domestic prices.","Traders face disrupted export commitments."],"impact":{{"direction":"negative","score":8.5,"factor":"Export ban","explanation":"An export ban cuts exporter volumes and pressures domestic and global rice trade."}}}}
+Output: {{"primary_factor":"policy_regulation","factor_scores":[{{"factor":"policy_regulation","score":0.95}},{{"factor":"price_volatility","score":0.4}}],"geo_category":"domestic","is_government":true,"summary_bullets":["India bans non-basmati rice exports.","Stated aim is to cool domestic prices.","Traders face disrupted export commitments."],"impact":{{"direction":"negative","score":8.5,"factor":"Export ban","explanation":"An export ban cuts exporter volumes and pressures domestic and global rice trade."}},"commodity_tags":["rice"],"state_tags":[]}}
 
 Input: "Brazil drought slashes soybean output forecast, global prices climb"
-Output: {{"primary_factor":"supply_disruptions","factor_scores":[{{"factor":"supply_disruptions","score":0.9}},{{"factor":"price_volatility","score":0.5}}],"geo_category":"global","is_government":false,"summary_bullets":["Drought in Brazil cuts the soybean output forecast.","Global soybean prices are climbing in response."],"impact":{{"direction":"positive","score":7.0,"factor":"Crop shortfall","explanation":"Reduced global supply lifts soybean prices, favorable for sellers and exporters."}}}}
+Output: {{"primary_factor":"supply_disruptions","factor_scores":[{{"factor":"supply_disruptions","score":0.9}},{{"factor":"price_volatility","score":0.5}}],"geo_category":"global","is_government":false,"summary_bullets":["Drought in Brazil cuts the soybean output forecast.","Global soybean prices are climbing in response."],"impact":{{"direction":"positive","score":7.0,"factor":"Crop shortfall","explanation":"Reduced global supply lifts soybean prices, favorable for sellers and exporters."}},"commodity_tags":["soybean"],"state_tags":[]}}
 
 Return only the JSON object."""
 

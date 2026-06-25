@@ -337,7 +337,7 @@ def _build_feed_cards(
             .all()
         }
 
-    author_ids = list({p.profile_id for p in posts.values()})
+    author_ids = list({f["author_profile_id"] for f in final})
     authors = {
         p.id: p
         for p in db.query(Profile)
@@ -560,3 +560,99 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     final = _apply_diversity(scored, limit=limit)
 
     return _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)
+
+
+
+# def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) -> list:
+#     print("=== GET_RECOMMENDED_POSTS CALLED ===")
+#     import time
+#     _t = time.perf_counter
+#     t0 = _t()
+
+#     profile = (
+#         db.query(Profile)
+#         .options(selectinload(Profile.commodities), selectinload(Profile.business))
+#         .filter(Profile.id == profile_id)
+#         .first()
+#     )
+#     print(f"[FEED] profile load:       {(_t()-t0)*1000:.1f}ms"); t0=_t()
+#     if not profile:
+#         raise ValueError(f"Profile {profile_id} not found")
+
+#     commodity_ids = [pc.commodity_id for pc in profile.commodities]
+#     commodity_idxs = {COMMODITY_ID_TO_IDX[cid] for cid in commodity_ids if cid in COMMODITY_ID_TO_IDX}
+
+#     from app.modules.profile.models import UserEmbedding
+#     emb_row = db.query(UserEmbedding).filter(UserEmbedding.user_id == profile.users_id).first()
+#     if emb_row and emb_row.post_feed_vector is not None:
+#         user_vec = _parse_vec(emb_row.post_feed_vector)
+#     else:
+#         user_vec = build_user_feed_vector(
+#             commodity_ids=commodity_ids, role_id=profile.role_id,
+#             lat=float(profile.business.latitude), lon=float(profile.business.longitude),
+#             commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
+#         )
+#     print(f"[FEED] user_vec:            {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     cat_weights       = taste_service.get_taste_weights(db, profile_id, "category", profile.role_id)
+#     commodity_weights = taste_service.get_taste_weights(db, profile_id, "commodity")
+#     author_weights    = taste_service.get_taste_weights(db, profile_id, "author")
+#     print(f"[FEED] taste weights (3q):  {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     followed_user_ids = {
+#         row.following_id
+#         for row in db.query(UserConnection.following_id)
+#         .filter(UserConnection.follower_id == profile.users_id).all()
+#     }
+#     print(f"[FEED] followed_ids:        {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     seen_ids = _seen_post_ids(db, profile_id)
+#     print(f"[FEED] seen_ids ({len(seen_ids)}):      {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     pool_exclude: set[int] = set(seen_ids)
+#     pool: list[dict] = []
+
+#     hot_embs = _query_partition(db, "hot", FETCH_TARGET, pool_exclude, user_vec)
+#     for emb in hot_embs:
+#         score = weighted_cosine_similarity(user_vec, emb["vector"])
+#         pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
+#         pool_exclude.add(emb["post_id"])
+#     print(f"[FEED] hot ANN ({len(hot_embs)}):       {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     if len(pool) < MIN_POOL_SIZE:
+#         warm_embs = _query_partition(db, "warm", FETCH_TARGET - len(pool), pool_exclude, user_vec)
+#         for emb in warm_embs:
+#             score = weighted_cosine_similarity(user_vec, emb["vector"])
+#             pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
+#             pool_exclude.add(emb["post_id"])
+#         print(f"[FEED] warm ANN ({len(warm_embs)}):      {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     if len(pool) < MIN_POOL_SIZE:
+#         cold_embs = _query_partition(db, "cold", FETCH_TARGET - len(pool), pool_exclude, user_vec)
+#         for emb in cold_embs:
+#             score = weighted_cosine_similarity(user_vec, emb["vector"])
+#             pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
+#             pool_exclude.add(emb["post_id"])
+#         print(f"[FEED] cold ANN ({len(cold_embs)}):      {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     popular = _get_popular_posts(db, commodity_idxs or {0, 1, 2}, pool_exclude)
+#     pool.extend(popular)
+#     for p in popular: pool_exclude.add(p["post_id"])
+#     print(f"[FEED] popular ({len(popular)}):        {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     fresh = _ensure_fresh_in_pool(
+#         db=db, viewer_role_id=profile.role_id,
+#         commodity_idxs=commodity_idxs or {0, 1, 2},
+#         exclude_ids=pool_exclude, user_vec=user_vec, limit=FRESH_SLOTS,
+#     )
+#     pool.extend(fresh)
+#     print(f"[FEED] fresh inject ({len(fresh)}):   {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     scored, posts = _rerank(db, pool, cat_weights, commodity_weights, author_weights, followed_user_ids)
+#     print(f"[FEED] rerank ({len(pool)} cands):   {(_t()-t0)*1000:.1f}ms"); t0=_t()
+
+#     final = _apply_diversity(scored, limit=limit)
+#     result = _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)
+#     print(f"[FEED] build_cards ({len(final)}):   {(_t()-t0)*1000:.1f}ms")
+
+#     return result

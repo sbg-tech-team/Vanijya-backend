@@ -38,6 +38,10 @@ class EnrichedArticle(Base):
     # Independent axis: is this primarily a government/regulator/policy story? (any country)
     is_government: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # ── Profile tagging — extracted by LLM, used for Layer 2 commodity + state affinity ──
+    commodity_tags: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # ["rice", "cotton", ...]
+    state_tags: Mapped[list | None] = mapped_column(JSONB, nullable=True)       # ["Punjab", "Maharashtra", ...]
+
     # ── Summary (OUR generated bullets; provider summary stays on RawArticle) ─
     summary_bullets: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # ["...", "...", "..."]
     summary_long: Mapped[str | None] = mapped_column(Text, nullable=True)       # optional paragraph

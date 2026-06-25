@@ -95,6 +95,7 @@ def process_interaction_batch(
 
         if event.event_type == "open_article":
             is_revisit = upsert_view(db, profile_id, event.article_id)
+            _adjust_stats(db, event.article_id, "view_count", 1)
             if is_revisit:
                 _record_revisit_event(db, profile_id, event.article_id)
 

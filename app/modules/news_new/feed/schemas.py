@@ -4,11 +4,6 @@ from uuid import UUID
 from pydantic import BaseModel
 
 
-class CursorMeta(BaseModel):
-    next_cursor: str | None = None
-    has_more: bool
-
-
 class NewsCard(BaseModel):
     article_id: UUID
     title: str
@@ -26,8 +21,6 @@ class NewsCard(BaseModel):
     share_count: int = 0
     is_liked: bool = False
     is_saved: bool = False
-    role_score: float | None = None
-    final_score: float | None = None
 
 
 class NewsCardDetail(NewsCard):
@@ -42,6 +35,6 @@ class NewsCardDetail(NewsCard):
     save_count: int | None = None
 
 
-class FeedPage(BaseModel):
-    items: list[NewsCard]
-    cursor: CursorMeta
+class NewsFeedPage(BaseModel):
+    articles: list[NewsCard]
+    next_cursor: str | None = None
