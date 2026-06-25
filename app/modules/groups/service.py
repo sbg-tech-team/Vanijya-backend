@@ -378,10 +378,21 @@ def list_groups(
         .all()
     )
 
-    out = []
-    for g in groups:
-        membership = _get_membership(db, g.id, user_id)
-        out.append(_build_group_out(g, membership))
+    # Batch the membership lookup for the whole page — one query instead of one
+    # per group (was a per-row N+1 in the loop below).
+    group_ids = [g.id for g in groups]
+    memberships = (
+        {
+            m.group_id: m
+            for m in db.query(GroupMember)
+            .filter(GroupMember.group_id.in_(group_ids), GroupMember.user_id == user_id)
+            .all()
+        }
+        if group_ids
+        else {}
+    )
+
+    out = [_build_group_out(g, memberships.get(g.id)) for g in groups]
 
     return GroupListOut(groups=out, total=total, page=page, per_page=per_page)
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
@@ -133,15 +133,16 @@ def _build_conversation(db: Session, conv: Conversation, requesting_user_id: UUI
     )
 
 
-def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
-    deal = db.query(GroupDeal).filter(GroupDeal.id == deal_id).first()
-    if deal is None:
-        return None
-    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+# ── Snapshot constructors (pure: ORM object → entity, no queries) ────────────────
+# Shared by both the single-message send path (_deal_snap etc.) and the batched
+# read path (_*_snaps_bulk), so the two never drift.
+
+def _deal_snap_obj(deal, commodity_name: str) -> DealSnap:
+    # GroupDeal and PersonalDeal share the same DealSnap shape/attributes.
     return DealSnap(
         deal_id=deal.id,
         title=deal.title,
-        commodity_name=commodity.name if commodity else "",
+        commodity_name=commodity_name,
         grain_type=deal.grain_type,
         grain_size=deal.grain_size,
         commodity_quantity=float(deal.commodity_quantity),
@@ -154,32 +155,7 @@ def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
     )
 
 
-def _personal_deal_snap(db: Session, personal_deal_id: UUID) -> Optional[DealSnap]:
-    deal = db.query(PersonalDeal).filter(PersonalDeal.id == personal_deal_id).first()
-    if deal is None:
-        return None
-    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
-    return DealSnap(
-        deal_id=deal.id,
-        title=deal.title,
-        commodity_name=commodity.name if commodity else "",
-        grain_type=deal.grain_type,
-        grain_size=deal.grain_size,
-        commodity_quantity=float(deal.commodity_quantity),
-        quantity_unit=deal.quantity_unit,
-        commodity_price=float(deal.commodity_price),
-        price_type=deal.price_type,
-        image_urls=deal.image_urls,
-        is_closed=deal.is_closed,
-        caption=deal.caption,
-    )
-
-
-def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
-    post = db.query(Post).filter(Post.id == post_id).first()
-    if post is None:
-        return None
-    author = db.query(Profile).filter(Profile.id == post.profile_id).first()
+def _post_snap_obj(post: Post, author_name: str) -> PostSnap:
     return PostSnap(
         post_id=post.id,
         title=post.title,
@@ -187,17 +163,11 @@ def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
         caption=post.caption,
         category_id=post.category_id,
         category_name=CATEGORY_NAMES.get(post.category_id, ""),
-        author_name=author.name if author else "",
+        author_name=author_name,
     )
 
 
-def _news_article_snap(db: Session, article_id: UUID) -> Optional[NewsArticleSnap]:
-    from app.modules.news_new.ingestion.models import RawArticle
-    from app.modules.news_new.intelligence.models import EnrichedArticle
-    article = db.query(RawArticle).filter(RawArticle.id == article_id).first()
-    if article is None:
-        return None
-    enriched = db.query(EnrichedArticle).filter(EnrichedArticle.raw_article_id == article_id).first()
+def _news_article_snap_obj(article, enriched) -> NewsArticleSnap:
     first_bullet: Optional[str] = None
     if enriched and enriched.summary_bullets:
         bullets = enriched.summary_bullets
@@ -212,6 +182,184 @@ def _news_article_snap(db: Session, article_id: UUID) -> Optional[NewsArticleSna
         impact_score=enriched.impact_score if enriched else None,
         first_bullet=first_bullet,
     )
+
+
+# ── Single-row snap helpers (used by the send path — one message at a time) ──────
+
+def _build_conversations(
+    db: Session, convs: list[Conversation], requesting_user_id: UUID
+) -> list[ConversationEntity]:
+    """Batch-build a page of DM conversations with a fixed number of queries (no
+    per-conversation N+1): members, participant profiles, last messages and unread
+    counts are each fetched in a single query across the whole page."""
+    if not convs:
+        return []
+    conv_ids = [c.id for c in convs]
+
+    # Members for all conversations — one query, grouped by conversation.
+    members_by_conv: dict = {}
+    for m in db.query(ConversationMember).filter(ConversationMember.conversation_id.in_(conv_ids)).all():
+        members_by_conv.setdefault(m.conversation_id, []).append(m)
+
+    # Other participants' profiles — one query.
+    other_user_ids = set()
+    for c in convs:
+        other = next((m for m in members_by_conv.get(c.id, []) if m.user_id != requesting_user_id), None)
+        if other:
+            other_user_ids.add(other.user_id)
+    profile_by_user = (
+        {p.users_id: p for p in db.query(Profile).filter(Profile.users_id.in_(other_user_ids)).all()}
+        if other_user_ids else {}
+    )
+
+    # Last message per conversation — one query (DISTINCT ON keeps the newest row).
+    last_by_conv: dict = {}
+    last_rows = (
+        db.query(Message)
+        .filter(Message.context_type == "dm", Message.context_id.in_(conv_ids), Message.is_deleted.is_(False))
+        .order_by(Message.context_id, Message.sent_at.desc())
+        .distinct(Message.context_id)
+        .all()
+    )
+    for row in last_rows:
+        last_by_conv[row.context_id] = DMLastMessage(
+            id=row.id, body=row.body, message_type=row.message_type,
+            sender_id=row.sender_id, sent_at=row.sent_at,
+        )
+
+    # Unread count per conversation — one query. Counts peer messages newer than my
+    # last_read_at (or all peer messages when I've never read), mirroring _unread_count.
+    my_members = (
+        select(ConversationMember.conversation_id, ConversationMember.last_read_at)
+        .where(
+            ConversationMember.user_id == requesting_user_id,
+            ConversationMember.conversation_id.in_(conv_ids),
+        )
+        .subquery()
+    )
+    unread_by_conv = {
+        cid: cnt
+        for cid, cnt in (
+            db.query(Message.context_id, func.count(Message.id))
+            .join(my_members, my_members.c.conversation_id == Message.context_id)
+            .filter(
+                Message.context_type == "dm",
+                Message.is_deleted.is_(False),
+                Message.sender_id != requesting_user_id,
+                or_(my_members.c.last_read_at.is_(None), Message.sent_at > my_members.c.last_read_at),
+            )
+            .group_by(Message.context_id)
+            .all()
+        )
+    }
+
+    out: list[ConversationEntity] = []
+    for conv in convs:
+        members = members_by_conv.get(conv.id, [])
+        other_member = next((m for m in members if m.user_id != requesting_user_id), None)
+        my_member = next((m for m in members if m.user_id == requesting_user_id), None)
+        if other_member is None or my_member is None:
+            continue
+        other_profile = profile_by_user.get(other_member.user_id)
+        if other_profile is None:
+            continue
+        out.append(ConversationEntity(
+            id=conv.id,
+            status=conv.status,
+            initiator_id=conv.initiator_id,
+            participant=_profile_snap(other_profile),
+            last_message=last_by_conv.get(conv.id),
+            unread_count=unread_by_conv.get(conv.id, 0),
+            is_muted=my_member.is_muted,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        ))
+    return out
+
+
+def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(GroupDeal).filter(GroupDeal.id == deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return _deal_snap_obj(deal, commodity.name if commodity else "")
+
+
+def _personal_deal_snap(db: Session, personal_deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(PersonalDeal).filter(PersonalDeal.id == personal_deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return _deal_snap_obj(deal, commodity.name if commodity else "")
+
+
+def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if post is None:
+        return None
+    author = db.query(Profile).filter(Profile.id == post.profile_id).first()
+    return _post_snap_obj(post, author.name if author else "")
+
+
+def _news_article_snap(db: Session, article_id: UUID) -> Optional[NewsArticleSnap]:
+    from app.modules.news_new.ingestion.models import RawArticle
+    from app.modules.news_new.intelligence.models import EnrichedArticle
+    article = db.query(RawArticle).filter(RawArticle.id == article_id).first()
+    if article is None:
+        return None
+    enriched = db.query(EnrichedArticle).filter(EnrichedArticle.raw_article_id == article_id).first()
+    return _news_article_snap_obj(article, enriched)
+
+
+# ── Bulk snap helpers (used by the read path — one query per entity type) ────────
+
+def _deal_snaps_bulk(db: Session, deal_ids: set) -> dict:
+    if not deal_ids:
+        return {}
+    deals = db.query(GroupDeal).filter(GroupDeal.id.in_(deal_ids)).all()
+    commodity_ids = {d.commodity_id for d in deals}
+    names = (
+        {c.id: c.name for c in db.query(Commodity).filter(Commodity.id.in_(commodity_ids)).all()}
+        if commodity_ids else {}
+    )
+    return {d.id: _deal_snap_obj(d, names.get(d.commodity_id, "")) for d in deals}
+
+
+def _personal_deal_snaps_bulk(db: Session, deal_ids: set) -> dict:
+    if not deal_ids:
+        return {}
+    deals = db.query(PersonalDeal).filter(PersonalDeal.id.in_(deal_ids)).all()
+    commodity_ids = {d.commodity_id for d in deals}
+    names = (
+        {c.id: c.name for c in db.query(Commodity).filter(Commodity.id.in_(commodity_ids)).all()}
+        if commodity_ids else {}
+    )
+    return {d.id: _deal_snap_obj(d, names.get(d.commodity_id, "")) for d in deals}
+
+
+def _post_snaps_bulk(db: Session, post_ids: set) -> dict:
+    if not post_ids:
+        return {}
+    posts = db.query(Post).filter(Post.id.in_(post_ids)).all()
+    author_ids = {p.profile_id for p in posts}
+    names = (
+        {p.id: p.name for p in db.query(Profile).filter(Profile.id.in_(author_ids)).all()}
+        if author_ids else {}
+    )
+    return {p.id: _post_snap_obj(p, names.get(p.profile_id, "")) for p in posts}
+
+
+def _news_article_snaps_bulk(db: Session, article_ids: set) -> dict:
+    if not article_ids:
+        return {}
+    from app.modules.news_new.ingestion.models import RawArticle
+    from app.modules.news_new.intelligence.models import EnrichedArticle
+    articles = db.query(RawArticle).filter(RawArticle.id.in_(article_ids)).all()
+    enriched_by_raw = {
+        e.raw_article_id: e
+        for e in db.query(EnrichedArticle).filter(EnrichedArticle.raw_article_id.in_(article_ids)).all()
+    }
+    return {a.id: _news_article_snap_obj(a, enriched_by_raw.get(a.id)) for a in articles}
 
 
 def _build_message(
@@ -254,6 +402,72 @@ def _build_message(
     )
 
 
+def _build_messages(
+    db: Session,
+    rows: list[Message],
+    receipts: Optional[dict] = None,
+) -> list[MessageEntity]:
+    """Batch-build a page of messages with a fixed number of queries (no per-row
+    N+1). `receipts` maps msg.id -> (delivered, read); messages absent from it get
+    (None, None)."""
+    if not rows:
+        return []
+    receipts = receipts or {}
+
+    # Senders: one query for all distinct senders in the page.
+    sender_ids = {m.sender_id for m in rows}
+    profile_by_user = {
+        p.users_id: p for p in db.query(Profile).filter(Profile.users_id.in_(sender_ids)).all()
+    }
+
+    # Referenced entities: one query per type for the ids actually present.
+    deal_snaps = _deal_snaps_bulk(db, {m.deal_id for m in rows if m.deal_id})
+    personal_deal_snaps = _personal_deal_snaps_bulk(db, {m.personal_deal_id for m in rows if m.personal_deal_id})
+    post_snaps = _post_snaps_bulk(db, {m.post_id for m in rows if m.post_id})
+    article_snaps = _news_article_snaps_bulk(db, {m.article_id for m in rows if m.article_id})
+
+    out: list[MessageEntity] = []
+    for msg in rows:
+        prof = profile_by_user.get(msg.sender_id)
+        sender_snap = (
+            _profile_snap(prof)
+            if prof
+            else UserSnap(
+                user_id=msg.sender_id, profile_id=0, name="Unknown",
+                is_user_verified=False, is_business_verified=False,
+                avatar_url=None, role="Trader", is_online=False,
+            )
+        )
+        if msg.deal_id:
+            deal = deal_snaps.get(msg.deal_id)
+        elif msg.personal_deal_id:
+            deal = personal_deal_snaps.get(msg.personal_deal_id)
+        else:
+            deal = None
+        delivered, read = receipts.get(msg.id, (None, None))
+        out.append(MessageEntity(
+            id=msg.id,
+            context_id=msg.context_id,
+            context_type=msg.context_type,
+            sender=sender_snap,
+            message_type=msg.message_type,
+            body=msg.body,
+            media_urls=msg.media_urls,
+            media_metadata=msg.media_metadata,
+            location_lat=msg.location_lat,
+            location_lon=msg.location_lon,
+            reply_to_id=msg.reply_to_id,
+            is_deleted=msg.is_deleted,
+            sent_at=msg.sent_at,
+            deal=deal,
+            post=post_snaps.get(msg.post_id) if msg.post_id else None,
+            news_article=article_snaps.get(msg.article_id) if msg.article_id else None,
+            delivered=delivered,
+            read=read,
+        ))
+    return out
+
+
 # ── Repository ─────────────────────────────────────────────────────────────────
 
 class ChatRepository:
@@ -280,7 +494,7 @@ class ChatRepository:
             .limit(per_page)
             .all()
         )
-        return [e for conv in convs if (e := _build_conversation(self.db, conv, user_id))]
+        return _build_conversations(self.db, convs, user_id)
 
     # ── Messages ───────────────────────────────────────────────────────────────
 
@@ -356,7 +570,7 @@ class ChatRepository:
 
         if context_type != "dm":
             # Group receipts aren't tracked yet (no per-member cursors on group_members).
-            return [_build_message(self.db, m) for m in rows]
+            return _build_messages(self.db, rows)
 
         # DM: derive each message's delivered/read tick from the *peer's* cursors.
         # peer = the member who did not send the message (exactly one in a DM).
@@ -367,14 +581,14 @@ class ChatRepository:
         )
         cursors = {m.user_id: (m.last_delivered_at, m.last_read_at) for m in members}
 
-        out: list[MessageEntity] = []
+        receipts: dict = {}
         for m in rows:
             peer = next((c for uid, c in cursors.items() if uid != m.sender_id), (None, None))
             last_delivered_at, last_read_at = peer
             delivered = last_delivered_at is not None and last_delivered_at >= m.sent_at
             read = last_read_at is not None and last_read_at >= m.sent_at
-            out.append(_build_message(self.db, m, delivered=delivered, read=read))
-        return out
+            receipts[m.id] = (delivered, read)
+        return _build_messages(self.db, rows, receipts)
 
     def mark_read(self, conv_id: UUID, user_id: UUID) -> None:
         self.db.query(ConversationMember).filter(
