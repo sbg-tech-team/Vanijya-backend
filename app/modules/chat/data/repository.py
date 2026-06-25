@@ -69,24 +69,35 @@ def _last_message(db: Session, context_id: UUID) -> Optional[DMLastMessage]:
     )
 
 
-def _group_last_message(db: Session, group_id: UUID) -> Optional[GroupLastMessage]:
-    row = (
+def _group_last_messages_bulk(db: Session, group_ids: list[UUID]) -> dict:
+    """{group_id: GroupLastMessage} for a set of groups in two queries (last message
+    per group via DISTINCT ON, then sender names in one IN lookup) — avoids a
+    2-query-per-group N+1 when building the group chat list."""
+    if not group_ids:
+        return {}
+    last_rows = (
         db.query(Message)
-        .filter(Message.context_type == "group", Message.context_id == group_id, Message.is_deleted.is_(False))
-        .order_by(Message.sent_at.desc())
-        .first()
+        .filter(Message.context_type == "group", Message.context_id.in_(group_ids), Message.is_deleted.is_(False))
+        .order_by(Message.context_id, Message.sent_at.desc())
+        .distinct(Message.context_id)
+        .all()
     )
-    if row is None:
-        return None
-    sender = db.query(Profile.name).filter(Profile.users_id == row.sender_id).first()
-    return GroupLastMessage(
-        id=row.id,
-        sender_id=row.sender_id,
-        sender_name=sender[0] if sender else "Unknown",
-        body=row.body,
-        message_type=row.message_type,
-        sent_at=row.sent_at,
+    sender_ids = {m.sender_id for m in last_rows}
+    names = (
+        {p.users_id: p.name for p in db.query(Profile.users_id, Profile.name).filter(Profile.users_id.in_(sender_ids)).all()}
+        if sender_ids else {}
     )
+    return {
+        m.context_id: GroupLastMessage(
+            id=m.id,
+            sender_id=m.sender_id,
+            sender_name=names.get(m.sender_id, "Unknown"),
+            body=m.body,
+            message_type=m.message_type,
+            sent_at=m.sent_at,
+        )
+        for m in last_rows
+    }
 
 
 def _unread_count(db: Session, conv_id: UUID, user_id: UUID) -> int:
@@ -929,9 +940,10 @@ class ChatRepository:
             .join(GroupMember, and_(GroupMember.group_id == Group.id, GroupMember.user_id == user_id))
             .all()
         )
+        last_by_group = _group_last_messages_bulk(self.db, [group.id for group, _ in rows])
         result = []
         for group, is_muted in rows:
-            last = _group_last_message(self.db, group.id)
+            last = last_by_group.get(group.id)
             result.append(GroupConversationEntity(
                 id=group.id,
                 group_name=group.name,

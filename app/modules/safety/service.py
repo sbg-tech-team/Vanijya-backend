@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.modules.profile.models import Profile
 from app.modules.safety.models import UserBlock, UserReport
 from app.modules.safety.schemas import ReportRequest
 
@@ -42,14 +43,32 @@ def unblock_user(db: Session, blocker_id: UUID, blocked_id: UUID) -> dict:
     return {"status": "unblocked", "blocked_id": str(blocked_id)}
 
 
-def list_blocked(db: Session, blocker_id: UUID) -> list[dict]:
+def list_blocked(db: Session, blocker_id: UUID, page: int = 1, limit: int = 20) -> dict:
+    base = db.query(UserBlock).filter(UserBlock.blocker_id == blocker_id)
+    total = base.count()
     rows = (
-        db.query(UserBlock)
-        .filter(UserBlock.blocker_id == blocker_id)
+        base.outerjoin(Profile, Profile.users_id == UserBlock.blocked_id)
+        .with_entities(
+            UserBlock.blocked_id,
+            UserBlock.blocked_at,
+            Profile.name,
+            Profile.avatar_url,
+        )
         .order_by(UserBlock.blocked_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
         .all()
     )
-    return [{"blocked_id": str(r.blocked_id), "blocked_at": r.blocked_at} for r in rows]
+    blocked = [
+        {
+            "blocked_id": str(r.blocked_id),
+            "blocked_at": r.blocked_at,
+            "name": r.name,
+            "avatar_url": r.avatar_url,
+        }
+        for r in rows
+    ]
+    return {"blocked": blocked, "total": total, "page": page, "limit": limit}
 
 
 def block_status(db: Session, blocker_id: UUID, blocked_id: UUID) -> dict:
@@ -113,14 +132,16 @@ def submit_report(db: Session, reporter_id: UUID, payload: ReportRequest) -> dic
     }
 
 
-def list_my_reports(db: Session, reporter_id: UUID) -> list[dict]:
+def list_my_reports(db: Session, reporter_id: UUID, page: int = 1, limit: int = 20) -> dict:
+    base = db.query(UserReport).filter(UserReport.reporter_id == reporter_id)
+    total = base.count()
     rows = (
-        db.query(UserReport)
-        .filter(UserReport.reporter_id == reporter_id)
-        .order_by(UserReport.created_at.desc())
+        base.order_by(UserReport.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
         .all()
     )
-    return [
+    reports = [
         {
             "id": r.id,
             "target_type": r.target_type,
@@ -131,3 +152,4 @@ def list_my_reports(db: Session, reporter_id: UUID) -> list[dict]:
         }
         for r in rows
     ]
+    return {"reports": reports, "total": total, "page": page, "limit": limit}

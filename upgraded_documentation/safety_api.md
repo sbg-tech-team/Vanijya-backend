@@ -34,18 +34,30 @@ Both features are persisted; there is no in-memory state.
 
 ---
 
-## 2. Path Convention
+## 2. Path Convention & Auth
 
 The router is mounted at the **`/safety`** prefix (no `/api/v1` segment).
 
-URL placeholders follow the rest of the codebase:
+**The acting user is always derived from the JWT** via the `get_current_user_id`
+dependency — never from a path or query parameter. Every endpoint requires
+`Authorization: Bearer <access_token>`.
 
 | Placeholder | Meaning |
 |---|---|
-| `{user_id}` | The **acting** user (the one blocking / reporting) |
 | `{target_id}` | The user being **blocked** or **reported** |
 
-> **Note:** identity is currently taken from the `{user_id}` path parameter. There is no `Authorization`-derived identity binding inside this module yet — callers must pass the acting user's UUID in the path.
+The only path placeholder is `{target_id}`; the blocker/reporter identity comes from the token.
+
+### Pagination
+
+List endpoints (`/blocked`, `/reports`) accept page-based pagination, matching the rest of the codebase:
+
+| Query param | Default | Bounds |
+|---|---|---|
+| `page` | `1` | `≥ 1` |
+| `limit` | `20` | `1–100` |
+
+Paginated responses include `total` (full count), `page`, and `limit` alongside the item array.
 
 ---
 
@@ -102,14 +114,16 @@ The service layer is FastAPI-free and exposes reusable helpers (`is_blocked`, `e
 
 ## 5. API Quick Reference
 
+All endpoints require `Authorization: Bearer <access_token>`.
+
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/safety/{user_id}/block/{target_id}` | Block a user |
-| `DELETE` | `/safety/{user_id}/block/{target_id}` | Unblock a user |
-| `GET` | `/safety/{user_id}/blocked` | List everyone the user has blocked |
-| `GET` | `/safety/{user_id}/block/status/{target_id}` | Is target blocked? (button state) |
-| `POST` | `/safety/{user_id}/report` | Submit a report (user/group/post) |
-| `GET` | `/safety/{user_id}/reports` | List the user's submitted reports |
+| `POST` | `/safety/block/{target_id}` | Block a user |
+| `DELETE` | `/safety/block/{target_id}` | Unblock a user |
+| `GET` | `/safety/blocked` | List everyone you have blocked (paginated) |
+| `GET` | `/safety/block/status/{target_id}` | Is target blocked? (button state) |
+| `POST` | `/safety/report` | Submit a report (user/group/post) |
+| `GET` | `/safety/reports` | List your submitted reports (paginated) |
 
 ---
 
@@ -118,10 +132,10 @@ The service layer is FastAPI-free and exposes reusable helpers (`is_blocked`, `e
 ### 6.1 Block a user
 
 ```
-POST /safety/{user_id}/block/{target_id}
+POST /safety/block/{target_id}
 ```
 
-Blocks `target_id` on behalf of `user_id`.
+Blocks `target_id` on behalf of the authenticated user.
 
 **Rules**
 - Cannot block yourself → `400`.
@@ -140,7 +154,7 @@ Blocks `target_id` on behalf of `user_id`.
 ### 6.2 Unblock a user
 
 ```
-DELETE /safety/{user_id}/block/{target_id}
+DELETE /safety/block/{target_id}
 ```
 
 Removes an existing block.
@@ -161,20 +175,38 @@ Removes an existing block.
 ### 6.3 List blocked users
 
 ```
-GET /safety/{user_id}/blocked
+GET /safety/blocked?page=1&limit=20
 ```
 
-Returns everyone `user_id` has blocked, **newest first**.
+Returns everyone the authenticated user has blocked, **newest first**, with each
+blocked user's profile `name` and `avatar_url` joined in (both `null` if the
+target has no profile row).
+
+| Query param | Default | Bounds |
+|---|---|---|
+| `page` | `1` | `≥ 1` |
+| `limit` | `20` | `1–100` |
 
 **Response `200`**
 ```json
 {
-  "user_id": "a3d2...91",
-  "total": 2,
   "blocked": [
-    { "blocked_id": "8b1f...c4", "blocked_at": "2026-06-25T10:12:03Z" },
-    { "blocked_id": "1c9a...02", "blocked_at": "2026-06-20T08:45:11Z" }
-  ]
+    {
+      "blocked_id": "8b1f...c4",
+      "blocked_at": "2026-06-25T10:12:03Z",
+      "name": "Acme Traders",
+      "avatar_url": "https://.../avatars/8b1f.png"
+    },
+    {
+      "blocked_id": "1c9a...02",
+      "blocked_at": "2026-06-20T08:45:11Z",
+      "name": "Ravi Kumar",
+      "avatar_url": null
+    }
+  ],
+  "total": 2,
+  "page": 1,
+  "limit": 20
 }
 ```
 
@@ -183,7 +215,7 @@ Returns everyone `user_id` has blocked, **newest first**.
 ### 6.4 Check block status
 
 ```
-GET /safety/{user_id}/block/status/{target_id}
+GET /safety/block/status/{target_id}
 ```
 
 Drives the block/unblock button state on a profile screen.
@@ -204,7 +236,7 @@ Drives the block/unblock button state on a profile screen.
 ### 7.1 Submit a report
 
 ```
-POST /safety/{user_id}/report
+POST /safety/report
 ```
 
 **Request body** ([`ReportRequest`](#9-shared-objects))
@@ -247,16 +279,19 @@ POST /safety/{user_id}/report
 ### 7.2 List my reports
 
 ```
-GET /safety/{user_id}/reports
+GET /safety/reports?page=1&limit=20
 ```
 
-Returns all reports submitted by `user_id`, **newest first**.
+Returns all reports submitted by the authenticated user, **newest first**.
+
+| Query param | Default | Bounds |
+|---|---|---|
+| `page` | `1` | `≥ 1` |
+| `limit` | `20` | `1–100` |
 
 **Response `200`**
 ```json
 {
-  "user_id": "a3d2...91",
-  "total": 1,
   "reports": [
     {
       "id": 42,
@@ -266,7 +301,10 @@ Returns all reports submitted by `user_id`, **newest first**.
       "status": "pending",
       "created_at": "2026-06-25T10:30:00Z"
     }
-  ]
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 20
 }
 ```
 
