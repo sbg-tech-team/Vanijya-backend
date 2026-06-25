@@ -6,7 +6,7 @@ owning module's recommendation function and maps the result into FeedItem.
 The "which items" decision belongs to the source modules:
 
   post        -> post_recommendation_module.get_recommended_posts
-  news        -> news_new.feed.service.get_trending_feed
+  news        -> news_new.feed.service.get_trending_news
   connection  -> connections.get_recommendations  (sync; needs a Redis handle)
   group       -> groups.get_group_suggestions     (groups to join)
 
@@ -28,7 +28,7 @@ from app.modules.connections.service import (
 )
 from app.modules.groups.service import get_group_suggestions
 from app.modules.profile.models import Profile
-from app.modules.news_new.feed.service import get_trending_feed as _get_news_trending_feed
+from app.modules.news_new.feed.service import get_trending_news as _get_news_trending_feed
 
 
 # ── Post pipeline ───────────────────────────────────────────────────────────────
@@ -77,9 +77,7 @@ def fetch_news_feed(
         if profile is None:
             return [], []
 
-        feed_page = _get_news_trending_feed(
-            db, profile_id=profile.id, role_id=profile.role_id, limit=20
-        )
+        feed_page = _get_news_trending_feed(db, profile_id=profile.id, limit=20)
         news_items = [
             FeedItem(
                 item_type="news",
@@ -87,7 +85,7 @@ def fetch_news_feed(
                 content_type_label="news",
                 data=card.model_dump(mode="json"),
             )
-            for card in feed_page.items
+            for card in feed_page.articles
         ]
         return [], news_items
     except Exception:

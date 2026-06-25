@@ -135,9 +135,9 @@ class TestIdentityFromToken:
         assert resp.status_code != 422, "user_id is still being required as query param"
 
     def test_news_feed_no_user_id_param(self, auth):
-        with patch("app.modules.news_new.feed.service.get_trending_feed") as mock:
-            from app.modules.news_new.feed.schemas import FeedPage, CursorMeta
-            mock.return_value = FeedPage(items=[], cursor=CursorMeta(has_more=False))
+        with patch("app.modules.news_new.feed.service.get_recommended_feed") as mock:
+            from app.modules.news_new.feed.schemas import NewsFeedPage
+            mock.return_value = NewsFeedPage(articles=[], next_cursor=None)
             resp = auth.get("/news/feed")
         assert resp.status_code != 422
 
@@ -215,9 +215,9 @@ class TestResponseEnvelope:
         _assert_envelope(resp)
 
     def test_news_feed_envelope(self, auth):
-        with patch("app.modules.news_new.feed.service.get_trending_feed") as mock:
-            from app.modules.news_new.feed.schemas import FeedPage, CursorMeta
-            mock.return_value = FeedPage(items=[], cursor=CursorMeta(has_more=False))
+        with patch("app.modules.news_new.feed.service.get_recommended_feed") as mock:
+            from app.modules.news_new.feed.schemas import NewsFeedPage
+            mock.return_value = NewsFeedPage(articles=[], next_cursor=None)
             resp = auth.get("/news/feed")
         _assert_envelope(resp)
 
