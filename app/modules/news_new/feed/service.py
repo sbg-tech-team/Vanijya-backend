@@ -245,33 +245,55 @@ def get_trending_news(
     cursor_article_id: str | None = None,
 ) -> NewsFeedPage:
     """
-    Platform-wide trending news (GET /news/trending).
+    Trending + latest news (GET /news/trending).
 
-    Pure velocity query from news_raw_trending ordered by velocity_score DESC.
-    No profile scoring. Cursor is the article_id of the last returned article.
+    Merges two pools, velocity-first:
+      1. Velocity pool (cap 100) — NewsTrending articles by velocity_score DESC
+      2. Recency pool  (cap 50)  — latest enriched articles not in pool 1, by platform_arrived_at DESC
+    No profile scoring or taste filtering.
+    Cursor is the article_id of the last returned article.
     """
+    _TRENDING_CAP = 100
+    _RECENCY_CAP = 50
+
     limit = min(limit, MAX_PAGE_SIZE)
 
-    all_articles: list[RawArticle] = list(
+    velocity_articles: list[RawArticle] = list(
         db.execute(
             select(RawArticle)
             .join(NewsTrending, NewsTrending.article_id == RawArticle.id)
-            .where(
-                RawArticle.is_active == True,
-                NewsTrending.velocity_score > 0,
-            )
+            .where(RawArticle.is_active == True, NewsTrending.velocity_score > 0)
             .order_by(NewsTrending.velocity_score.desc(), RawArticle.platform_arrived_at.desc())
+            .limit(_TRENDING_CAP)
         ).scalars()
     )
 
-    if not all_articles:
+    velocity_ids = {a.id for a in velocity_articles}
+
+    recency_q = (
+        select(RawArticle)
+        .where(
+            RawArticle.is_active == True,
+            RawArticle.intelligence_status == "enriched",
+        )
+        .order_by(RawArticle.platform_arrived_at.desc())
+        .limit(_RECENCY_CAP)
+    )
+    if velocity_ids:
+        recency_q = recency_q.where(~RawArticle.id.in_(velocity_ids))
+
+    recency_articles: list[RawArticle] = list(db.execute(recency_q).scalars())
+
+    merged = velocity_articles + recency_articles
+
+    if not merged:
         return NewsFeedPage(articles=[], next_cursor=None)
 
     start = 0
     if cursor_article_id:
         try:
             cid = UUID(cursor_article_id)
-            all_ids = [a.id for a in all_articles]
+            all_ids = [a.id for a in merged]
             try:
                 start = all_ids.index(cid) + 1
             except ValueError:
@@ -279,7 +301,7 @@ def get_trending_news(
         except (ValueError, AttributeError):
             start = 0
 
-    page = all_articles[start: start + limit]
+    page = merged[start: start + limit]
     next_cursor = str(page[-1].id) if len(page) == limit else None
 
     result = _build_feed_page(db, page, profile_id)
