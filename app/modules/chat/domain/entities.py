@@ -194,9 +194,35 @@ class ShareGroupItem:
 
 
 @dataclass
+class RecipientItem:
+    """
+    One item in the unified share-sheet list.
+    type = "dm"    → user_id, profile_id, conversation_id (may be None) populated
+    type = "group" → group_id, member_count, can_send populated
+    last_interaction_at drives sort order; None → sinks to bottom.
+    """
+    type: str                           # "dm" | "group"
+    name: str
+    avatar_url: Optional[str]
+    last_interaction_at: Optional[datetime]
+    # DM-only
+    user_id: Optional[UUID] = None
+    profile_id: Optional[int] = None
+    conversation_id: Optional[UUID] = None
+    # Group-only
+    group_id: Optional[UUID] = None
+    member_count: Optional[int] = None
+    can_send: Optional[bool] = None
+
+
+# @dataclass
+# class ShareRecipientsResult:
+#     dm_connections: list
+#     groups: list
+
+@dataclass
 class ShareRecipientsResult:
-    dm_connections: list
-    groups: list
+    recipients: list  # list[RecipientItem]
 
 
 # ── Unified chat list ───────────────────────────────────────────────────────────

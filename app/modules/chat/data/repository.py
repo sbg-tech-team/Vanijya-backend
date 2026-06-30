@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.entities import (
     ChatListItem, ConvSendGuard, ConvStatus, ConversationEntity, DMLastMessage,
     DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity, NewsArticleSnap,
-    PostSnap, UserSnap, ShareDMItem, ShareGroupItem, ShareRecipientsResult,
+    PostSnap, UserSnap, ShareDMItem, ShareGroupItem, ShareRecipientsResult, RecipientItem,
 )
 from app.modules.groups.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.models import Post
@@ -740,83 +740,17 @@ class ChatRepository:
 
     # ── Share recipients ───────────────────────────────────────────────────────
 
-    # def get_share_recipients(self, user_id: UUID) -> ShareRecipientsResult:
-    #     """
-    #     Two queries — no N+1.
-    #       dm_connections : active DMs sorted by most recent activity
-    #       groups         : groups user belongs to (unfrozen), sorted by name
-    #     """
-    #     cm_me = aliased(ConversationMember)
-    #     cm_other = aliased(ConversationMember)
-    #
-    #     dm_rows = (
-    #         self.db.query(
-    #             Conversation.id.label("conv_id"),
-    #             Conversation.updated_at.label("last_message_at"),
-    #             cm_other.user_id.label("other_user_id"),
-    #             Profile.id.label("profile_id"),
-    #             Profile.name,
-    #             Profile.avatar_url,
-    #         )
-    #         .join(cm_me,   and_(cm_me.conversation_id   == Conversation.id, cm_me.user_id   == user_id))
-    #         .join(cm_other, and_(cm_other.conversation_id == Conversation.id, cm_other.user_id != user_id))
-    #         .join(Profile, Profile.users_id == cm_other.user_id)
-    #         .filter(Conversation.status == ConvStatus.ACTIVE)
-    #         .order_by(Conversation.updated_at.desc())
-    #         .all()
-    #     )
-    #
-    #     group_rows = (
-    #         self.db.query(
-    #             Group.id.label("group_id"),
-    #             Group.name,
-    #             Group.image_url,
-    #             Group.member_count,
-    #             Group.chat_perm,
-    #             GroupMember.role,
-    #         )
-    #         .join(GroupMember, and_(
-    #             GroupMember.group_id == Group.id,
-    #             GroupMember.user_id  == user_id,
-    #             GroupMember.is_frozen == False,
-    #         ))
-    #         .order_by(Group.name)
-    #         .all()
-    #     )
-    #
-    #     return ShareRecipientsResult(
-    #         dm_connections=[
-    #             ShareDMItem(
-    #                 conversation_id=row.conv_id,
-    #                 profile_id=row.profile_id,
-    #                 user_id=row.other_user_id,
-    #                 name=row.name,
-    #                 avatar_url=row.avatar_url,
-    #                 last_message_at=row.last_message_at,
-    #             )
-    #             for row in dm_rows
-    #         ],
-    #         groups=[
-    #             ShareGroupItem(
-    #                 group_id=row.group_id,
-    #                 name=row.name,
-    #                 avatar_url=row.image_url,
-    #                 member_count=row.member_count,
-    #                 can_send=row.chat_perm == "all_members" or row.role == "admin",
-    #             )
-    #             for row in group_rows
-    #         ],
-    #     )
-
     def get_share_recipients(self, user_id: UUID) -> ShareRecipientsResult:
         """
-        DM source: everyone the user follows, left-joined with existing DM conversations.
-          - conversation_id is None if no DM exists yet (frontend calls POST /chat/conversations first).
-          - Sorted: most recently active DM first, then alphabetically by name.
-        Groups: unfrozen memberships, sorted by name.
+        Returns a single unified recipients list (DMs + groups) sorted by
+        last_interaction_at DESC, with None values sinking to the bottom.
+        Within the no-activity tail items are sorted alphabetically by name.
+        DM items: type="dm", conversation_id may be None (no prior chat yet).
+        Group items: type="group".
         """
         from app.modules.connections.models import UserConnection
 
+        # ── DMs: everyone the caller follows, left-joined with any existing DM ──
         _cm_me = aliased(ConversationMember)
         _cm_other = aliased(ConversationMember)
 
@@ -845,13 +779,23 @@ class ChatRepository:
                 Profile.name,
                 Profile.avatar_url,
                 my_dm_convs.c.conv_id.label("conv_id"),
-                my_dm_convs.c.updated_at.label("last_message_at"),
+                my_dm_convs.c.updated_at.label("last_interaction_at"),
             )
             .join(Profile, Profile.users_id == UserConnection.following_id)
             .outerjoin(my_dm_convs, my_dm_convs.c.other_user_id == UserConnection.following_id)
             .filter(UserConnection.follower_id == user_id)
-            .order_by(my_dm_convs.c.updated_at.desc(), Profile.name.asc())
             .all()
+        )
+
+        # ── Groups: unfrozen memberships, left-joined with last message time ────
+        last_group_msg = (
+            self.db.query(
+                Message.context_id.label("group_id"),
+                func.max(Message.sent_at).label("last_at"),
+            )
+            .filter(Message.context_type == "group", Message.is_deleted == False)
+            .group_by(Message.context_id)
+            .subquery()
         )
 
         group_rows = (
@@ -862,39 +806,52 @@ class ChatRepository:
                 Group.member_count,
                 Group.chat_perm,
                 GroupMember.role,
+                last_group_msg.c.last_at.label("last_interaction_at"),
             )
             .join(GroupMember, and_(
                 GroupMember.group_id == Group.id,
                 GroupMember.user_id  == user_id,
                 GroupMember.is_frozen == False,
             ))
-            .order_by(Group.name)
+            .outerjoin(last_group_msg, last_group_msg.c.group_id == Group.id)
             .all()
         )
 
-        return ShareRecipientsResult(
-            dm_connections=[
-                ShareDMItem(
-                    conversation_id=row.conv_id,
-                    profile_id=row.profile_id,
-                    user_id=row.other_user_id,
-                    name=row.name,
-                    avatar_url=row.avatar_url,
-                    last_message_at=row.last_message_at,
-                )
-                for row in dm_rows
-            ],
-            groups=[
-                ShareGroupItem(
-                    group_id=row.group_id,
-                    name=row.name,
-                    avatar_url=row.image_url,
-                    member_count=row.member_count,
-                    can_send=row.chat_perm == "all_members" or row.role == "admin",
-                )
-                for row in group_rows
-            ],
+        # ── Build unified list ────────────────────────────────────────────────────
+        recipients: list[RecipientItem] = []
+
+        for row in dm_rows:
+            recipients.append(RecipientItem(
+                type="dm",
+                name=row.name,
+                avatar_url=row.avatar_url,
+                last_interaction_at=row.last_interaction_at,
+                user_id=row.other_user_id,
+                profile_id=row.profile_id,
+                conversation_id=row.conv_id,
+            ))
+
+        for row in group_rows:
+            recipients.append(RecipientItem(
+                type="group",
+                name=row.name,
+                avatar_url=row.image_url,
+                last_interaction_at=row.last_interaction_at,
+                group_id=row.group_id,
+                member_count=row.member_count,
+                can_send=row.chat_perm == "all_members" or row.role == "admin",
+            ))
+
+        # Sort: items with a timestamp → newest first; None → sink to bottom, then by name
+        recipients.sort(
+            key=lambda r: (
+                r.last_interaction_at is None,
+                -(r.last_interaction_at.timestamp() if r.last_interaction_at else 0),
+                r.name.lower(),
+            )
         )
+
+        return ShareRecipientsResult(recipients=recipients)
 
     def get_or_create_dm(self, user_id: UUID, target_user_id: UUID) -> dict:
         """Get existing DM between user and target, or create a new ACTIVE one. Idempotent."""

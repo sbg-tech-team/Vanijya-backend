@@ -766,6 +766,10 @@ def record_share(db: Session, post_id: int, profile_id: int) -> ShareResponse:
         pass
     return ShareResponse(share_count=post.share_count)
 
+from uuid import UUID as UUID
+from app.modules.chat.data.repository import ChatRepository
+from app.modules.chat.domain.entities import ConvStatus
+
 
 def send_post(
     db: Session,
@@ -782,10 +786,7 @@ def send_post(
       3. Increment share_count once regardless of recipient count.
       4. Return share_count + raw delivery lists so the router can emit WebSocket events.
     """
-    from uuid import UUID as _UUID
-    from app.modules.chat.data.repository import ChatRepository
-    from app.modules.chat.domain.entities import ConvStatus
-
+    
     post = _get_post_or_raise(db, post_id)
     chat_repo = ChatRepository(db)
 
