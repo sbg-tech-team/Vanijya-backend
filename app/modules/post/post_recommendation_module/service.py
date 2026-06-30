@@ -562,6 +562,65 @@ def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) 
     return _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)
 
 
+def get_popular_posts(db: Session, profile_id: int, limit: int = POPULAR_LIMIT) -> list:
+    """Popular posts (by velocity) for the viewer's commodities, as full feed cards.
+
+    Standalone accessor for the home feed's blended post pipeline. Reuses the same
+    PopularPost source as the recommender's internal fallback (`_get_popular_posts`),
+    but returns ready-to-serve FeedPostCards instead of internal candidate dicts.
+    """
+    from app.modules.post.models import Post
+
+    profile = (
+        db.query(Profile)
+        .options(selectinload(Profile.commodities))
+        .filter(Profile.id == profile_id)
+        .first()
+    )
+    if not profile:
+        return []
+
+    commodity_ids = [pc.commodity_id for pc in profile.commodities]
+    commodity_idxs = {
+        COMMODITY_ID_TO_IDX[cid] for cid in commodity_ids if cid in COMMODITY_ID_TO_IDX
+    }
+
+    popular = _get_popular_posts(db, commodity_idxs or {0, 1, 2}, exclude_ids=set())
+    if not popular:
+        return []
+
+    # _build_feed_cards needs author_profile_id per entry; resolve it via Post.
+    post_ids = [p["post_id"] for p in popular]
+    posts = {
+        p.id: p
+        for p in db.query(Post)
+        .options(selectinload(Post.deal_details))
+        .filter(Post.id.in_(post_ids))
+        .all()
+    }
+    final: list[dict] = []
+    for p in popular:
+        post = posts.get(p["post_id"])
+        if not post:
+            continue
+        final.append({
+            "post_id": p["post_id"],
+            "category": p["category"],
+            "author_profile_id": post.profile_id,
+        })
+        if len(final) >= limit:
+            break
+
+    followed_user_ids = {
+        row.following_id
+        for row in db.query(UserConnection.following_id)
+        .filter(UserConnection.follower_id == profile.users_id)
+        .all()
+    }
+
+    return _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)
+
+
 
 # def get_recommended_posts(db: Session, profile_id: int, limit: int = FEED_SIZE) -> list:
 #     print("=== GET_RECOMMENDED_POSTS CALLED ===")

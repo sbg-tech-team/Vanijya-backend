@@ -239,9 +239,26 @@ All endpoints require `Authorization: Bearer <access_token>`.
 
 ## 7. Group CRUD APIs
 
+### Group cover image ("avatar") — full upload & replace flow
+
+A group's avatar **is** its cover image, stored as `image_url` on the group. Image bytes never pass through this API — the client uploads them **directly to Supabase storage** using a short-lived signed URL. There is **no dedicated avatar endpoint**; you set or replace the image by writing `image_url` on the group.
+
+The flow is the same whether you're setting the avatar for the first time (on create) or replacing an existing one (on update). Only the final step differs.
+
+| Step | Action | Endpoint |
+|---|---|---|
+| **1. Sign** | Get a signed upload URL | `POST /upload-image?content_type=…` |
+| **2. Upload** | `PUT` the raw image bytes to the signed `upload_url` | Supabase (direct, not this API) |
+| **3a. Set** (new group) | Pass `image_url` in the create body | `POST /` → `GroupCreate.image_url` |
+| **3b. Replace** (existing group) | Pass the new `image_url` in the update body | `PATCH /{group_id}` → `GroupUpdate.image_url` |
+
+Allowed types: `image/jpeg`, `image/png`, `image/webp`. To **remove** an existing avatar, `PATCH` the group with `image_url: null`.
+
+---
+
 ### `POST /api/v1/groups/upload-image`
 
-**Step 1 of image upload.** Get a signed URL to upload the group cover image directly to Supabase storage. Pass the returned `image_url` in `GroupCreate.image_url` when creating the group.
+**Step 1 — sign.** Mint a short-lived signed URL for uploading the group cover image directly to Supabase storage. This endpoint only issues the URL; it does not receive any bytes. Any authenticated user can call it (the image is signed under the caller's id and is not tied to a group until step 3).
 
 | Query Param | Required | Description |
 |---|---|---|
@@ -260,13 +277,43 @@ Authorization: Bearer <access_token>
   "message": "Group image upload URL generated",
   "data": {
     "upload_url": "https://supabase-storage.../signed-url",
+    "expires_at": "2026-05-28T10:30:00.000000+00:00",
     "image_url": "https://supabase-storage.../group-image/user-id/uuid.jpg",
     "content_type": "image/jpeg"
   }
 }
 ```
 
-After receiving this, PUT the image bytes to `upload_url` with `Content-Type: image/jpeg`, then pass `image_url` to the create/update endpoint.
+| Field | Description |
+|---|---|
+| `upload_url` | **Step 2** — `PUT` the raw image bytes here. The PUT's `Content-Type` header **must equal** the `content_type` you signed with, or storage rejects the upload. |
+| `expires_at` | ISO-8601 expiry of `upload_url`. Re-call this endpoint to get a fresh URL if it lapses before you upload. |
+| `image_url` | The final public URL. Persist exactly this value and pass it to step 3 — it becomes valid the moment the step-2 PUT succeeds. |
+| `content_type` | Echoed back for convenience. |
+
+**Step 2 — upload (client → Supabase, direct):**
+```
+PUT <upload_url>
+Content-Type: image/jpeg      # must match the signed content_type
+
+<raw image bytes>
+```
+
+**Step 3 — attach the `image_url` to a group:**
+- **New group:** `POST /api/v1/groups/` with `GroupCreate.image_url = <image_url>`.
+- **Replace avatar on an existing group:** `PATCH /api/v1/groups/{group_id}` with `GroupUpdate.image_url = <image_url>` (admin only). Pass `image_url: null` to clear it.
+
+**Error `422`** — unsupported `content_type`:
+```json
+{ "detail": "Unsupported type 'image/gif'. Allowed: image/jpeg, image/png, image/webp." }
+```
+
+**Error `503`** — storage backend could not issue the signed URL:
+```json
+{ "detail": "Supabase failed to issue upload URL: <reason>" }
+```
+
+> **Note:** this is the group **avatar / cover image** flow. Group *media* (images/videos posted inside the group) uses a separate signed-upload flow — see [`POST /{group_id}/media/upload`](#12-media-apis).
 
 ---
 
@@ -438,6 +485,8 @@ Update group info. **Admin only.** All fields are optional — send only what yo
 ```
 
 Updating `commodities`, `region_lat`, or `region_lon` automatically rebuilds the group's vector embedding.
+
+**Replacing the cover image ("avatar"):** there is no separate avatar endpoint. First sign + upload via [`POST /upload-image`](#post-apiv1groupsupload-image), then `PATCH` here with `image_url` set to the new public URL. Send `image_url: null` to remove the avatar.
 
 **Success `200`** — returns the updated `GroupOut` object.
 

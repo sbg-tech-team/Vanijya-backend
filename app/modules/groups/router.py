@@ -9,6 +9,37 @@ Route ordering:  specific paths before parameterised ones to avoid clashes.
 
 All mutating endpoints require a Bearer token; user identity is derived from
 the JWT via get_current_user_id — never from a client-supplied query param.
+
+────────────────────────────────────────────────────────────────────────────
+Group cover image ("avatar") — upload & replace flow
+────────────────────────────────────────────────────────────────────────────
+A group's avatar is its cover image, stored as `image_url` on the group. Bytes
+never pass through this API — the client uploads directly to object storage
+(Supabase) using a short-lived signed URL. There is NO dedicated avatar PATCH
+endpoint; you set/replace the image by updating the group's `image_url`.
+
+  Step 1 — Sign:    POST /upload-image?content_type=image/jpeg
+                    → { upload_url, expires_at, image_url, content_type }
+
+  Step 2 — Upload:  PUT the raw image bytes to `upload_url`.
+                    The request's Content-Type header MUST equal the
+                    `content_type` you signed with, or storage rejects it.
+                    `upload_url` expires at `expires_at` (signed-URL TTL) —
+                    re-sign if it lapses.
+
+  Step 3a — Set (on create):
+                    POST /  with GroupCreate.image_url = <image_url from step 1>
+
+  Step 3b — Replace (existing group):
+                    PATCH /{group_id}  with GroupUpdate.image_url = <new image_url>
+                    Admin only. To clear/remove the avatar, send image_url: null.
+
+Notes:
+  • Allowed types: image/jpeg, image/png, image/webp.
+  • `image_url` is the final public URL — persist exactly what step 1 returned;
+    it is valid the moment the PUT in step 2 succeeds.
+  • This is the group avatar (cover). Group *media* (posts/attachments) uses a
+    separate flow: POST /{group_id}/media/upload (see below).
 """
 from uuid import UUID
 
@@ -93,9 +124,32 @@ async def group_image_upload_url_api(
     content_type: str = Query(..., description="image/jpeg | image/png | image/webp"),
 ):
     """
-    Step 1 — get a signed upload URL for the group cover image.
-    Step 2: PUT image bytes directly to upload_url (Content-Type must match).
-    Step 3: pass image_url in GroupCreate.image_url when creating the group.
+    Sign an upload URL for a group's cover image ("avatar"). Step 1 of 3.
+
+    The bytes are uploaded by the client straight to object storage — they do
+    not flow through this API. This endpoint only mints the signed URL.
+
+    Request:
+        content_type  query param — image/jpeg | image/png | image/webp.
+
+    Response (data):
+        upload_url    PUT the raw image bytes here (Step 2). The PUT's
+                      Content-Type header MUST equal `content_type` above.
+        expires_at    ISO-8601 expiry of `upload_url`; re-sign if it lapses.
+        image_url     Final public URL — valid once the Step 2 PUT succeeds.
+        content_type  Echoed back for convenience.
+
+    Next steps:
+        Step 2 — PUT bytes to `upload_url`.
+        Step 3 — set the image on the group:
+                 • New group:      POST /  with GroupCreate.image_url=<image_url>
+                 • Replace avatar: PATCH /{group_id} with
+                                   GroupUpdate.image_url=<image_url> (admin only).
+                                   Pass image_url=null to clear it.
+
+    Errors:
+        422  unsupported content_type.
+        503  storage backend could not issue the signed URL.
     """
     try:
         result = await get_group_image_upload_url(user_id, content_type)
@@ -206,6 +260,15 @@ def update_group_api(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
+    """
+    Update group info — admin only. Partial update (only sent fields change).
+
+    This is also how you replace the group's cover image ("avatar"): first sign
+    and upload via POST /upload-image, then PATCH here with
+    GroupUpdate.image_url = <image_url from the signed-URL response>.
+    Send image_url: null to remove the avatar. There is no separate avatar
+    endpoint — the image lives on the group as `image_url`.
+    """
     result = _handle(update_group, db, group_id, user_id, payload)
     return ok(result, "Group updated")
 

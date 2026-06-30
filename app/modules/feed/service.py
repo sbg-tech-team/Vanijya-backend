@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
-from typing import Callable, Optional, TypeVar
+from typing import Callable, Optional, TypeVar, cast
 
 import redis
 from sqlalchemy.orm import Session
@@ -82,9 +82,9 @@ def get_home_feed(
     # DB session (see _in_own_session). Wall-time ≈ slowest pipeline, not the sum.
     # The request-scoped `db` is intentionally not used here (it isn't thread-safe).
     tasks: dict[str, Callable[[], object]] = {
-        "post": lambda: _in_own_session(
-            lambda s: fetch_post_candidates(s, profile_id, limit=POST_LIMIT)
-        ),
+        # fetch_post_candidates self-manages its own (parallel) sessions, so it
+        # doesn't need a dedicated one here — `db` is passed but unused by it.
+        "post": lambda: fetch_post_candidates(db, profile_id, limit=POST_LIMIT),
         "news": lambda: _in_own_session(
             lambda s: fetch_news_feed(s, user_id)
         ),
@@ -106,7 +106,9 @@ def get_home_feed(
                 results[key] = ([], []) if key == "news" else []
 
     post_candidates = results["post"]
-    breaking_pins, news_candidates = results["news"]
+    breaking_pins, news_candidates = cast(
+        "tuple[list[FeedItem], list[FeedItem]]", results["news"]
+    )
     conn_candidates = results["connection"]
     group_candidates = results["group"]
 
