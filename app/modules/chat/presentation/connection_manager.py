@@ -17,9 +17,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 import socketio
 from app.core.database.session import SessionLocal
+from app.modules.chat.data.repository import ChatRepository
 from app.core.security.jwt_handler import decode_access_token
 from app.modules.chat.data.models import ConversationMember
-from app.modules.groups.models import GroupMember
+from app.modules.groups.data.models import GroupMember
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 
@@ -53,10 +54,7 @@ async def join_group(sid, data):
 
     db = SessionLocal()
     try:
-        member = db.query(GroupMember).filter(
-            GroupMember.group_id == group_id,
-            GroupMember.user_id == user_id,
-        ).first()
+        member = ChatRepository(db).is_group_member(group_id, user_id) or None
     finally:
         db.close()
 
@@ -93,14 +91,10 @@ async def _relay_typing(sid, data, event: str) -> None:
     if context_type == "dm":
         db = SessionLocal()
         try:
-            rows = (
-                db.query(ConversationMember.user_id)
-                .filter(ConversationMember.conversation_id == context_id)
-                .all()
-            )
+            member_ids_from_db = ChatRepository(db).dm_member_ids(context_id)
         finally:
             db.close()
-        member_ids = [str(r[0]) for r in rows]
+        member_ids = member_ids_from_db
         if user_id not in member_ids:
             return  # not a member — refuse to relay
         for mid in member_ids:
@@ -123,26 +117,9 @@ async def message_delivered(sid, data):
     now = datetime.now(timezone.utc)
     db = SessionLocal()
     try:
-        updated = (
-            db.query(ConversationMember)
-            .filter(
-                ConversationMember.conversation_id == conv_id,
-                ConversationMember.user_id == user_id,
-            )
-            .update({"last_delivered_at": now}, synchronize_session=False)
-        )
-        if not updated:
-            db.rollback()
+        peer = ChatRepository(db).mark_delivered_and_get_peer(conv_id, user_id, now)
+        if peer is None:
             return  # not a member — ignore
-        peer = (
-            db.query(ConversationMember.user_id)
-            .filter(
-                ConversationMember.conversation_id == conv_id,
-                ConversationMember.user_id != user_id,
-            )
-            .first()
-        )
-        db.commit()
     finally:
         db.close()
 

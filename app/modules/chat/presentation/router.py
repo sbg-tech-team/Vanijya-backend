@@ -7,7 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user_id, get_db
-from app.modules.chat import service as chat_service
+from app.modules.chat.application import service as chat_service
 from app.modules.chat.data.repository import ChatRepository
 from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user, is_online
 from app.modules.chat.presentation.dependencies import (
@@ -15,8 +15,8 @@ from app.modules.chat.presentation.dependencies import (
     get_chat_repo,
     get_conversations_uc,
     get_delete_message_uc,
-    get_group_conversations_uc,
     get_group_message_uc,
+    get_group_conversations_uc,
     get_group_messages_uc,
     get_mark_read_uc,
     get_messages_uc,
@@ -24,15 +24,15 @@ from app.modules.chat.presentation.dependencies import (
     get_send_message_uc,
     get_share_recipients_uc,
 )
-from app.modules.chat.presentation.schema import (
+from app.modules.chat.presentation.schemas import (
     CreatePersonalDealRequest,
     OpenConversationRequest,
     OpenConversationResponse,
     SendGroupMessageRequest,
     SendMessageRequest,
 )
-from app.modules.groups.schemas import GroupDealCreate
-from app.modules.groups.service import GroupPermissionError, create_group_deal
+from app.modules.groups.presentation.schemas import GroupDealCreate
+from app.modules.groups.application.use_cases.service import GroupPermissionError, create_group_deal
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -43,14 +43,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 def open_conversation(
     body: OpenConversationRequest,
     user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    repo: ChatRepository = Depends(get_chat_repo),
 ):
     """
     Get or create a direct DM conversation with target_user_id.
     Idempotent — safe to call multiple times, returns the same conversation.
     created=true means a new conversation was just created.
     """
-    repo = ChatRepository(db)
     result = repo.get_or_create_dm(user_id, body.participant_id)
     return {"id": result["conversation_id"], "status": result["status"], "created": result["created"]}
 
@@ -74,18 +73,6 @@ def list_all_chats(
     return items
 
 
-@router.get("/groups")
-def list_group_chats(
-    page: int = 1,
-    per_page: int = 20,
-    user_id: UUID = Depends(get_current_user_id),
-    uc=Depends(get_group_conversations_uc),
-):
-    """Groups-only chat list — every group the caller is a member of, sorted by
-    last activity (newest on top). The group-chat counterpart to /conversations."""
-    return uc.execute(user_id, page, per_page)
-
-
 @router.get("/conversations")
 def list_conversations(
     page: int = 1,
@@ -97,6 +84,18 @@ def list_conversations(
     for conv in convs:
         conv.participant.is_online = is_online(conv.participant.user_id)
     return convs
+
+
+@router.get("/groups")
+def list_group_chats(
+    page: int = 1,
+    per_page: int = 20,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_group_conversations_uc),
+):
+    """Groups-only chat list — every group the caller is a member of, sorted by
+    last activity (newest on top). The group-chat counterpart to /conversations."""
+    return uc.execute(user_id, page, per_page)
 
 
 @router.get("/presence")

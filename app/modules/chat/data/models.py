@@ -14,7 +14,7 @@ class Conversation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type: Mapped[str] = mapped_column(String(10), nullable=False, default="dm")
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # was "requested" — message request gate bypassed
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="requested")
     initiator_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -76,8 +76,11 @@ class Message(Base):
     post_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
     )
+    # Restored: app_new had dropped this, which is why a news article could not
+    # be shared into a chat. The column exists in production (app_old declares
+    # it); the FK now points at app_new's news_articles table.
     article_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("news_raw_articles.id", ondelete="SET NULL"), nullable=True
+        PGUUID(as_uuid=True), ForeignKey("news_articles.id", ondelete="SET NULL"), nullable=True
     )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

@@ -1,0 +1,120 @@
+"""
+Phase 1 — Priority Queue Resolver.
+
+Surfaces two categories of time-critical content:
+  1. Unseen posts from followed users (last 6 h, max 5)
+  2. Breaking news (severity ≥ 8, last 3 h, user's commodities, max 2)
+
+Total max priority items: 7
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+# import redis  # re-enable when Redis is turned back on
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.modules.home_feed.presentation.schemas import FeedItem
+from app.modules.connections.data.models import UserConnection
+from app.modules.post.data.models import Post, PostLike, PostSave
+from app.modules.profile.data.models import Profile
+
+FOLLOWED_USER_WINDOW_H = 6
+BREAKING_NEWS_WINDOW_H = 3
+BREAKING_SEVERITY_THRESHOLD = 8.0
+MAX_FOLLOWED_PINS = 5
+MAX_BREAKING_PINS = 2
+
+
+def resolve_priority_pins(
+    db: Session,
+    profile_id: int,
+    user_id: UUID,
+    commodity_names: list[str],
+    role_name: str,
+) -> list[FeedItem]:
+    pins: list[FeedItem] = []
+    pins.extend(_unseen_followed_posts(db, profile_id, user_id))
+    pins.extend(_breaking_news(db, profile_id, user_id, commodity_names, role_name))
+    return pins
+
+
+# ── Unseen posts from followed users ─────────────────────────────────────────
+
+def _unseen_followed_posts(
+    db: Session,
+    profile_id: int,
+    user_id: UUID,
+) -> list[FeedItem]:
+    # seen_ids from Redis disabled — using empty set for now
+    # seen_key = f"seen:posts:{profile_id}"
+    # seen_ids = {s.decode() if isinstance(s, bytes) else s for s in rc.smembers(seen_key)}
+    seen_ids: set[str] = set()
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=FOLLOWED_USER_WINDOW_H)
+
+    sql = text("""
+        SELECT p.*
+        FROM posts p
+        JOIN profile pr ON pr.id = p.profile_id
+        JOIN user_connections uc ON uc.following_id = pr.users_id
+        WHERE uc.follower_id = :user_id
+          AND p.created_at > :cutoff
+          AND p.is_public = TRUE
+        ORDER BY p.created_at DESC
+        LIMIT :limit
+    """)
+
+    rows = db.execute(sql, {
+        "user_id": str(user_id),
+        "cutoff": cutoff,
+        "limit": MAX_FOLLOWED_PINS * 3,
+    }).mappings().all()
+
+    items: list[FeedItem] = []
+    for r in rows:
+        pid = str(r["id"])
+        if pid in seen_ids or len(items) >= MAX_FOLLOWED_PINS:
+            break
+        is_liked = db.query(PostLike).filter_by(post_id=r["id"], profile_id=profile_id).first() is not None
+        is_saved = db.query(PostSave).filter_by(post_id=r["id"], profile_id=profile_id).first() is not None
+        items.append(FeedItem(
+            item_type="post",
+            item_id=pid,
+            is_priority=True,
+            content_type_label="post",
+            data={
+                "id": r["id"],
+                "profile_id": r["profile_id"],
+                "caption": r["caption"],
+                "image_urls": r["image_urls"],
+                "category_id": r["category_id"],
+                "commodity_id": r["commodity_id"],
+                "like_count": r["like_count"],
+                "comment_count": r["comment_count"],
+                "save_count": r["save_count"],
+                "share_count": r["share_count"],
+                "view_count": r["view_count"],
+                "is_liked": is_liked,
+                "is_saved": is_saved,
+                "created_at": r["created_at"].isoformat(),
+                "allow_comments": r["allow_comments"],
+            },
+        ))
+    return items
+
+
+# ── Breaking news ─────────────────────────────────────────────────────────────
+
+def _breaking_news(
+    db: Session,
+    profile_id: int,
+    user_id: UUID,
+    commodity_names: list[str],
+    role_name: str,
+) -> list[FeedItem]:
+    # Breaking news is omitted from news_new by design (matches app_v1_backup
+    # modules/feed/priority.py::_breaking_news exactly).
+    return []

@@ -6,48 +6,51 @@ from alembic import context  # type: ignore
 
 # Import all models so Alembic autogenerate can detect them
 from app.core.database.base import Base
-from app.modules.auth.models import UserSession  # noqa: F401
-from app.modules.profile.models import (  # noqa: F401
+from app.modules.onboarding.data.models import UserSession  # noqa: F401
+from app.modules.profile.data.models import (  # noqa: F401
     User,
     Profile,
+    Business,
     Role,
     Commodity,
     Interest,
     Profile_Commodity,
     Profile_Interest,
+    UserEmbedding,
 )
-from app.modules.verification.models import VerificationRecord  # noqa: F401
-from app.modules.post.models import (  # noqa: F401
+from app.modules.verification.data.models import VerificationRecord  # noqa: F401
+from app.modules.post.data.models import (  # noqa: F401
     Post,
     PostCategory,
+    PostDealDetails,
     PostView,
     PostLike,
     PostComment,
     PostShare,
     PostSave,
 )
-from app.modules.groups.models import (  # noqa: F401
+from app.modules.groups.data.models import (  # noqa: F401
     Group,
     GroupMember,
     GroupActivityCache,
     GroupEmbedding,
     GroupMedia,
+    GroupDeal,
+    GroupJoinRequest,
+    PersonalDeal,
 )
-from app.modules.news_new.ingestion.models import RawArticle  # noqa: F401
-from app.modules.news_new.intelligence.models import EnrichedArticle  # noqa: F401
-from app.modules.news_new.news_user_interaction.models import (  # noqa: F401
+from app.modules.news.data.models import (  # noqa: F401
+    RawArticle,
+    EnrichedArticle,
     NewsInteractionEvent,
     NewsView,
     NewsLike,
     NewsSave,
     NewsShare,
     NewsArticleStats,
-    NewsTrending,
     UserNewsTaste,
     UserNewsTasteProfile,
-)
-from app.modules.news_new.news_recommendation_engine.models import (  # noqa: F401
-    ArticleRecommendationScore,
+    NewsTrending,
     FeedRankingCache,
 )
 from app.modules.chat.data.models import (  # noqa: F401
@@ -56,11 +59,11 @@ from app.modules.chat.data.models import (  # noqa: F401
     Message,
     ChatAttachment,
 )
-from app.modules.safety.models import (  # noqa: F401
+from app.modules.safety.data.models import (  # noqa: F401
     UserBlock,
     UserReport,
 )
-from app.modules.taste.global_taste.data.models import UserGlobalTaste  # noqa: F401
+from app.recommendation.global_taste.models import UserGlobalTaste  # noqa: F401
 
 from app.core.config import settings
 

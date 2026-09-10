@@ -11,13 +11,13 @@ import pytest
 @pytest.fixture(autouse=True, scope="session")
 def patch_startup():
     """
-    main.py lifespan calls _scheduler.start() and ingest().
-    - _scheduler is the module app.core.scheduler, so patching its .start/.stop works.
-    - ingest is imported directly into main's namespace, so patch main.ingest.
+    main.py's lifespan calls _scheduler.start()/.stop() (app.core.scheduler) —
+    patching those two is enough; main.py no longer imports any news task
+    directly (it registers routers via app.routers.register_routers and lets
+    app.core.scheduler own all background job wiring, including news).
     """
     with (
         patch("app.core.scheduler.start",  MagicMock()),
         patch("app.core.scheduler.stop",   MagicMock()),
-        patch("main.ingest",               MagicMock()),
     ):
         yield

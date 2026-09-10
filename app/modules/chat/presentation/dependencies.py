@@ -1,7 +1,19 @@
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from app.modules.chat.data.repository import ChatRepository
-from app.modules.chat.domain.use_cases import *
+from app.modules.chat.application.use_cases.service import (
+    GetConversationsUseCase,
+    GetMessagesUseCase,
+    SendMessageUseCase,
+    SendGroupMessageUseCase,
+    GetGroupMessagesUseCase,
+    MarkReadUseCase,
+    CreatePersonalDealUseCase,
+    DeleteMessageUseCase,
+    GetShareRecipientsUseCase,
+    GetAllChatsUseCase,
+    GetGroupConversationsUseCase,
+)
 from app.dependencies import get_db
 
 def get_chat_repo(db: Session = Depends(get_db)) -> ChatRepository:

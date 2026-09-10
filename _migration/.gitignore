@@ -1,0 +1,13 @@
+# pkgroot/app is a local Windows directory junction pointing at the real
+# ../app/ tree (so _migration's test scripts can `import app` in isolation).
+# It must never be committed: git would walk into the junction and duplicate
+# the entire app/ tree a second time under this path.
+pkgroot/app
+__pycache__/
+*.pyc
+
+# Generated outputs of extract_contracts.py — regenerate on demand, not
+# meaningful to freeze in history (old.json is near-empty in this checkout
+# since app_old isn't present here; new.json regenerates from app/ anyway).
+old.json
+new.json
