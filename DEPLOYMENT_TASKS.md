@@ -58,9 +58,15 @@ Verify: two clients connect, a DM/group message delivers via `new_message`/`new_
 and `POST /news/interactions/send/{id}` delivers a shared article into chat.
 
 ### Load and latency
-Never measured under real traffic. Watch especially `GET /feed/home` (4 source pipelines,
-each on its own DB session — confirm the connection pool copes under concurrency) and
-`posts.taste_update` (runs every 15 min, `_BATCH_SIZE=500` → up to 48,000 events/day).
+Never measured under real traffic. Watch especially `posts.taste_update` (runs every 15 min,
+`_BATCH_SIZE=500` → up to 48,000 events/day).
+
+### `home_feed` module removed
+`app/modules/home_feed/` (`GET /feed/home`, `POST /feed/engagement`) was removed entirely — it
+never had a real implementation behind it (`POST /feed/engagement` was a documented no-op, and
+the type-mix weighting it exposed was hardcoded, not dynamic). All references to it — router
+registration in `app/routers.py`, the `_migration` gates, `tests/test_security_fixes.py` — were
+cleaned up alongside its removal.
 
 ### `sslmode=require` is hardcoded
 `app/core/database/session.py` hardcodes `connect_args={"sslmode": "require"}`. Fine for managed

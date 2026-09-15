@@ -82,9 +82,6 @@ _aid = uuid4()
 _tid = uuid4()   # target user uuid
 
 PROTECTED_ENDPOINTS = [
-    # Feed
-    ("GET",    "/feed/home"),
-    ("POST",   "/feed/engagement"),
     # News
     ("GET",    "/news/feed"),
     ("GET",    f"/news/articles/{_aid}"),
@@ -135,12 +132,6 @@ def test_401_without_token(anon, method, path):
 
 class TestIdentityFromToken:
 
-    def test_feed_home_no_user_id_param(self, auth):
-        with patch("app.modules.home_feed.presentation.router.get_home_feed") as mock:
-            mock.return_value = MagicMock(model_dump=lambda: {"items": []})
-            resp = auth.get("/feed/home")
-        assert resp.status_code != 422, "user_id is still being required as query param"
-
     def test_news_feed_no_user_id_param(self, auth):
         from app.modules.news.application.use_cases.get_feed import GetFeedUseCase
         from app.modules.news.domain.entities import NewsFeedPage
@@ -159,27 +150,6 @@ class TestIdentityFromToken:
             mock.return_value = []
             resp = auth.get("/connections/search")
         assert resp.status_code != 422
-
-    def test_impersonation_blocked_feed(self, auth):
-        """
-        Passing ?user_id=<other_uuid> must not override the token's identity.
-        The service must always receive MOCK_USER_ID from the token.
-        """
-        other_id = uuid4()
-        captured = {}
-
-        def fake_feed(db, user_id, profile_id, r, cursor):
-            captured["user_id"] = user_id
-            return MagicMock(model_dump=lambda: {})
-
-        with patch("app.modules.home_feed.presentation.router.get_home_feed", side_effect=fake_feed):
-            auth.get(f"/feed/home?user_id={other_id}")
-
-        if "user_id" in captured:
-            assert captured["user_id"] == MOCK_USER_ID, (
-                f"Impersonation still possible — service received {captured['user_id']} "
-                f"instead of token's {MOCK_USER_ID}"
-            )
 
     def test_old_connections_path_with_user_id_rejected(self, anon):
         """Old /{user_id}/follow/{target_id} pattern must no longer exist."""
@@ -206,12 +176,6 @@ def _assert_envelope(resp, expected_status=200):
 
 
 class TestResponseEnvelope:
-
-    def test_feed_home_envelope(self, auth):
-        with patch("app.modules.home_feed.presentation.router.get_home_feed") as mock:
-            mock.return_value = MagicMock(model_dump=lambda: {"items": []})
-            resp = auth.get("/feed/home")
-        _assert_envelope(resp)
 
     def test_news_feed_envelope(self, auth):
         from app.modules.news.application.use_cases.get_feed import GetFeedUseCase
@@ -286,12 +250,6 @@ class TestStatusCodes:
                 "caption": "test post",
             })
         assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
-
-    def test_feed_engagement_returns_201(self, auth):
-        with patch("app.modules.home_feed.presentation.router.submit_engagement") as mock:
-            mock.return_value = {"recorded": 0}
-            resp = auth.post("/feed/engagement", json={"signals": []})
-        assert resp.status_code == 201, f"Expected 201, got {resp.status_code}"
 
     # ── 204 Deletes ───────────────────────────────────────────────────────────
 

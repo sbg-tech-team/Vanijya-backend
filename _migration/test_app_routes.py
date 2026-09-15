@@ -24,7 +24,7 @@ old = json.load(open("old.json"))["endpoints"]
 want = sorted({f'{e["method"]} {norm(e["full"])}' for e in old})
 missing = [p for p in want if p not in have]
 check("every app_old endpoint is reachable on the real app", missing, [])
-check("all routers registered", len(names), 14)
+check("all routers registered", len(names), 13)
 
 # --- news: no compat/native split anymore -------------------------------------
 # The news module was rebuilt to answer app_old's exact paths natively (GNews +

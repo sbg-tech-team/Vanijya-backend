@@ -23,7 +23,7 @@ def norm(a):
     if m: a = f"{m.group(1)} | None"
     return a.replace(" ", "")
 
-OLDMAP = {"auth": "onboarding", "feed": "home_feed", "news_new": "news"}
+OLDMAP = {"auth": "onboarding", "news_new": "news"}
 
 def _mod(dp):
     parts = dp.replace(os.sep, "/").split("/")

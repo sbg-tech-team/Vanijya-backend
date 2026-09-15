@@ -3,7 +3,7 @@ The endpoint diff only proves paths match; this proves request/response BODIES m
 import ast, os, re, sys
 from collections import defaultdict
 
-OLDMAP = {"auth": "onboarding", "feed": "home_feed", "news_new": "news"}
+OLDMAP = {"auth": "onboarding", "news_new": "news"}
 
 def _norm(a: str) -> str:
     """`Optional[X]` and `X | None` are the same type and the same JSON."""

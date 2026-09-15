@@ -74,7 +74,7 @@ for name, mod in [("google", _google), ("google.genai", _genai), ("firebase_admi
 def import_all_modules():
     """Import every module package fresh. Returns {name: None | exception}."""
     names = ["profile", "onboarding", "post", "chat", "connections", "groups",
-             "news", "home_feed", "deeplink", "verification", "safety"]
+             "news", "deeplink", "verification", "safety"]
     out = {}
     for m in names:
         for k in [k for k in list(sys.modules) if k.startswith("app.")]:

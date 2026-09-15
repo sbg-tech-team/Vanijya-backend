@@ -129,9 +129,6 @@ def m_chat(ctx):
         cid = r.json()["id"]
         yield call("GET", f"/chat/conversations/{cid}/messages")
 
-def m_home_feed(ctx):
-    yield call("GET", "/feed/home", expect=[200, 404, 500], note="(multi-module pipeline)")
-
 def m_verification(ctx):
     yield call("GET", "/verification/status")
     yield call("POST", "/verification/kyc/aadhaar",
@@ -151,7 +148,7 @@ def m_onboarding(ctx):
 MODULES = {
     "profile": m_profile, "safety": m_safety, "news": m_news, "post": m_post,
     "connections": m_connections, "groups": m_groups, "chat": m_chat,
-    "home_feed": m_home_feed, "verification": m_verification,
+    "verification": m_verification,
     "deeplink": m_deeplink, "onboarding": m_onboarding,
 }
 

@@ -21,7 +21,6 @@ def register_routers(app) -> list[str]:
     )
     from app.modules.deeplink.presentation.router import router as deeplink_router
     from app.modules.groups.presentation.router import router as groups_router
-    from app.modules.home_feed.presentation.router import router as home_feed_router
     from app.modules.news.presentation.router import router as news_router
     from app.modules.onboarding.presentation.router import router as onboarding_router
     from app.modules.post.presentation.router import router as post_router
@@ -46,7 +45,6 @@ def register_routers(app) -> list[str]:
         ("recommendations", recommendations_router),
         ("groups", groups_router),
         ("chat", chat_router),
-        ("home_feed", home_feed_router),
         ("safety", safety_router),
         ("deeplink", deeplink_router),
     ]
