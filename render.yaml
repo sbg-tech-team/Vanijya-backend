@@ -3,9 +3,38 @@ services:
     name: vanijyaa-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT 
+    # Single worker is required, not a default. app/core/realtime.py keeps
+    # Socket.IO room state in-process, so a second worker silently drops
+    # real-time chat and call events for whoever is connected to the other one.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /
+    # Deploys are triggered by .github/workflows/deploy.yml, AFTER it has run
+    # the test gate and `alembic upgrade head`. Leaving Render's own auto-deploy
+    # on would race it and ship code before its migration had run.
+    autoDeploy: false
     envVars:
-      - key: DATABASE_URL
-        sync: false
       - key: ENVIRONMENT
         value: production
+      # sync: false = set in the Render dashboard, never in the repo.
+      - key: DATABASE_URL          # postgresql+asyncpg://...
+        sync: false
+      - key: SYNC_DATABASE_URL     # postgresql+psycopg2://... (alembic uses this)
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      # Calling — without these the calling endpoints fail at runtime.
+      - key: STREAM_API_KEY
+        sync: false
+      - key: STREAM_API_SECRET
+        sync: false
+      # News ingestion
+      - key: GNEWS_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # Push notifications
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      # Monitoring
+      - key: SENTRY_DSN
+        sync: false

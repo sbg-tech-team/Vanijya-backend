@@ -1,0 +1,87 @@
+# Push to main -> verify -> migrate -> deploy.
+#
+# Two GitHub secrets make this work (Settings > Secrets and variables > Actions):
+#
+#   RENDER_DEPLOY_HOOK_URL   Render dashboard > the service > Settings > Deploy Hook
+#   SYNC_DATABASE_URL        the production postgresql+psycopg2:// URL, for alembic
+#
+# Until those are set the migrate and deploy steps are SKIPPED, not failed, so
+# merging to main stays safe while the Render service is being sorted out.
+#
+# Migrations run HERE, before the deploy is triggered. Render's buildCommand
+# never ran alembic, so every schema change depended on someone remembering.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # lets you deploy by hand from the Actions tab
+
+concurrency:
+  group: deploy-main        # never let two deploys race
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # Dummy values: these checks import the app but never open a connection.
+    env:
+      DATABASE_URL: postgresql+asyncpg://u:p@localhost/x
+      SYNC_DATABASE_URL: postgresql+psycopg2://u:p@localhost/x
+      REDIS_URL: redis://localhost:6379/0
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Architecture gate
+        run: python _migration/test_architecture.py
+
+      - name: Calling tests
+        run: python tests/test_calling.py
+
+      - name: Post indexing test
+        run: python tests/test_post_indexing.py
+
+      - name: App imports and every router registers
+        run: python -c "import main; print('boot ok')"
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      PROD_DB: ${{ secrets.SYNC_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run migrations
+        if: env.PROD_DB != ''
+        env:
+          SYNC_DATABASE_URL: ${{ secrets.SYNC_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.SYNC_DATABASE_URL }}
+        run: alembic upgrade head
+
+      - name: Skip migrations (no DB secret)
+        if: env.PROD_DB == ''
+        run: echo "::warning::SYNC_DATABASE_URL not set - migrations did NOT run."
+
+      - name: Trigger Render deploy
+        if: env.HOOK != ''
+        run: curl -fsSL -X POST "$HOOK"
+
+      - name: Skip deploy (no hook)
+        if: env.HOOK == ''
+        run: |
+          echo "::warning::RENDER_DEPLOY_HOOK_URL not set - nothing was deployed."
+          echo "Add it under Settings > Secrets and variables > Actions."
