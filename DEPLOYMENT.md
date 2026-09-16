@@ -14,8 +14,11 @@ No manual steps once the two secrets below are set.
 
 | Secret | Where to get it |
 |---|---|
-| `RENDER_DEPLOY_HOOK_URL` | Render → the service → Settings → **Deploy Hook** |
-| `SYNC_DATABASE_URL` | The production `postgresql+psycopg2://…` URL. Alembic uses this one. |
+| `RENDER_API_KEY` | Render → Account Settings → API Keys |
+| `RENDER_SERVICE_ID` | `srv-d8v2744vikkc73f5esqg` |
+| `SYNC_DATABASE_URL` | Production `postgresql+psycopg2://…`. Alembic reads this one. |
+
+All three are already set on this repo.
 
 Until both are set the pipeline still runs the tests, but skips migrating and
 deploying with a warning instead of failing. Merging stays safe.
@@ -53,16 +56,19 @@ Set every `sync: false` key from `render.yaml` in the dashboard.
 Buckets (`POST_STORAGE_BUCKET`, `CHAT_STORAGE_BUCKET`, `GROUP_IMAGE_BUCKET`,
 `GROUP_MEDIA_BUCKET`) and `JWT_ALGORITHM` all have working defaults.
 
-### 3. Turn Render's own auto-deploy OFF
+### 3. Render auto-deploy stays OFF
 
-`render.yaml` sets `autoDeploy: false`, but that only applies if the service is
-Blueprint-managed. **If the service was created by hand in the dashboard, Render
-ignores `render.yaml` entirely** — switch Auto-Deploy off in the service
-settings yourself.
+Already `autoDeploy: no` on the service — nothing to change.
 
-This matters: if Render deploys on push *and* the pipeline deploys after
-migrating, Render wins the race and ships code before its migration has run.
-The pipeline must be the only trigger.
+<details><summary>Why it matters</summary>
+
+The service was created by hand, so Render **ignores `render.yaml`** — that file
+is documentation of intent, not config. All real settings live in the dashboard.
+
+If Render deployed on push *and* the pipeline deployed after migrating, Render
+would win the race and ship code before its migration ran. The pipeline must be
+the only trigger.
+</details>
 
 ## What the pipeline does
 
@@ -70,7 +76,8 @@ The pipeline must be the only trigger.
 app import that registers every router. Runs on dummy DB credentials; these
 checks never open a connection. A failure here stops the deploy.
 
-**deploy** — `alembic upgrade head` against production, *then* the Render hook.
+**deploy** — `alembic upgrade head` against production, *then* the Render API
+deploy, polled to completion so a failed build fails the job.
 That order is the point: migrations have never run automatically on this
 service, so every schema change used to depend on someone remembering.
 
