@@ -1,4 +1,6 @@
 import logging
+import os
+
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -14,9 +16,16 @@ scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 _log = logging.getLogger(__name__)
 
 
+# The old hardcoded host (vanijyaa-backend.onrender.com) does not exist, so this
+# ping failed every 10 minutes. Render injects RENDER_EXTERNAL_URL itself.
+_KEEP_ALIVE_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL", "https://vanijya-backend-7fuf.onrender.com"
+).rstrip("/") + "/"
+
+
 def _keep_alive():
     try:
-        httpx.get("https://vanijyaa-backend.onrender.com/", timeout=10)
+        httpx.get(_KEEP_ALIVE_URL, timeout=10)
     except Exception as exc:
         _log.warning("Keep-alive ping failed: %s", exc)
 
