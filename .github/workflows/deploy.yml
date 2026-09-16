@@ -76,6 +76,12 @@ jobs:
         env:
           SYNC_DATABASE_URL: ${{ secrets.SYNC_DATABASE_URL }}
           DATABASE_URL: ${{ secrets.SYNC_DATABASE_URL }}
+          # alembic/env.py imports the models, which pulls in storage.py and
+          # jwt_handler. Both read env at import. Dummies: migrations touch
+          # neither Supabase nor tokens.
+          JWT_SECRET_KEY: ci-dummy
+          DATABASE_STORAGE_URL: https://example.supabase.co
+          DATABASE_SERVICE_KEY: ci-dummy-key
         run: alembic upgrade head
 
       - name: Skip migrations (no DB secret)
