@@ -1,10 +1,8 @@
-from sqlalchemy.orm import Session
 
 from app.modules.post.data.models import Post
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.post.domain.exceptions import PostNotFoundError, PostForbiddenError
 from app.modules.post.application.schemas import PostUpdate, PostResponse, PostDealResponse
-from app.modules.profile.data.models import Profile
 
 
 # ----------------------------------------------------------------------------

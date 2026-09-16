@@ -19,11 +19,11 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 
+from app.modules.chat.presentation.dependencies import get_share_recipients_uc
 from app.modules.news.application.use_cases.record_interaction import RecordInteractionUseCase
 from app.modules.news.application.use_cases.send_article import SendArticleUseCase
 from app.modules.news.domain.exceptions import ArticleNotFoundError
 from app.modules.news.presentation.dependencies import (
-    DbDep,
     ProfileContextDep,
     RedisDep,
     get_record_interaction_use_case,
@@ -124,16 +124,15 @@ def record_share(
 def get_news_share_recipients(
     article_id: UUID,
     profile: ProfileContextDep,
-    db: DbDep,
+    share_uc=Depends(get_share_recipients_uc),
 ):
     """
     Called when the user taps Share on a news article.
     Returns DM connections and groups the user can forward the article to.
     Identical data shape as GET /connections/share-recipients.
     """
-    from app.modules.chat.data.repository import ChatRepository
-
-    result = ChatRepository(db).get_share_recipients(profile.user_id)
+    # chat owns this data — go through its use case, not its repository
+    result = share_uc.execute(profile.user_id)
     return ok(result, "Share recipients fetched")
 
 
@@ -150,7 +149,7 @@ def send_news_article(
     In-app news share: delivers the article as a 'news_article' chat message
     to selected DMs and groups, then increments share_count once.
     """
-    from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user
+    from app.core.realtime import emit_to_group, emit_to_user
 
     try:
         result = use_case.execute(

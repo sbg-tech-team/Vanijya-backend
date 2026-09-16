@@ -76,11 +76,16 @@ class Message(Base):
     post_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
     )
-    # Restored: app_new had dropped this, which is why a news article could not
-    # be shared into a chat. The column exists in production (app_old declares
-    # it); the FK now points at app_new's news_articles table.
+    # Points at news_raw_articles, which is what the live news pipeline writes
+    # and what the actual DB constraint targets.
+    #
+    # This previously said "news_articles" — a legacy table that still exists in
+    # the database but has no model in this codebase. SQLAlchemy resolves FK
+    # targets against its own metadata, not the database, so it could not find
+    # it and EVERY messages INSERT failed at flush: all chat sending, plus the
+    # calling module's call cards. Do not change this to a table without a model.
     article_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("news_articles.id", ondelete="SET NULL"), nullable=True
+        PGUUID(as_uuid=True), ForeignKey("news_raw_articles.id", ondelete="SET NULL"), nullable=True
     )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

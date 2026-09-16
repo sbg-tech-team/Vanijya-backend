@@ -12,6 +12,8 @@ Original sections:
 """
 from __future__ import annotations
 
+import logging
+
 from typing import cast
 from uuid import UUID
 
@@ -66,6 +68,8 @@ from app.modules.connections.application.use_cases.search_users import (  # noqa
     search_suggestions,
 )
 
+log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Section D — Recommendations  (pgvector HNSW cosine ANN via <=>)
 # Kept here until a dedicated recommendations use case file is created.
@@ -85,7 +89,7 @@ def clear_recommendations_seen(r: redis_lib.Redis, user_id: UUID) -> None:
     try:
         r.delete(f"rec:seen:{user_id}")
     except Exception:
-        pass
+        log.warning("could not clear the seen-set for %s; recommendations may repeat", user_id)
 
 
 def mark_recommendations_seen(
@@ -106,7 +110,7 @@ def mark_recommendations_seen(
         if not existed:
             r.expire(key, _SEEN_TTL)
     except Exception:
-        pass
+        log.warning("could not record seen candidates for %s; they may be shown again", user_id)
 
 
 def _get_seen_ids(r: redis_lib.Redis, user_id: UUID) -> list[str]:
@@ -150,51 +154,10 @@ def get_recommendations(
     offset = (page - 1) * limit
 
     seen_ids = _get_seen_ids(r, user_id)
-    seen_filter = ""
-    seen_params: dict = {}
-    if seen_ids:
-        seen_filter = "AND user_id != ALL(string_to_array(:seen_csv, ',')::uuid[])"
-        seen_params["seen_csv"] = ",".join(seen_ids)
 
-    base_exclusions = """
-              AND user_id NOT IN (
-                  SELECT following_id
-                  FROM user_connections
-                  WHERE follower_id = CAST(:uid AS uuid)
-              )
-              AND user_id NOT IN (
-                  SELECT receiver_id
-                  FROM message_requests
-                  WHERE sender_id = CAST(:uid AS uuid)
-              )
-    """
-
-    total_row = repo.raw_sql_one(
-        f"""
-            SELECT COUNT(*) AS cnt
-            FROM user_embeddings
-            WHERE user_id != CAST(:uid AS uuid)
-              AND is_vector IS NOT NULL
-              {base_exclusions}
-              {seen_filter}
-        """,
-        {"uid": str(user_id), **seen_params},
-    )
-    total_available = int(total_row["cnt"])
-
-    rows = repo.raw_sql(
-        f"""
-            SELECT user_id,
-                   1 - (is_vector <=> CAST(:vec AS vector)) AS similarity
-            FROM user_embeddings
-            WHERE user_id != CAST(:uid AS uuid)
-              AND is_vector IS NOT NULL
-              {base_exclusions}
-              {seen_filter}
-            ORDER BY is_vector <=> CAST(:vec AS vector)
-            LIMIT :lim OFFSET :off
-        """,
-        {"vec": _to_pgvec(want_vec), "uid": str(user_id), "lim": limit, "off": offset, **seen_params},
+    total_available = repo.count_recommendable_users(user_id, seen_ids)
+    rows = repo.ann_user_candidates(
+        _to_pgvec(want_vec), user_id, seen_ids, limit=limit, offset=offset
     )
 
     top = [(round(float(row["similarity"]), 4), row["user_id"]) for row in rows]
@@ -229,7 +192,7 @@ def get_recommendations(
                 reverse=True,
             )
     except Exception:
-        pass
+        log.exception("amplify re-rank failed for profile %s; serving unranked order", profile.id)
 
     return {
         "user_id":         str(user_id),
@@ -267,17 +230,7 @@ def custom_recommendation_search(
         qty_max=qty_max_mt,
     )
 
-    rows = repo.raw_sql(
-        """
-            SELECT user_id,
-                   1 - (is_vector <=> CAST(:vec AS vector)) AS similarity
-            FROM user_embeddings
-            WHERE is_vector IS NOT NULL
-            ORDER BY is_vector <=> CAST(:vec AS vector)
-            LIMIT :k
-        """,
-        {"vec": _to_pgvec(want_vec), "k": TOP_K},
-    )
+    rows = repo.ann_user_candidates_unfiltered(_to_pgvec(want_vec), limit=TOP_K)
 
     top = [(round(float(row["similarity"]), 4), row["user_id"]) for row in rows]
 

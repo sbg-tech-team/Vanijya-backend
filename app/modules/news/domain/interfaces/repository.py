@@ -86,6 +86,18 @@ class INewsRepository(ABC):
         Commits. Returns the number of articles archived.
         """
 
+    @abstractmethod
+    def recalc_trending(self) -> int:
+        """
+        Recompute and atomically replace the whole trending snapshot.
+
+        Velocity score = distinct profiles that interacted with an article in
+        the past TRENDING_LOOKBACK_H hours (open_article, dwell, like, share),
+        normalised against the busiest article. Articles below
+        TRENDING_MIN_UNIQUE_USERS are dropped. Commits. Returns the snapshot
+        size.
+        """
+
     # ── Intelligence ──────────────────────────────────────────────────────────
 
     @abstractmethod

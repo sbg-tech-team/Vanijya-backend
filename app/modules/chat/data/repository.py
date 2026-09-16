@@ -12,9 +12,9 @@ from app.modules.chat.data.models import ChatAttachment, Conversation, Conversat
 from app.modules.chat.domain.interfaces.repository import IChatRepository
 from app.modules.chat.domain.value_objects import ConversationStatus
 from app.modules.chat.domain.entities import (
-    ChatAttachmentEntity, ChatListItem, ConvSendGuard, ConversationEntity, DMLastMessage,
-    DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity, PostSnap, UserSnap,
-    ShareDMItem, ShareGroupItem, ShareRecipientsResult,
+    CallSnap, ChatAttachmentEntity, ChatListItem, ConvSendGuard, ConversationEntity,
+    DMLastMessage, DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity,
+    PostSnap, UserSnap, ShareDMItem, ShareGroupItem, ShareRecipientsResult,
 )
 from app.modules.groups.data.models import Group, GroupDeal, GroupMember, PersonalDeal
 from app.modules.post.data.models import Post
@@ -193,6 +193,26 @@ def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
     )
 
 
+def _call_snap(msg: Message) -> Optional["CallSnap"]:
+    """Build the call card from the message's media_metadata.
+
+    The calling module writes the payload there rather than adding columns to
+    `messages` — a call card is a rendering concern, and the authoritative record
+    lives in `calls`.
+    """
+    meta = msg.media_metadata or {}
+    call_id = meta.get("call_id")
+    if not call_id:
+        return None
+    return CallSnap(
+        call_id=str(call_id),
+        media=meta.get("media", "audio"),
+        status=meta.get("status", "ended"),
+        end_reason=meta.get("end_reason"),
+        duration_seconds=int(meta.get("duration_seconds") or 0),
+    )
+
+
 def _attachment_snap(a: ChatAttachment) -> ChatAttachmentEntity:
     return ChatAttachmentEntity(
         id=a.id,
@@ -246,6 +266,7 @@ def _build_message(
             _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
         ),
         post=_post_snap(db, msg.post_id) if msg.post_id else None,
+        call=_call_snap(msg) if msg.message_type == "call" else None,
         attachments=[_attachment_snap(a) for a in attachments],
         delivered=delivered,
         read=read,

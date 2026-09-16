@@ -8,9 +8,9 @@ Manages the user_post_taste table: the row-per-dimension persistent taste store.
   seed_taste_from_role()  – create initial category rows from role defaults
                             (called during onboarding; never overwrites learned data)
 
-NOTE: This service is both the write path (Phase 3+) and the read path for
-      the recommendation reranker (Phase 7+). user_taste_profiles is kept as a
-      write-only legacy table for audit; it is no longer read by the reranker.
+NOTE: This service is both the write path and the read path for every post
+      feed — the recommendation feed and the following feed both rank on
+      get_taste_weights(). The legacy user_taste_profiles table is retired.
 """
 import math
 from datetime import datetime, timezone

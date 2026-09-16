@@ -4,10 +4,13 @@ Exposed as a standalone use case so routers and other modules can call
 mark_seen(repo, profile_id, post_ids) without importing from rec_service directly.
 """
 
-from sqlalchemy.orm import Session
+
+import logging
 
 from app.modules.post.recommendation import service as rec_service
 from app.modules.post.domain.interfaces.repository import IPostRepository
+
+log = logging.getLogger(__name__)
 
 
 def mark_seen(repo: IPostRepository, profile_id: int, post_ids: list[int]) -> None:
@@ -21,4 +24,4 @@ def mark_seen(repo: IPostRepository, profile_id: int, post_ids: list[int]) -> No
     try:
         rec_service.record_seen(repo.session, profile_id, post_ids)
     except Exception:
-        pass
+        log.exception("record_seen failed for profile %s (%d posts)", profile_id, len(post_ids))

@@ -9,7 +9,11 @@ from app.modules.onboarding.application.use_cases.service import create_session
 from app.modules.onboarding.domain.interfaces.repository import IOnboardingRepository
 from app.modules.onboarding.presentation.dependencies import get_onboarding_repo
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
-from app.modules.profile.presentation.dependencies import get_profile_repo as _get_repo
+from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.profile.presentation.dependencies import (
+    get_post_repo as _get_post_repo,
+    get_profile_repo as _get_repo,
+)
 from app.modules.profile.presentation.schemas import (
     ProfileCreate,
     ProfileUpdate,
@@ -231,12 +235,13 @@ def get_profile_api(
     posts_cursor: int | None = None,
     cu: CurrentUser = Depends(get_current_user),
     repo: IProfileRepository = Depends(_get_repo),
+    post_repo: IPostRepository = Depends(_get_post_repo),
 ):
     if cu.profile_id == profile_id:
         return RedirectResponse(url="/profile/me", status_code=307)
     try:
         result = get_profile_by_id(
-            repo, profile_id,
+            repo, post_repo, profile_id,
             viewer_user_id=cu.user_id,
             viewer_profile_id=cu.profile_id,
             posts_cursor=posts_cursor,
@@ -257,12 +262,13 @@ def get_profile_by_user_api(
     posts_cursor: int | None = None,
     cu: CurrentUser = Depends(get_current_user),
     repo: IProfileRepository = Depends(_get_repo),
+    post_repo: IPostRepository = Depends(_get_post_repo),
 ):
     if cu.user_id == user_id:
         return RedirectResponse(url="/profile/me", status_code=307)
     try:
         result = get_profile_by_user_id(
-            repo, user_id,
+            repo, post_repo, user_id,
             viewer_user_id=cu.user_id,
             viewer_profile_id=cu.profile_id,
             posts_cursor=posts_cursor,

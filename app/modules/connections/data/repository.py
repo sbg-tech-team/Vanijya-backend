@@ -333,12 +333,81 @@ class ConnectionsRepository(IConnectionsRepository):
 
     # -- recommendations -------------------------------------------------------
 
-    def raw_sql(self, sql: str, params: dict) -> list[dict]:
-        """Rows as dicts. Used by the hand-written pgvector ANN queries."""
-        return [dict(m) for m in self.db.execute(text(sql), params).mappings().all()]
+    # Hand-written SQL: the <=> cosine operator has no ORM expression, and the
+    # HNSW index is only used when the ORDER BY is written exactly this way.
 
-    def raw_sql_one(self, sql: str, params: dict) -> dict:
-        return dict(self.db.execute(text(sql), params).mappings().one())
+    # Candidates the user has already acted on never come back. Inlined into
+    # both queries below so the count and the page agree on the same pool.
+    _BASE_EXCLUSIONS = """
+              AND user_id NOT IN (
+                  SELECT following_id
+                  FROM user_connections
+                  WHERE follower_id = CAST(:uid AS uuid)
+              )
+              AND user_id NOT IN (
+                  SELECT receiver_id
+                  FROM message_requests
+                  WHERE sender_id = CAST(:uid AS uuid)
+              )
+    """
+
+    @staticmethod
+    def _seen_clause(seen_ids: list[str]) -> tuple[str, dict]:
+        if not seen_ids:
+            return "", {}
+        return (
+            "AND user_id != ALL(string_to_array(:seen_csv, \',\')::uuid[])",
+            {"seen_csv": ",".join(seen_ids)},
+        )
+
+    def count_recommendable_users(self, user_id: UUID, seen_ids: list[str]) -> int:
+        seen_filter, seen_params = self._seen_clause(seen_ids)
+        row = self.db.execute(
+            text(f"""
+                SELECT COUNT(*) AS cnt
+                FROM user_embeddings
+                WHERE user_id != CAST(:uid AS uuid)
+                  AND is_vector IS NOT NULL
+                  {self._BASE_EXCLUSIONS}
+                  {seen_filter}
+            """),
+            {"uid": str(user_id), **seen_params},
+        ).mappings().one()
+        return int(row["cnt"])
+
+    def ann_user_candidates(
+        self, vector: str, user_id: UUID, seen_ids: list[str], limit: int, offset: int
+    ) -> list[dict]:
+        seen_filter, seen_params = self._seen_clause(seen_ids)
+        rows = self.db.execute(
+            text(f"""
+                SELECT user_id,
+                       1 - (is_vector <=> CAST(:vec AS vector)) AS similarity
+                FROM user_embeddings
+                WHERE user_id != CAST(:uid AS uuid)
+                  AND is_vector IS NOT NULL
+                  {self._BASE_EXCLUSIONS}
+                  {seen_filter}
+                ORDER BY is_vector <=> CAST(:vec AS vector)
+                LIMIT :lim OFFSET :off
+            """),
+            {"vec": vector, "uid": str(user_id), "lim": limit, "off": offset, **seen_params},
+        ).mappings().all()
+        return [dict(m) for m in rows]
+
+    def ann_user_candidates_unfiltered(self, vector: str, limit: int) -> list[dict]:
+        rows = self.db.execute(
+            text("""
+                SELECT user_id,
+                       1 - (is_vector <=> CAST(:vec AS vector)) AS similarity
+                FROM user_embeddings
+                WHERE is_vector IS NOT NULL
+                ORDER BY is_vector <=> CAST(:vec AS vector)
+                LIMIT :k
+            """),
+            {"vec": vector, "k": limit},
+        ).mappings().all()
+        return [dict(m) for m in rows]
 
     @property
     def session(self) -> Session:

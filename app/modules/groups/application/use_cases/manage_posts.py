@@ -7,14 +7,14 @@ Domain exceptions from app.modules.groups.domain.exceptions are raised on error.
 """
 from __future__ import annotations
 
+import logging
+
 import os
 import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy.orm import Session
 
-from app.modules.profile.data.models import Profile
 from app.modules.groups.data.models import (
     GroupDeal,
     GroupMedia,
@@ -55,6 +55,8 @@ from app.modules.groups.application.use_cases.create_group import (
     _get_membership,
     _require_member,
 )
+
+log = logging.getLogger(__name__)
 
 _GROUP_MEDIA_BUCKET = os.environ.get("GROUP_MEDIA_BUCKET", "group-media")
 
@@ -105,34 +107,10 @@ def _deal_to_response(deal: GroupDeal) -> GroupDealResponse:
 
 
 def _create_post_from_deal(repo: IGroupsRepository, deal: GroupDeal, profile_id: int, is_public: bool):
-    """Insert a Post + PostDealDetails snapshot and index it for the rec engine."""
-    from app.modules.post.data.models import Post, PostDealDetails, CATEGORY_DEAL
+    """Mirror a published group deal as a Post and index it for the rec engine."""
     from app.modules.post.recommendation import service as rec_service
-    from app.modules.profile.data.models import Profile
 
-    post = Post(
-        profile_id=profile_id,
-        category_id=CATEGORY_DEAL,
-        commodity_id=deal.commodity_id,
-        title=deal.title,
-        caption=deal.caption,
-        is_public=is_public,
-    )
-    repo.add(post)
-    repo.flush()  # get post.id
-
-    details = PostDealDetails(
-        post_id=post.id,
-        grain_type=deal.grain_type,
-        grain_size=deal.grain_size,
-        commodity_quantity=float(deal.commodity_quantity),
-        quantity_unit=deal.quantity_unit,
-        commodity_price=float(deal.commodity_price),
-        price_type=deal.price_type,
-        is_closed=deal.is_closed,
-    )
-    repo.add(details)
-    repo.flush()
+    post = repo.create_post_from_deal(deal, profile_id, is_public)
 
     # resolve location for rec vector
     profile = repo.get_profile_by_id(profile_id)
@@ -149,30 +127,21 @@ def _create_post_from_deal(repo: IGroupsRepository, deal: GroupDeal, profile_id:
             target_role_ids=None,
             lat=lat,
             lon=lon,
-            category_id=CATEGORY_DEAL,
+            category_id=post.category_id,
             commodity_quantity=float(deal.commodity_quantity),
         )
     except Exception:
-        pass  # embedding failure must never break deal publishing
+        # Never break deal publishing — but an unindexed post is invisible to the
+        # recommender, so this must be visible in the logs. The embedding rides
+        # the deal's transaction, so there is nothing to roll back separately.
+        log.exception("indexing failed for deal-post %s — it will not surface in the feed", post.id)
 
     return post
 
 
 def _insert_deal_chat_card(repo: IGroupsRepository, deal: GroupDeal) -> None:
     """Drop a system card into the group chat so members see the new deal."""
-    from app.modules.chat.data.models import Message
-    msg = Message(
-        context_type="group",
-        context_id=deal.group_id,
-        sender_id=deal.posted_by,
-        message_type="deal",
-        deal_id=deal.id,
-        media_metadata={
-            "title": deal.title,
-            "commodity_id": deal.commodity_id,
-        },
-    )
-    repo.add(msg)
+    repo.insert_deal_chat_card(deal)
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +246,8 @@ async def delete_group_media(
     try:
         await delete_object(_GROUP_MEDIA_BUCKET, record.storage_path)
     except StorageError:
-        pass  # best-effort — remove DB record regardless
+        # Orphaned object — the row goes regardless, the bytes stay. Billable.
+        log.warning("could not delete group media %s", record.storage_path)
 
     repo.delete(record)
     repo.commit()

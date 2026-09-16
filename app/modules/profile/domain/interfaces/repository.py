@@ -144,10 +144,10 @@ class IProfileRepository(ABC):
     def get_profile_posts_feed(
         self,
         profile_id: int,
-        viewer_profile_id: int | None,
-        viewer_user_id: UUID | None,
         cursor: int | None,
         limit: int,
     ) -> tuple[list, int | None, int]:
-        """Returns (feed_cards, next_cursor, page_count). page_count is the number of posts in this page, not the user's total."""
+        """Returns (posts, next_cursor, page_count). page_count is the number of
+        posts in this page, not the user's total. Rendering them as feed cards
+        is the use case's job — see get_profile."""
         ...

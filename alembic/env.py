@@ -59,6 +59,10 @@ from app.modules.chat.data.models import (  # noqa: F401
     Message,
     ChatAttachment,
 )
+from app.modules.calling.data.models import (  # noqa: F401
+    Call,
+    CallParticipant,
+)
 from app.modules.safety.data.models import (  # noqa: F401
     UserBlock,
     UserReport,

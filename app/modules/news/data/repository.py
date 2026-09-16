@@ -22,7 +22,14 @@ from app.modules.news.domain.entities import (
     UserNewsTaste as DomainUserNewsTaste,
 )
 from app.modules.news.domain.interfaces.repository import INewsRepository
+from app.modules.news.recommendation.constants import (
+    TRENDING_LOOKBACK_H,
+    TRENDING_MIN_UNIQUE_USERS,
+)
 from app.modules.news.domain.value_objects import IntelligenceStatus
+
+# Interaction types that count toward trending velocity.
+_TRENDING_INTERACTION_TYPES = frozenset({"open_article", "dwell", "like", "share_tap"})
 from app.modules.news.data.models import (
     EnrichedArticle,
     FeedRankingCache,
@@ -549,3 +556,51 @@ class NewsRepository(INewsRepository):
             )
         )
         self._db.commit()
+
+    # ── Trending snapshot ─────────────────────────────────────────────────────
+
+    def recalc_trending(self) -> int:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = now - timedelta(hours=TRENDING_LOOKBACK_H)
+
+        # Count distinct profiles per article in the lookback window
+        rows = self._db.execute(
+            select(
+                NewsInteractionEvent.article_id,
+                func.count(NewsInteractionEvent.profile_id.distinct()).label("unique_profiles"),
+            )
+            .where(
+                NewsInteractionEvent.occurred_at >= cutoff,
+                NewsInteractionEvent.event_type.in_(_TRENDING_INTERACTION_TYPES),
+            )
+            .group_by(NewsInteractionEvent.article_id)
+            .having(
+                func.count(NewsInteractionEvent.profile_id.distinct())
+                >= TRENDING_MIN_UNIQUE_USERS
+            )
+        ).all()
+
+        if not rows:
+            self._db.execute(NewsTrending.__table__.delete())
+            self._db.commit()
+            return 0
+
+        # Replace the entire snapshot atomically: drop stale rows, then bulk insert
+        self._db.execute(NewsTrending.__table__.delete())
+
+        max_unique = max(r.unique_profiles for r in rows)
+
+        self._db.execute(
+            NewsTrending.__table__.insert(),
+            [
+                {
+                    "article_id": r.article_id,
+                    "velocity_score": r.unique_profiles / max(max_unique, 1),
+                    "unique_profiles": r.unique_profiles,
+                    "computed_at": now,
+                }
+                for r in rows
+            ],
+        )
+        self._db.commit()
+        return len(rows)

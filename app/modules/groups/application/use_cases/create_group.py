@@ -13,10 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
 
-from app.modules.profile.data.models import Profile, Profile_Commodity
 from app.modules.groups.data.models import (
     Group,
     GroupActivityCache,
@@ -161,7 +158,7 @@ def _store_embedding(repo: IGroupsRepository, group: Group) -> None:
     repo.upsert_embedding(group.id, vec)
 
 
-def _get_profile_or_raise(repo: IGroupsRepository, user_id: UUID) -> Profile:
+def _get_profile_or_raise(repo: IGroupsRepository, user_id: UUID):
     profile = repo.get_profile_by_user(user_id)
     if not profile:
         raise GroupProfileNotFoundError("Profile not found — complete onboarding first")

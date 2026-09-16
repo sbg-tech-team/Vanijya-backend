@@ -1,8 +1,8 @@
+import logging
+
 import math
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy.orm import Session, selectinload
-from sqlalchemy.exc import IntegrityError
 
 from app.modules.post.data.models import Post, PostLike, PostSave, PostView
 from app.modules.post.domain.interfaces.repository import IPostRepository
@@ -11,15 +11,14 @@ from app.modules.post.application.schemas import (
     PostResponse, PostDealResponse, FeedPostCard, MyPostCard,
     MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
 )
-from app.modules.profile.data.models import Profile
-from app.modules.connections.data.models import UserConnection
 from app.modules.post.recommendation import service as rec_service
 from app.modules.post.recommendation.models import SeenPost
 from app.modules.post.recommendation.constants import FRESH_BOOST_PEAK, FRESH_DECAY_TAU, _ROLE_NAMES
 from app.shared.utils.time_decay import freshness_boost
 from app.modules.post.recommendation.session_taste import service as interaction_service
-from app.modules.post.recommendation.session_taste.models import UserTasteProfile
-from app.modules.post.recommendation.session_taste.constants import CATEGORY_NAMES, DEFAULT_TASTE
+from app.modules.post.recommendation.session_taste.constants import CATEGORY_NAMES
+
+log = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------
@@ -110,7 +109,7 @@ def _batch_post_responses(
     ]
 
 
-def _batch_feed_cards(
+def batch_feed_cards(
     repo: IPostRepository,
     posts: list[Post],
     viewer_profile_id: int,
@@ -227,21 +226,10 @@ def _batch_my_post_cards(
     return cards
 
 
-def _following_taste_counts(taste: UserTasteProfile | None, role_id: int) -> dict[str, int]:
-    if taste and taste.total_events > 0:
-        return {
-            "market_update": taste.market_update_count,
-            "deal_req":      taste.deal_req_count,
-            "discussion":    taste.discussion_count,
-            "knowledge":     taste.knowledge_count,
-        }
-    return DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
-
-
 def _score_following_posts(
     posts: list[Post],
     viewer_commodity_ids: set[int],
-    taste_counts: dict[str, int],
+    taste_counts: dict[str, float],
 ) -> list[tuple[Post, float]]:
     total_taste = sum(math.log1p(v) for v in taste_counts.values()) or 1.0
     results = []
@@ -273,14 +261,8 @@ def _get_post_or_raise(repo: IPostRepository, post_id: int) -> Post:
 # ----------------------------------------------------------------------------
 
 def _record_view(repo: IPostRepository, post_id: int, profile_id: int) -> None:
-    view = PostView(post_id=post_id, profile_id=profile_id)
-    repo.add(view)
-    try:
-        repo.flush()
-        repo.increment_view_count_no_commit(post_id)
-        repo.commit()
-    except IntegrityError:
-        repo.rollback()  # duplicate view — log as revisit instead of incrementing
+    if not repo.record_first_view(post_id, profile_id):
+        # Already seen — a revisit is its own signal, not another view.
         interaction_service.record_revisit_event(repo.session, profile_id, post_id)
 
 
@@ -295,7 +277,7 @@ def get_post(repo: IPostRepository, post_id: int, viewer_profile_id: int) -> Pos
     try:
         rec_service.record_seen(repo.session, viewer_profile_id, [post_id])
     except Exception:
-        pass
+        log.exception("record_seen failed for profile %s on post %s", viewer_profile_id, post_id)
     return _to_post_response(repo, post, viewer_profile_id)
 
 
@@ -354,8 +336,9 @@ def get_following_feed(
             followed_profile_ids, three_day_cutoff, seen_ids
         )
 
-    taste = repo.get_taste_profile(profile_id)
-    taste_counts = _following_taste_counts(taste, profile.role_id)
+    # Same store the recommendation feed ranks on — the two feeds disagreed
+    # while this read the legacy user_taste_profiles counters.
+    taste_counts = repo.get_category_taste_weights(profile_id, profile.role_id)
     viewer_commodity_ids = {pc.commodity_id for pc in profile.commodities}
     scored = _score_following_posts(posts, viewer_commodity_ids, taste_counts)
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -372,7 +355,7 @@ def get_following_feed(
     next_cursor = page_posts[-1].id if len(page_posts) == limit else None
 
     return FollowingFeedResponse(
-        posts=_batch_feed_cards(repo, page_posts, profile_id, viewer_users_id=profile.users_id),
+        posts=batch_feed_cards(repo, page_posts, profile_id, viewer_users_id=profile.users_id),
         all_caught_up=all_caught_up,
         next_cursor=next_cursor,
     )
@@ -399,6 +382,6 @@ def get_saved_posts(
     post_map = {p.id: p for p in posts}
     ordered = [post_map[pid] for pid in post_ids if pid in post_map]
     return SavedPostFeedResponse(
-        posts=_batch_feed_cards(repo, ordered, profile_id),
+        posts=batch_feed_cards(repo, ordered, profile_id),
         next_cursor=next_cursor,
     )

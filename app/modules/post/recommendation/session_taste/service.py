@@ -6,13 +6,12 @@ Write paths:
   record_revisit_event()       – called from post/service._record_view() on duplicate view
   record_interaction()         – synchronous taste update on like / save / comment / share
 
-Read path:
-  get_taste_for_feed()         – taste weights for the recommendation reranker
 
 Signal helpers (used by jobs.py):
   classify_dwell()             – bucket a dwell_ms value into a signal key
   derive_signal()              – (positive_delta, negative_delta) from an event
 """
+import logging
 from datetime import datetime, timezone, timedelta
 
 import redis
@@ -32,16 +31,15 @@ from app.modules.post.recommendation.session_taste.constants import (
     SIGNAL_WEIGHTS,
     TASTE_BOOTSTRAP_EVENTS,
 )
-from app.modules.post.recommendation.session_taste.models import (
-    PostInteractionEvent,
-    UserTasteProfile,
-)
+from app.modules.post.recommendation.session_taste.models import PostInteractionEvent
 from app.modules.post.recommendation.session_taste.schemas import InteractionEventItem
 from app.modules.post.recommendation.session_taste import taste_service
 from app.modules.post.data.models import Post
 from app.modules.profile.data.models import Business, Profile
 from app.recommendation.amplify import write_post_signals
 from app.recommendation.session_taste import ActionType
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +67,6 @@ def derive_signal(event_type: str, value_ms: int | None) -> tuple[float, float]:
     else:
         key = event_type
     return SIGNAL_WEIGHTS.get(key, (0.0, 0.0))
-
-
-def _to_int_delta(value: float) -> int:
-    """
-    Convert a float signal weight to an integer for storage in the current
-    Integer columns of user_taste_profiles.  Uses 'round half up' (not
-    Python's default banker's rounding) so 0.5 → 1 and 3.5 → 4.
-    Phase 3 will switch to Float columns and this helper becomes unnecessary.
-    """
-    return int(value + 0.5)
 
 
 def _classify_action(event_type: str, value_ms: int | None) -> ActionType | None:
@@ -240,19 +228,16 @@ def record_revisit_event(db: Session, profile_id: int, post_id: int) -> None:
                 post.commodity_id, post.profile_id,
             )
         except Exception:
-            pass
+            log.exception("revisit taste update failed for profile %s on post %s", profile_id, post_id)
 
 
 # ---------------------------------------------------------------------------
 # Synchronous taste update (like / save / comment / share / revisit)
 # ---------------------------------------------------------------------------
 
-_CATEGORY_COL_MAP = {
-    "market_update": "market_update_count",
-    "deal_req":      "deal_req_count",
-    "discussion":    "discussion_count",
-    "knowledge":     "knowledge_count",
-}
+# Categories taste is tracked for. Anything outside this set is ignored rather
+# than written as an unknown dimension key.
+TASTE_CATEGORIES = frozenset({"market_update", "deal_req", "discussion", "knowledge"})
 
 
 def record_interaction(
@@ -267,54 +252,28 @@ def record_interaction(
     Applies a weighted taste delta for a synchronous interaction signal
     (like / save / comment / share / revisit).
 
-    Writes to two tables:
-    - user_taste_profiles  (legacy Integer counters, active reranker read path)
-    - user_post_taste      (new Float row-per-dimension store, Phase 3+)
+    Writes user_post_taste — the single authoritative taste store, read by both
+    the recommendation feed and the following feed.
         dimensions written: category, commodity (if provided),
         author (if provided, signal strong enough, and author != viewer)
-
-    total_events on user_taste_profiles is incremented by 1 per call — it
-    counts interaction events, not weighted scores.
     """
     category = CATEGORY_NAMES.get(category_id)
     if not category:
         return
 
-    col = _CATEGORY_COL_MAP.get(category)
-    if not col:
+    if category not in TASTE_CATEGORIES:
         return
 
     pos_delta, neg_delta = derive_signal(signal_type, None)
-    int_delta = _to_int_delta(pos_delta)
-    if int_delta <= 0 and pos_delta <= 0:
+    if pos_delta <= 0:
         return
 
-    # ── Legacy write: user_taste_profiles ────────────────────────────────────
-    taste = db.query(UserTasteProfile).filter(
-        UserTasteProfile.profile_id == profile_id
-    ).first()
+    # A deleted profile has no taste to record (the legacy write used to be the
+    # thing that caught this).
+    if db.query(Profile.id).filter(Profile.id == profile_id).first() is None:
+        return
 
-    if taste is None:
-        profile = db.query(Profile).filter(Profile.id == profile_id).first()
-        if not profile:
-            return
-        defaults = DEFAULT_TASTE.get(profile.role_id, DEFAULT_TASTE[1])
-        taste = UserTasteProfile(
-            profile_id=profile_id,
-            market_update_count=defaults["market_update"],
-            deal_req_count=defaults["deal_req"],
-            discussion_count=defaults["discussion"],
-            knowledge_count=defaults["knowledge"],
-            total_events=0,
-        )
-        db.add(taste)
-        db.flush()
-
-    if int_delta > 0:
-        setattr(taste, col, getattr(taste, col) + int_delta)
-    taste.total_events += 1
-
-    # ── Phase 3/4 write: user_post_taste ─────────────────────────────────────
+    # user_post_taste is the one taste store — see get_taste_weights().
     taste_service.update_taste(db, profile_id, "category", category, pos_delta, neg_delta)
 
     if commodity_id is not None:
@@ -329,41 +288,3 @@ def record_interaction(
         taste_service.update_taste(db, profile_id, "author", str(author_profile_id), pos_delta, neg_delta)
 
     db.commit()
-
-
-# ---------------------------------------------------------------------------
-# Taste read (called by the recommendation engine)
-# ---------------------------------------------------------------------------
-
-def get_taste_for_feed(db: Session, profile_id: int, role_id: int) -> dict[str, int]:
-    """
-    Returns category interaction counts for the recommendation reranker.
-
-    Below TASTE_BOOTSTRAP_EVENTS the returned counts are a confidence-blended
-    mix of the user's actual interactions and the role-seeded defaults,
-    preventing over-fitting to the first 1–2 interactions.
-    """
-    taste = db.query(UserTasteProfile).filter(
-        UserTasteProfile.profile_id == profile_id
-    ).first()
-
-    defaults = DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
-
-    if taste is None:
-        return defaults
-
-    learned = {
-        "market_update": taste.market_update_count,
-        "deal_req":      taste.deal_req_count,
-        "discussion":    taste.discussion_count,
-        "knowledge":     taste.knowledge_count,
-    }
-
-    if taste.total_events >= TASTE_BOOTSTRAP_EVENTS:
-        return learned
-
-    confidence = taste.total_events / TASTE_BOOTSTRAP_EVENTS
-    return {
-        cat: int(confidence * learned[cat] + (1 - confidence) * defaults[cat])
-        for cat in learned
-    }

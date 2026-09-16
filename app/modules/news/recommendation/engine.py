@@ -23,6 +23,8 @@ verbatim from app_v1_backup/modules/news_new/feed/service.py).
 """
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -50,6 +52,8 @@ from app.recommendation.amplify import (
     get_amplify_weights,
     location_boost as _location_boost,
 )
+
+log = logging.getLogger(__name__)
 
 _ROLE_COL = {1: "role_trader", 2: "role_broker", 3: "role_exporter"}
 _MODULE = "news"
@@ -89,7 +93,7 @@ class NewsRecommendationEngine:
                 city_weights = get_amplify_weights(self._db, rc, profile_id, _MODULE, "city")
                 state_weights = get_amplify_weights(self._db, rc, profile_id, _MODULE, "state")
             except Exception:
-                pass
+                log.exception("amplify weights unavailable for profile %s; ranking without them", profile_id)
 
         scored: list[tuple[UUID, float]] = []
 

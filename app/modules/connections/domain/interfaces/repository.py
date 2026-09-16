@@ -122,12 +122,27 @@ eager-loading behaviour."""
         ...
 
     @abstractmethod
-    def raw_sql(self, sql: str, params: dict) -> list[dict]:
-        """Escape hatch for the pgvector ANN queries, which are hand-written SQL."""
+    def count_recommendable_users(self, user_id: UUID, seen_ids: list[str]) -> int:
+        """How many candidates the ANN search could return for this user.
+
+        Excludes the user, anyone they already follow, anyone they have a
+        pending message request with, and `seen_ids`.
+        """
         ...
 
     @abstractmethod
-    def raw_sql_one(self, sql: str, params: dict) -> dict:
+    def ann_user_candidates(
+        self, vector: str, user_id: UUID, seen_ids: list[str], limit: int, offset: int
+    ) -> list[dict]:
+        """One page of cosine-ANN matches under the same exclusions.
+
+        Rows are {"user_id", "similarity"}. `vector` is a pgvector literal.
+        """
+        ...
+
+    @abstractmethod
+    def ann_user_candidates_unfiltered(self, vector: str, limit: int) -> list[dict]:
+        """Cosine-ANN matches with no exclusions — the signed-out preview search."""
         ...
 
     @property

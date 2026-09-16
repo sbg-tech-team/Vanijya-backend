@@ -4,15 +4,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user_id, get_db
+from app.dependencies import get_current_user_id
 from app.modules.chat.application import service as chat_service
-from app.modules.chat.data.repository import ChatRepository
-from app.modules.chat.presentation.connection_manager import emit_to_group, emit_to_user, is_online
+from app.core.realtime import emit_to_group, emit_to_user, is_online
 from app.modules.chat.presentation.dependencies import (
     get_all_chats_sorted,
-    get_chat_repo,
+    get_conversation_peer_uc,
     get_conversations_uc,
     get_delete_message_uc,
     get_group_message_uc,
@@ -20,6 +18,7 @@ from app.modules.chat.presentation.dependencies import (
     get_group_messages_uc,
     get_mark_read_uc,
     get_messages_uc,
+    get_open_conversation_uc,
     get_personal_deal_uc,
     get_send_message_uc,
     get_share_recipients_uc,
@@ -31,10 +30,54 @@ from app.modules.chat.presentation.schemas import (
     SendGroupMessageRequest,
     SendMessageRequest,
 )
+from app.modules.groups.domain.interfaces.repository import IGroupsRepository
+from app.modules.groups.presentation.dependencies import get_groups_repo
 from app.modules.groups.presentation.schemas import GroupDealCreate
 from app.modules.groups.application.use_cases.service import GroupPermissionError, create_group_deal
 
+from app.modules.chat.domain.exceptions import (
+    ChatMediaUploadError,
+    ChatPermissionDeniedError,
+    ChatStorageUnavailableError,
+    ConversationAccessDeniedError,
+    ConversationAlreadyExistsError,
+    ConversationBlockedError,
+    ConversationNotFoundError,
+    DealAccessDeniedError,
+    GroupChatSendNotAllowedError,
+    MemberNotFoundError,
+    MessageDeleteNotAllowedError,
+    MessageNotFoundError,
+    PersonalDealNotFoundError,
+)
+
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+# The chat router previously caught nothing, so every domain rule — not a
+# member, blocked conversation, message already deleted — surfaced as a 500
+# instead of the 403/404 the client can act on.
+_CHAT_STATUS = {
+    ConversationAccessDeniedError:   403,
+    ChatPermissionDeniedError:       403,
+    GroupChatSendNotAllowedError:    403,
+    ConversationBlockedError:        403,
+    DealAccessDeniedError:           403,
+    MessageDeleteNotAllowedError:    403,
+    MemberNotFoundError:             403,
+    ConversationNotFoundError:       404,
+    MessageNotFoundError:            404,
+    PersonalDealNotFoundError:       404,
+    ConversationAlreadyExistsError:  409,
+    ChatMediaUploadError:            400,
+    ChatStorageUnavailableError:     503,
+}
+
+
+def chat_exception_status(exc: Exception) -> int:
+    """HTTP code for a chat domain exception. Unmapped subclasses get 400 rather
+    than 500 — a business-rule violation is never a server fault."""
+    return _CHAT_STATUS.get(type(exc), 400)
 
 
 # ── DM Conversations ──────────────────────────────────────────────────────────
@@ -43,14 +86,14 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 def open_conversation(
     body: OpenConversationRequest,
     user_id: UUID = Depends(get_current_user_id),
-    repo: ChatRepository = Depends(get_chat_repo),
+    uc=Depends(get_open_conversation_uc),
 ):
     """
     Get or create a direct DM conversation with target_user_id.
     Idempotent — safe to call multiple times, returns the same conversation.
     created=true means a new conversation was just created.
     """
-    result = repo.get_or_create_dm(user_id, body.participant_id)
+    result = uc.execute(user_id, body.participant_id)
     return {"id": result["conversation_id"], "status": result["status"], "created": result["created"]}
 
 
@@ -151,14 +194,14 @@ async def mark_read(
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_mark_read_uc),
-    repo: ChatRepository = Depends(get_chat_repo),
+    peer_uc=Depends(get_conversation_peer_uc),
 ):
     uc.execute(user_id, conv_id)
-    guard = repo.get_conv_send_info(conv_id, user_id)
-    if guard:
+    peer_id = peer_uc.execute(conv_id, user_id)
+    if peer_id:
         background_tasks.add_task(
             emit_to_user,
-            guard.receiver_id,
+            peer_id,
             "read",
             {"conv_id": str(conv_id), "reader_id": str(user_id)},
         )
@@ -172,7 +215,7 @@ async def create_personal_deal(
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_personal_deal_uc),
-    repo: ChatRepository = Depends(get_chat_repo),
+    peer_uc=Depends(get_conversation_peer_uc),
 ):
     msg = uc.execute(
         sender_id=user_id,
@@ -188,9 +231,9 @@ async def create_personal_deal(
         price_type=body.price_type,
         image_urls=body.image_urls,
     )
-    guard = repo.get_conv_send_info(conv_id, user_id)
-    if guard:
-        background_tasks.add_task(emit_to_user, guard.receiver_id, "new_message", jsonable_encoder(msg))
+    peer_id = peer_uc.execute(conv_id, user_id)
+    if peer_id:
+        background_tasks.add_task(emit_to_user, peer_id, "new_message", jsonable_encoder(msg))
     return msg
 
 
@@ -222,7 +265,7 @@ async def delete_message(
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_delete_message_uc),
-    repo: ChatRepository = Depends(get_chat_repo),
+    peer_uc=Depends(get_conversation_peer_uc),
 ):
     info = uc.execute(user_id, message_id)
 
@@ -230,9 +273,9 @@ async def delete_message(
     if info["context_type"] == "group":
         background_tasks.add_task(emit_to_group, info["context_id"], "message_deleted", event)
     else:
-        guard = repo.get_conv_send_info(info["context_id"], user_id)
-        if guard:
-            background_tasks.add_task(emit_to_user, guard.receiver_id, "message_deleted", event)
+        peer_id = peer_uc.execute(info["context_id"], user_id)
+        if peer_id:
+            background_tasks.add_task(emit_to_user, peer_id, "message_deleted", event)
 
     if info["storage_paths"]:
         background_tasks.add_task(chat_service.delete_chat_media, info["storage_paths"])
@@ -299,10 +342,10 @@ async def create_group_deal_endpoint(
     payload: GroupDealCreate,
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    groups_repo: IGroupsRepository = Depends(get_groups_repo),
 ):
     try:
-        deal = create_group_deal(db, group_id, user_id, payload)
+        deal = create_group_deal(groups_repo, group_id, user_id, payload)
     except GroupPermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     background_tasks.add_task(emit_to_group, group_id, "new_group_deal", jsonable_encoder(deal))

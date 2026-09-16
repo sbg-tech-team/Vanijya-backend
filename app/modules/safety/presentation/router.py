@@ -9,7 +9,7 @@ URL convention:
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from app.dependencies import get_current_user_id
 from app.modules.safety.application import service
@@ -32,16 +32,26 @@ router = APIRouter(prefix="/safety", tags=["safety"])
 @router.post("/block/{target_id}")
 def block(
     target_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     repo: ISafetyRepository = Depends(get_safety_repo),
 ):
-    """Block target_id as the authenticated user. Returns 409 if already blocked."""
+    """Block target_id as the authenticated user. Returns 409 if already blocked.
+
+    Any call the two are currently on is dropped in the background — a block
+    that leaves you still talking to the person is not a block.
+    """
+    from app.modules.calling.presentation.dependencies import drop_calls_between_task
+
     try:
-        return service.block_user(repo, blocker_id=user_id, blocked_id=target_id)
+        result = service.block_user(repo, blocker_id=user_id, blocked_id=target_id)
     except BlockSelfError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except AlreadyBlockedError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+    background_tasks.add_task(drop_calls_between_task, user_id, target_id)
+    return result
 
 
 @router.delete("/block/{target_id}")
