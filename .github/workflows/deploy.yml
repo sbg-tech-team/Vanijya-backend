@@ -26,10 +26,15 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     # Dummy values: these checks import the app but never open a connection.
+    # storage.py and jwt_handler read env at import, so they need to be present
+    # even though nothing here talks to Supabase or signs a token.
     env:
       DATABASE_URL: postgresql+asyncpg://u:p@localhost/x
       SYNC_DATABASE_URL: postgresql+psycopg2://u:p@localhost/x
       REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET_KEY: ci-dummy
+      DATABASE_STORAGE_URL: https://example.supabase.co
+      DATABASE_SERVICE_KEY: ci-dummy-key
       PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
