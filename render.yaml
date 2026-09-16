@@ -22,6 +22,15 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+      # Auth — jwt_handler raises at runtime if unset; every login fails.
+      - key: JWT_SECRET_KEY
+        sync: false
+      # Supabase storage. shared/utils/storage.py reads these with os.environ[...]
+      # AT IMPORT, so a missing one is a boot failure, not a degraded feature.
+      - key: DATABASE_STORAGE_URL
+        sync: false
+      - key: DATABASE_SERVICE_KEY
+        sync: false
       # Calling — without these the calling endpoints fail at runtime.
       - key: STREAM_API_KEY
         sync: false
@@ -34,6 +43,11 @@ services:
         sync: false
       # Push notifications
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      # KYC verification (Surepass)
+      - key: SUREPASS_TOKEN
+        sync: false
+      - key: SUREPASS_BASE_URL
         sync: false
       # Monitoring
       - key: SENTRY_DSN

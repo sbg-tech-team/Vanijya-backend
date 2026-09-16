@@ -22,11 +22,36 @@ deploying with a warning instead of failing. Merging stays safe.
 
 ### 2. Render env vars
 
-Set every `sync: false` key from `render.yaml` in the dashboard. Two are new and
-the calling endpoints fail at runtime without them:
+Set every `sync: false` key from `render.yaml` in the dashboard.
 
-    STREAM_API_KEY
-    STREAM_API_SECRET
+**Boot-critical — the app does not start without these:**
+
+| Var | Failure if missing |
+|---|---|
+| `DATABASE_URL` | Settings has no default; import fails |
+| `SYNC_DATABASE_URL` | Same. Alembic also reads this one |
+| `DATABASE_STORAGE_URL` | `storage.py` reads it with `os.environ[...]` at import — `KeyError` |
+| `DATABASE_SERVICE_KEY` | Same |
+
+**Auth — app boots, but every login fails:**
+
+| Var | Failure if missing |
+|---|---|
+| `JWT_SECRET_KEY` | `jwt_handler._secret()` raises on every token operation |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Firebase OTP verification fails, so nobody can sign in. Also FCM push |
+
+**Per-feature — app boots, that feature fails:**
+
+| Var | Affects |
+|---|---|
+| `STREAM_API_KEY`, `STREAM_API_SECRET` | Calling (**new** — not set anywhere yet) |
+| `GNEWS_API_KEY`, `GROQ_API_KEY` | News ingestion and enrichment |
+| `SUREPASS_TOKEN`, `SUREPASS_BASE_URL` | KYC document verification |
+| `REDIS_URL` | Defaults to `localhost` — session taste, call presence and rate limiting all degrade silently |
+| `SENTRY_DSN` | No error reporting |
+
+Buckets (`POST_STORAGE_BUCKET`, `CHAT_STORAGE_BUCKET`, `GROUP_IMAGE_BUCKET`,
+`GROUP_MEDIA_BUCKET`) and `JWT_ALGORITHM` all have working defaults.
 
 ### 3. Turn Render's own auto-deploy OFF
 
@@ -60,7 +85,14 @@ deploy included one, downgrade it yourself:
 
     alembic downgrade -1
 
-## Known gap
+## Known gaps
+
+`app/modules/onboarding/application/service_msg91.py` reads
+`settings.MSG91_AUTH_KEY`, which does not exist on `Settings` (the model is
+`extra = "ignore"`, so it is not picked up from the environment either). That
+call would raise `AttributeError`. The module is not imported anywhere — OTP
+goes through Firebase — so it is dead code. Delete it or wire the setting up;
+do not leave it as a trap.
 
 `app/core/scheduler.py` pings `https://vanijyaa-backend.onrender.com/` to keep
 the instance warm. That host currently returns `x-render-routing: no-server`, so
