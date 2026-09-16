@@ -18,11 +18,20 @@ from uuid import UUID
 
 import redis
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.database.session import SessionLocal
+from app.modules.chat.application.use_cases.deliver_shared_content import (
+    DeliverSharedContentUseCase,
+)
+from app.modules.chat.presentation.dependencies import get_deliver_shared_content_uc
 from app.core.redis_client import get_redis
 from app.dependencies import get_current_profile_id, get_current_user_id, get_db
+from app.modules.news.application.jobs import (
+    run_archive_job,
+    run_news_pipeline,
+    run_trending_job,
+)
 from app.modules.news.application.use_cases.enrich_articles import EnrichArticlesUseCase
 from app.modules.news.application.use_cases.get_article_detail import GetArticleDetailUseCase
 from app.modules.news.application.use_cases.get_feed import GetFeedUseCase
@@ -33,7 +42,8 @@ from app.modules.news.data.adapters.gnews import GNewsProvider
 from app.modules.news.data.adapters.groq import GroqEnricher
 from app.modules.news.data.repository import NewsRepository
 from app.modules.news.recommendation.engine import NewsRecommendationEngine
-from app.modules.profile.data.models import Business, Commodity, Profile, Profile_Commodity
+from app.modules.profile.domain.interfaces.repository import IProfileRepository
+from app.modules.profile.presentation.dependencies import get_profile_repo
 
 
 # ── Profile context ───────────────────────────────────────────────────────────
@@ -50,30 +60,28 @@ class ProfileContext:
 def get_profile_context(
     profile_id: int = Depends(get_current_profile_id),
     user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    profile_repo: IProfileRepository = Depends(get_profile_repo),
 ) -> ProfileContext:
-    profile = db.execute(
-        select(Profile).where(Profile.id == profile_id)
-    ).scalar_one_or_none()
-    role_id = profile.role_id if profile else None
+    """Role, commodities and home state for feed personalisation.
 
-    commodity_interests: list[str] = list(
-        db.execute(
-            select(Commodity.name)
-            .join(Profile_Commodity, Profile_Commodity.commodity_id == Commodity.id)
-            .where(Profile_Commodity.profile_id == profile_id)
-        ).scalars()
-    )
-    home_state: str | None = db.execute(
-        select(Business.state).where(Business.profile_id == profile_id)
-    ).scalar_one_or_none()
+    Read through the profile module's repository — its entity already carries
+    business + named commodities, so news never touches profile's tables.
+    """
+    profile = profile_repo.get_profile_by_id(profile_id)
+    if profile is None:
+        return ProfileContext(
+            profile_id=profile_id, user_id=user_id, role_id=None,
+            commodity_interests=[], home_state=None,
+        )
 
     return ProfileContext(
         profile_id=profile_id,
         user_id=user_id,
-        role_id=role_id,
-        commodity_interests=commodity_interests,
-        home_state=home_state,
+        role_id=profile.role_id,
+        commodity_interests=[
+            pc.commodity.name for pc in profile.commodities if pc.commodity
+        ],
+        home_state=profile.business.state if profile.business else None,
     )
 
 
@@ -113,8 +121,9 @@ def get_record_interaction_use_case(
 
 def get_send_article_use_case(
     repo: NewsRepository = Depends(get_repo),
+    deliver_uc: DeliverSharedContentUseCase = Depends(get_deliver_shared_content_uc),
 ) -> SendArticleUseCase:
-    return SendArticleUseCase(repo=repo)
+    return SendArticleUseCase(repo=repo, deliver_uc=deliver_uc)
 
 
 def get_ingest_use_case(
@@ -127,3 +136,31 @@ def get_enrich_use_case(
     repo: NewsRepository = Depends(get_repo),
 ) -> EnrichArticlesUseCase:
     return EnrichArticlesUseCase(repo=repo, enricher=GroqEnricher())
+
+
+# ── Background-job composition ───────────────────────────────────────────────
+# Scheduled jobs have no request scope, so they cannot use Depends(). These are
+# the same wiring steps done by hand, each owning its session.
+
+def run_news_pipeline_job() -> dict:
+    db = SessionLocal()
+    try:
+        return run_news_pipeline(NewsRepository(db), GNewsProvider(), GroqEnricher())
+    finally:
+        db.close()
+
+
+def run_news_archive_job() -> int:
+    db = SessionLocal()
+    try:
+        return run_archive_job(NewsRepository(db))
+    finally:
+        db.close()
+
+
+def run_news_trending_job() -> int:
+    db = SessionLocal()
+    try:
+        return run_trending_job(NewsRepository(db))
+    finally:
+        db.close()

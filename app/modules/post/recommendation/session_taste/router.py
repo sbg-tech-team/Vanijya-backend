@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
-from app.dependencies import get_current_profile_id, get_db
+from app.dependencies import get_current_profile_id, get_current_user_id, get_db
 from app.modules.post.recommendation.session_taste import service as interaction_service
 from app.modules.post.recommendation.session_taste import jobs as interaction_jobs
 from app.modules.post.recommendation.session_taste.schemas import (
@@ -20,6 +20,13 @@ from app.modules.post.recommendation.session_taste.schemas import (
 from app.modules.post.recommendation.schemas import JobResult
 
 router = APIRouter(prefix="/posts/interactions", tags=["post-interactions"])
+
+# See post/recommendation/router.py — job triggers are authenticated.
+jobs_router = APIRouter(
+    prefix="/posts/interactions/jobs",
+    tags=["post-interactions"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 @router.post("/batch", response_model=InteractionBatchResult)
@@ -43,14 +50,14 @@ def submit_interaction_batch(
     return InteractionBatchResult(**result)
 
 
-@router.post("/jobs/taste-update", response_model=JobResult)
+@jobs_router.post("/taste-update", response_model=JobResult)
 def trigger_taste_update(db: Session = Depends(get_db)):
     """Manually trigger one batch of the dwell taste update job."""
     result = interaction_jobs.run_taste_update_job(db)
     return JobResult(status="ok", details=result)
 
 
-@router.post("/jobs/ignore-detect", response_model=JobResult)
+@jobs_router.post("/ignore-detect", response_model=JobResult)
 def trigger_ignore_detection(db: Session = Depends(get_db)):
     """Manually trigger the repeated-ignore detection job."""
     result = interaction_jobs.run_ignore_detection_job(db)

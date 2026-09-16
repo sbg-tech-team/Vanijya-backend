@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import os
 
@@ -20,6 +22,8 @@ from app.modules.profile.domain.exceptions import (
 )
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
 
+log = logging.getLogger(__name__)
+
 _STORAGE_BUCKET = os.environ.get("DATABASE_STORAGE_BUCKET", "avatars")
 
 
@@ -39,7 +43,7 @@ async def get_avatar_upload_url(repo: IProfileRepository, profile_id: int, conte
     try:
         await delete_object(_STORAGE_BUCKET, path)
     except StorageError:
-        pass
+        log.warning("could not delete avatar object %s", path)
 
     try:
         result = await generate_signed_upload_url(_STORAGE_BUCKET, path)
@@ -92,7 +96,8 @@ async def save_avatar_url(repo: IProfileRepository, profile_id: int, avatar_url:
             if old_path != new_path:
                 await delete_object(_STORAGE_BUCKET, old_path)
         except StorageError:
-            pass
+            # Orphaned object — the profile points at the new one either way.
+            log.warning("could not delete replaced avatar %s", profile.avatar_url)
 
     repo.update_avatar_url(profile_id, avatar_url)
     return {"avatar_url": avatar_url}

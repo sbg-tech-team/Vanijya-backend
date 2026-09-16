@@ -1,4 +1,5 @@
-from sqlalchemy.orm import Session, selectinload
+
+import logging
 
 from app.modules.post.data.models import CATEGORY_DEAL, Post, PostLike, PostComment, PostShare, PostSave, PostDealDetails
 from app.modules.post.domain.interfaces.repository import IPostRepository
@@ -12,12 +13,13 @@ from app.modules.post.application.schemas import (
     LikeResponse, SaveResponse, ShareResponse, DealClosedResponse,
     PostSendRequest,
 )
-from app.modules.profile.data.models import Profile
 from app.modules.post.recommendation import service as rec_service
 from app.modules.post.recommendation.constants import _ROLE_NAMES
 from app.modules.post.recommendation.session_taste import service as interaction_service
 
 import os
+
+log = logging.getLogger(__name__)
 
 _POST_STORAGE_BUCKET = os.environ.get("POST_STORAGE_BUCKET", "posts")
 
@@ -67,7 +69,7 @@ def toggle_like(repo: IPostRepository, post_id: int, profile_id: int) -> LikeRes
         try:
             interaction_service.record_interaction(repo.session, profile_id, post.category_id, "like", post.commodity_id, post.profile_id)
         except Exception:
-            pass
+            log.exception("taste update failed for like on post %s by profile %s", post_id, profile_id)
         return LikeResponse(liked=True, like_count=post.like_count)
 
 
@@ -90,7 +92,7 @@ def add_comment(repo: IPostRepository, post_id: int, profile_id: int, payload: C
     try:
         interaction_service.record_interaction(repo.session, profile_id, post.category_id, "comment", post.commodity_id, post.profile_id)
     except Exception:
-        pass
+        log.exception("taste update failed for comment on post %s by profile %s", post_id, profile_id)
 
     commenter = repo.get_profile_with_business_by_id(profile_id)
 
@@ -175,12 +177,13 @@ def record_share(repo: IPostRepository, post_id: int, profile_id: int) -> ShareR
     try:
         interaction_service.record_interaction(repo.session, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
     except Exception:
-        pass
+        log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
     return ShareResponse(share_count=post.share_count)
 
 
 def send_post(
     repo: IPostRepository,
+    deliver_uc,
     post_id: int,
     profile_id: int,
     user_id: "UUID",
@@ -190,47 +193,21 @@ def send_post(
     Full in-app share:
       1. Validate post exists.
       2. Deliver the post as a chat message to each selected DM / group.
-         Silently skips recipients that fail permission checks (partial delivery).
+         Chat owns the permission checks and silently skips recipients that
+         fail them (partial delivery).
       3. Increment share_count once regardless of recipient count.
       4. Return share_count + raw delivery lists so the router can emit WebSocket events.
     """
-    from uuid import UUID as _UUID
-    from app.modules.chat.data.repository import ChatRepository
-    from app.modules.chat.domain.value_objects import ConversationStatus
-
     post = _get_post_or_raise(repo, post_id)
-    chat_repo = ChatRepository(db)
 
-    dm_deliveries: list[tuple] = []
-    for conv_id in payload.dm_conversation_ids:
-        guard = chat_repo.get_conv_send_info(conv_id, user_id)
-        if guard and guard.status == ConversationStatus.ACTIVE:
-            msg = chat_repo.save_message(
-                context_type="dm",
-                context_id=conv_id,
-                sender_id=user_id,
-                message_type="post",
-                post_id=post_id,
-                body=payload.caption,
-            )
-            dm_deliveries.append((guard.receiver_id, msg))
-
-    group_deliveries: list[tuple] = []
-    for group_id in payload.group_ids:
-        chat_perm = chat_repo.get_group_chat_perm(group_id)
-        member_role = chat_repo.get_group_member_role(group_id, user_id)
-        is_frozen = chat_repo.is_group_member_frozen(group_id, user_id)
-        if (chat_perm and member_role and not is_frozen
-                and (chat_perm == "all_members" or member_role == "admin")):
-            msg = chat_repo.save_message(
-                context_type="group",
-                context_id=group_id,
-                sender_id=user_id,
-                message_type="post",
-                post_id=post_id,
-                body=payload.caption,
-            )
-            group_deliveries.append((group_id, msg))
+    dm_deliveries, group_deliveries = deliver_uc.execute(
+        sender_id=user_id,
+        message_type="post",
+        dm_conversation_ids=payload.dm_conversation_ids,
+        group_ids=payload.group_ids,
+        caption=payload.caption,
+        post_id=post_id,
+    )
 
     repo.add(PostShare(post_id=post_id, profile_id=profile_id))
     repo.bump_counter(post_id, "share_count", 1)
@@ -239,7 +216,7 @@ def send_post(
     try:
         interaction_service.record_interaction(repo.session, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
     except Exception:
-        pass
+        log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
 
     return {
         "share_count": post.share_count,
@@ -269,7 +246,7 @@ def toggle_save(repo: IPostRepository, post_id: int, profile_id: int) -> SaveRes
         try:
             interaction_service.record_interaction(repo.session, profile_id, post.category_id, "save", post.commodity_id, post.profile_id)
         except Exception:
-            pass
+            log.exception("taste update failed for save on post %s by profile %s", post_id, profile_id)
         return SaveResponse(saved=True)
 
 
@@ -292,9 +269,11 @@ def toggle_deal_closed(repo: IPostRepository, post_id: int, profile_id: int) -> 
 
     if deal.is_closed:
         try:
-            rec_service.remove_post_index(repo.session, post_id)
+            rec_service.remove_post_index(repo, post_id)
+            repo.commit()
         except Exception:
-            pass
+            repo.rollback()
+            log.exception("de-indexing failed for closed deal on post %s", post_id)
     else:
         author_lat, author_lon = _profile_location(repo, post.profile_id)
         post_lat = float(post.latitude) if post.latitude is not None else author_lat
@@ -310,7 +289,9 @@ def toggle_deal_closed(repo: IPostRepository, post_id: int, profile_id: int) -> 
                 category_id=post.category_id,
                 commodity_quantity=float(deal.commodity_quantity),
             )
+            repo.commit()
         except Exception:
-            pass
+            repo.rollback()
+            log.exception("re-indexing failed for post %s — it will not surface in the feed", post_id)
 
     return DealClosedResponse(is_closed=deal.is_closed)

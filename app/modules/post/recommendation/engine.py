@@ -1,3 +1,5 @@
+
+import logging
 """
 Post Recommendation Service
 
@@ -17,6 +19,7 @@ from app.modules.post.recommendation.constants import (
     CATEGORY_NAMES, CATEGORY_EXPIRY_DAYS, COMMODITY_ID_TO_IDX,
     FEED_SIZE, FETCH_TARGET,
     FRESH_BOOST_PEAK, FRESH_DECAY_TAU, FRESH_INJECT_HOURS, FRESH_SLOTS,
+    HOT_MAX_HOURS, WARM_MAX_HOURS, PARTITION_ALLOWED,
     MAX_PER_AUTHOR, MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
     _ROLE_NAMES,
 )
@@ -34,6 +37,8 @@ from app.modules.connections.data.models import UserConnection
 from app.recommendation.global_session import merge_weights, sync_module_to_global
 from app.recommendation.global_taste import read_global_taste_weights
 from app.shared.utils.time_decay import freshness_boost
+
+log = logging.getLogger(__name__)
 
 
 def _parse_vec(v) -> list[float]:
@@ -54,8 +59,29 @@ def _parse_vec(v) -> list[float]:
 # Write path: index post on publish --> on any post create/update embedding and set partition to 'hot'
 # ---------------------------------------------------------------------------
 
+def resolve_partition(category: str, age_hours: float) -> str | None:
+    """Which partition a post of this age belongs in, or None if it belongs in none.
+
+    Mirrors what run_expiry_job() arrives at by demoting hot -> warm -> cold: a
+    category is only demoted into a partition it is allowed in, so e.g. a
+    deal_req stays in "warm" until it expires rather than falling into "cold".
+    Used by the backfill, which writes historical rows in one shot instead of
+    waiting for the job to walk them down.
+    """
+    if age_hours <= HOT_MAX_HOURS:
+        return "hot" if category in PARTITION_ALLOWED["hot"] else None
+    if age_hours <= WARM_MAX_HOURS:
+        if category in PARTITION_ALLOWED["warm"]:
+            return "warm"
+        return None
+    if category in PARTITION_ALLOWED["cold"]:
+        return "cold"
+    # Past warm but not allowed in cold — it stays warm until expiry removes it.
+    return "warm" if category in PARTITION_ALLOWED["warm"] else None
+
+
 def index_post(
-    db: Session,
+    repo,
     post_id: int,
     commodity_id: int,
     target_role_ids: list[int] | None,
@@ -64,6 +90,12 @@ def index_post(
     category_id: int,
     commodity_quantity: float | None = None,
 ) -> None:
+    """Build and store this post's recommendation vector.
+
+    Takes the repository, not a Session: every caller already passes `repo=`,
+    and the write rides the caller's transaction so a post and its embedding
+    commit together.
+    """
     category = CATEGORY_NAMES[category_id]
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=CATEGORY_EXPIRY_DAYS[category])
@@ -79,38 +111,23 @@ def index_post(
         commodity_quantity=commodity_quantity,
     )
 
-    existing = db.query(PostEmbedding).filter(PostEmbedding.post_id == post_id).first()
-    if existing:
-        existing.vector = vector
-        existing.partition = "hot"
-        existing.is_active = True
-        existing.expires_at = expires_at
-        existing.category = category
-        existing.commodity_idx = commodity_idx
-        existing.created_at = now
-    else:
-        db.add(PostEmbedding(
-            post_id=post_id,
-            vector=vector,
-            partition="hot",
-            is_active=True,
-            expires_at=expires_at,
-            category=category,
-            commodity_idx=commodity_idx,
-            created_at=now,
-        ))
-    db.commit()
+    repo.upsert_post_embedding(
+        post_id=post_id,
+        vector=vector,
+        category=category,
+        commodity_idx=commodity_idx,
+        expires_at=expires_at,
+        now=now,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Write path: remove post from index on delete --> set is_active to False  
 # ---------------------------------------------------------------------------
 
-def remove_post_index(db: Session, post_id: int) -> None:
-    emb = db.query(PostEmbedding).filter(PostEmbedding.post_id == post_id).first()
-    if emb:
-        emb.is_active = False
-        db.commit()
+def remove_post_index(repo, post_id: int) -> None:
+    """Drop a post out of the recommendation index. Rides the caller's transaction."""
+    repo.deactivate_post_embedding(post_id)
 
 
 # ---------------------------------------------------------------------------
@@ -553,8 +570,9 @@ def get_recommended_posts(
         author_weights    = merge_weights(rc, profile_id, "post", "author",    author_weights)
         city_weights      = merge_weights(rc, profile_id, "post", "city",      city_weights)
         state_weights     = merge_weights(rc, profile_id, "post", "state",     state_weights)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Fall back to the persistent weights already loaded above.
+        log.warning("session-taste merge failed for profile %s; ranking on persistent taste only: %s", profile_id, exc)
 
     followed_user_ids = {
         row.following_id

@@ -113,6 +113,15 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
+    def record_first_view(self, post_id: int, profile_id: int) -> bool:
+        """Log this profile's first view of the post and bump view_count.
+
+        Returns False (rolling back) when the unique constraint says they have
+        seen it before, so the caller can record a revisit instead. Commits.
+        """
+        ...
+
+    @abstractmethod
     def is_liked(self, post_id: int, profile_id: int) -> bool:
         ...
 
@@ -170,7 +179,38 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
-    def get_taste_profile(self, profile_id: int) -> Optional[UserTasteProfile]:
+    def get_category_taste_weights(self, profile_id: int, role_id: int | None) -> dict[str, float]:
+        """Decayed, confidence-blended category taste for this profile.
+
+        Reads user_post_taste — the one authoritative taste store. Falls back to
+        the role defaults on cold start, so the result is always usable.
+        """
+        ...
+
+    @abstractmethod
+    def upsert_post_embedding(
+        self,
+        post_id: int,
+        vector: list,
+        category: str,
+        commodity_idx: int,
+        expires_at,
+        now,
+        partition: str = "hot",
+    ) -> None:
+        """Insert or refresh this post's recommendation embedding.
+
+        `now` is written as the embedding's created_at, which is what the expiry
+        job partitions on — a backfill passes the post's real creation time and
+        the matching partition, not the wall clock.
+
+        Does not commit — it rides the caller's transaction.
+        """
+        ...
+
+    @abstractmethod
+    def deactivate_post_embedding(self, post_id: int) -> None:
+        """Drop a post out of the recommendation index. Does not commit."""
         ...
 
     @abstractmethod

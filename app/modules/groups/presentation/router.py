@@ -12,15 +12,14 @@ the JWT via get_current_user_id — never from a client-supplied query param.
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 import redis as redis_lib
 
 from app.core.redis_client import get_redis
 from app.modules.groups.domain.interfaces.repository import IGroupsRepository
 from app.modules.groups.presentation.dependencies import get_groups_repo
-from app.dependencies import CurrentUser, get_current_user, get_current_user_id, get_db
+from app.dependencies import CurrentUser, get_current_user, get_current_user_id
 from app.modules.groups.presentation.schemas import (
     GroupViewSignal,
     AddMembersRequest,
@@ -31,6 +30,13 @@ from app.modules.groups.presentation.schemas import (
     GroupPermissionsUpdate,
     GroupUpdate,
     ReportGroupRequest,
+)
+from app.modules.groups.domain.exceptions import (
+    GroupMediaDeleteForbiddenError,
+    GroupMediaNotFoundError,
+    GroupMemberFrozenError,
+    GroupMemberNotFoundError,
+    GroupProfileNotFoundError,
 )
 from app.modules.groups.application.use_cases.service import (
     GroupConflictError,
@@ -81,9 +87,11 @@ def _handle(fn, *args, **kwargs):
     """Dispatch service call → HTTP status codes."""
     try:
         return fn(*args, **kwargs)
-    except GroupPermissionError as e:
+    except (GroupPermissionError, GroupMemberFrozenError,
+            GroupMediaDeleteForbiddenError) as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except GroupNotFoundError as e:
+    except (GroupNotFoundError, GroupMemberNotFoundError,
+            GroupMediaNotFoundError, GroupProfileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except GroupConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -279,11 +287,17 @@ join_group, repo, group_id, user.user_id,
 @router.delete("/{group_id}/leave")
 def leave_group_api(
     group_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     repo: IGroupsRepository = Depends(get_groups_repo),
 ):
+    from app.core.realtime import evict_from_group_room
+
     _handle(
 leave_group, repo, group_id, user_id)
+    # Drop their socket out of the group room — otherwise they keep receiving
+    # group messages and call events after leaving.
+    background_tasks.add_task(evict_from_group_room, user_id, group_id)
     return ok(message="Left group")
 
 
@@ -322,11 +336,15 @@ add_members, repo, group_id, user_id, payload.user_ids)
 def remove_member_api(
     group_id: UUID,
     target_user_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     repo: IGroupsRepository = Depends(get_groups_repo),
 ):
+    from app.core.realtime import evict_from_group_room
+
     _handle(
 remove_member, repo, group_id, user_id, target_user_id)
+    background_tasks.add_task(evict_from_group_room, target_user_id, group_id)
     return ok(message="Member removed")
 
 
@@ -336,11 +354,18 @@ remove_member, repo, group_id, user_id, target_user_id)
 def freeze_member_api(
     group_id: UUID,
     target_user_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     repo: IGroupsRepository = Depends(get_groups_repo),
 ):
+    from app.core.realtime import evict_from_group_room
+
     result = _handle(
 set_member_frozen, repo, group_id, user_id, target_user_id, True)
+    # A frozen member cannot post, so they must not keep receiving either.
+    # Unfreezing does not re-add them: the client rejoins via the join_group
+    # socket event, which re-checks membership.
+    background_tasks.add_task(evict_from_group_room, target_user_id, group_id)
     return ok(result, "Member frozen")
 
 
@@ -404,9 +429,11 @@ async def group_media_upload_url_api(
     try:
         result = await get_group_media_upload_url(repo, group_id, user_id, content_type)
         return ok(result, "Group media upload URL generated")
-    except GroupPermissionError as e:
+    except (GroupPermissionError, GroupMemberFrozenError,
+            GroupMediaDeleteForbiddenError) as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except GroupNotFoundError as e:
+    except (GroupNotFoundError, GroupMemberNotFoundError,
+            GroupMediaNotFoundError, GroupProfileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except GroupValidationError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -440,9 +467,11 @@ async def delete_group_media_api(
 ):
     try:
         await delete_group_media(repo, group_id, media_id, user_id)
-    except GroupPermissionError as e:
+    except (GroupPermissionError, GroupMemberFrozenError,
+            GroupMediaDeleteForbiddenError) as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except GroupNotFoundError as e:
+    except (GroupNotFoundError, GroupMemberNotFoundError,
+            GroupMediaNotFoundError, GroupProfileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return ok(message="Media deleted")
 

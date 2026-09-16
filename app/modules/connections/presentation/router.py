@@ -12,12 +12,12 @@ from uuid import UUID
 
 import redis as redis_lib
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
 from app.modules.connections.domain.interfaces.repository import IConnectionsRepository
+from app.modules.chat.presentation.dependencies import get_share_recipients_uc
 from app.modules.connections.presentation.dependencies import get_connections_repo
-from app.dependencies import CurrentUser, get_current_user, get_current_user_id, get_db
+from app.dependencies import CurrentUser, get_current_user, get_current_user_id
 from app.modules.connections.presentation.schemas import (
     FollowCreate,
     MessageRequestCreate,
@@ -205,7 +205,7 @@ def accept_request(
     """Accept a message request. Only the receiver can accept.
     Activates the DM conversation and notifies the original sender in real time."""
     # Local import keeps the chat-module dependency contained (avoids an import cycle).
-    from app.modules.chat.presentation.connection_manager import emit_to_user
+    from app.core.realtime import emit_to_user
 
     try:
         result = service.respond_to_request(repo, request_id=request_id, me=me, action="accepted")
@@ -234,7 +234,7 @@ def decline_request(
     """Decline a message request. Only the receiver can decline.
     Non-permanent — the sender can re-send later, which reopens it as pending."""
     # Local import keeps the chat-module dependency contained (avoids an import cycle).
-    from app.modules.chat.presentation.connection_manager import emit_to_user
+    from app.core.realtime import emit_to_user
 
     try:
         result = service.respond_to_request(repo, request_id=request_id, me=me, action="declined")
@@ -296,16 +296,15 @@ def search(
 @connections_router.get("/share-recipients")
 def get_share_recipients(
     me: UUID = Depends(get_current_user_id),
-    repo: IConnectionsRepository = Depends(get_connections_repo),
+    share_uc=Depends(get_share_recipients_uc),
 ):
     """
     Returns DM connections and groups the current user can forward content to.
     Used by both post and news share sheets — call once, reuse the result for
     either share flow.
     """
-    # chat owns this data; reuse its repository over the same session
-    from app.modules.chat.data.repository import ChatRepository
-    result = ChatRepository(repo.session).get_share_recipients(me)
+    # chat owns this data — go through its use case, not its repository
+    result = share_uc.execute(me)
     return ok(result, "Share recipients fetched")
 
 

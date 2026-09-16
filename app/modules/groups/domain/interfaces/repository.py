@@ -149,6 +149,54 @@ class IGroupsRepository(ABC):
         ...
 
     @abstractmethod
-    def raw_sql(self, sql: str, params: dict) -> list[dict]:
-        """Rows as dicts. Used by the hand-written pgvector ANN query."""
+    def create_post_from_deal(self, deal, profile_id: int, is_public: bool):
+        """Mirror a published group deal into the public post feed.
+
+        Writes the Post plus its deal-details snapshot and flushes so the
+        caller has post.id. Does not commit.
+        """
+        ...
+
+    @abstractmethod
+    def upsert_post_embedding(
+        self,
+        post_id: int,
+        vector: list,
+        category: str,
+        commodity_idx: int,
+        expires_at,
+        now,
+        partition: str = "hot",
+    ) -> None:
+        """Insert or refresh this post's recommendation embedding.
+
+        `now` is written as the embedding's created_at, which is what the expiry
+        job partitions on — a backfill passes the post's real creation time and
+        the matching partition, not the wall clock.
+
+        Does not commit — it rides the caller's transaction.
+        """
+        ...
+
+    @abstractmethod
+    def deactivate_post_embedding(self, post_id: int) -> None:
+        """Drop a post out of the recommendation index. Does not commit."""
+        ...
+
+    @abstractmethod
+    def insert_deal_chat_card(self, deal) -> None:
+        """Queue the system card that announces a new deal in the group chat.
+
+        Does not commit — it rides the same transaction as the deal itself, so
+        a failed publish never leaves an orphaned card.
+        """
+        ...
+
+    @abstractmethod
+    def ann_group_candidates(self, vector: str, limit: int) -> list[dict]:
+        """Top `limit` non-private groups by pgvector cosine ANN against `vector`.
+
+        Rows are {"group_id", "similarity"}. `vector` is a pgvector literal
+        ("[0.1,0.2,...]").
+        """
         ...

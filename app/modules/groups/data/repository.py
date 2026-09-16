@@ -312,6 +312,111 @@ class GroupsRepository(IGroupsRepository):
         )
         return rows, total
 
-    def raw_sql(self, sql: str, params: dict) -> list[dict]:
-        """Rows as dicts. Used by the hand-written pgvector ANN query."""
-        return [dict(m) for m in self.db.execute(text(sql), params).mappings().all()]
+    def create_post_from_deal(self, deal, profile_id: int, is_public: bool):
+        from app.modules.post.data.models import CATEGORY_DEAL, Post, PostDealDetails
+
+        post = Post(
+            profile_id=profile_id,
+            category_id=CATEGORY_DEAL,
+            commodity_id=deal.commodity_id,
+            title=deal.title,
+            caption=deal.caption,
+            is_public=is_public,
+        )
+        self.db.add(post)
+        self.db.flush()  # get post.id
+
+        self.db.add(PostDealDetails(
+            post_id=post.id,
+            grain_type=deal.grain_type,
+            grain_size=deal.grain_size,
+            commodity_quantity=float(deal.commodity_quantity),
+            quantity_unit=deal.quantity_unit,
+            commodity_price=float(deal.commodity_price),
+            price_type=deal.price_type,
+            is_closed=deal.is_closed,
+        ))
+        self.db.flush()
+        return post
+
+    def upsert_post_embedding(
+        self,
+        post_id: int,
+        vector: list,
+        category: str,
+        commodity_idx: int,
+        expires_at,
+        now,
+        partition: str = "hot",
+    ) -> None:
+        from app.modules.post.recommendation.models import PostEmbedding
+
+        existing = (
+            self.db.query(PostEmbedding)
+            .filter(PostEmbedding.post_id == post_id)
+            .first()
+        )
+        if existing:
+            existing.vector = vector
+            existing.partition = partition
+            existing.is_active = True
+            existing.expires_at = expires_at
+            existing.category = category
+            existing.commodity_idx = commodity_idx
+            existing.created_at = now
+            return
+        self.db.add(PostEmbedding(
+            post_id=post_id,
+            vector=vector,
+            partition=partition,
+            is_active=True,
+            expires_at=expires_at,
+            category=category,
+            commodity_idx=commodity_idx,
+            created_at=now,
+        ))
+
+    def deactivate_post_embedding(self, post_id: int) -> None:
+        from app.modules.post.recommendation.models import PostEmbedding
+
+        emb = (
+            self.db.query(PostEmbedding)
+            .filter(PostEmbedding.post_id == post_id)
+            .first()
+        )
+        if emb:
+            emb.is_active = False
+
+    def insert_deal_chat_card(self, deal) -> None:
+        from app.modules.chat.data.models import Message
+
+        self.db.add(Message(
+            context_type="group",
+            context_id=deal.group_id,
+            sender_id=deal.posted_by,
+            message_type="deal",
+            deal_id=deal.id,
+            media_metadata={
+                "title": deal.title,
+                "commodity_id": deal.commodity_id,
+            },
+        ))
+
+    def ann_group_candidates(self, vector: str, limit: int) -> list[dict]:
+        """HNSW cosine ANN over group_embeddings, private groups excluded.
+
+        Hand-written SQL: the <=> operator has no ORM expression, and the index
+        is only used when the ORDER BY is written this way.
+        """
+        sql = text("""
+            SELECT ge.group_id,
+                   1 - (ge.embedding <=> CAST(:vec AS vector)) AS similarity
+            FROM group_embeddings ge
+            JOIN groups g ON g.id = ge.group_id
+            WHERE ge.embedding IS NOT NULL
+              AND g.accessibility != 'private'
+            ORDER BY ge.embedding <=> CAST(:vec AS vector)
+            LIMIT :limit
+        """)
+        rows = self.db.execute(sql, {"vec": vector, "limit": limit}).mappings().all()
+        return [dict(m) for m in rows]

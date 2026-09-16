@@ -1,14 +1,14 @@
+import logging
+
 import asyncio
 import os
 import uuid
 
-from sqlalchemy.orm import Session
 
 from app.modules.post.data.models import CATEGORY_DEAL, Post, PostDealDetails
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.post.domain.exceptions import PostImageUploadError, PostStorageUnavailableError
 from app.modules.post.application.schemas import PostCreate, PostResponse, PostDealResponse
-from app.modules.profile.data.models import Profile
 from app.modules.post.recommendation import service as rec_service
 from app.modules.post.recommendation.constants import _ROLE_NAMES
 from app.shared.utils.storage import (
@@ -20,6 +20,8 @@ from app.shared.utils.storage import (
     path_from_url,
     public_url,
 )
+
+log = logging.getLogger(__name__)
 
 _POST_STORAGE_BUCKET = os.environ.get("POST_STORAGE_BUCKET", "posts")
 
@@ -176,7 +178,11 @@ async def create_post(repo: IPostRepository, profile_id: int, payload: PostCreat
             category_id=post.category_id,
             commodity_quantity=float(deal.commodity_quantity) if deal else None,
         )
+        repo.commit()
     except Exception:
-        pass  # embedding failure must never break post creation
+        # Never break post creation — but an unindexed post is invisible to the
+        # recommender, so this must be visible in the logs.
+        repo.rollback()
+        log.exception("indexing failed for new post %s — it will not surface in the feed", post.id)
 
     return _to_post_response(repo, post, profile_id)

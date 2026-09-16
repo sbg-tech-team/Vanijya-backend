@@ -58,7 +58,7 @@ class UserPostTaste(Base):
 
     Composite PK = (profile_id, dimension_type, dimension_key).
     Scores are Float to hold fractional signal weights.
-    Replaces UserTasteProfile as the active read path in Phase 7.
+    Replaced UserTasteProfile — the single taste store for every post feed.
     """
     __tablename__ = "user_post_taste"
 
@@ -86,9 +86,12 @@ class UserPostTaste(Base):
 
 class UserTasteProfile(Base):
     """
-    Legacy flat-counter taste store (Phase 1 / Phase 2).
-    Still the active read path for the reranker until Phase 7 cutover.
-    Superseded by UserPostTaste — do not add columns here.
+    Legacy flat-counter taste store (Phase 1 / Phase 2). RETIRED.
+
+    Nothing reads or writes this table any more — UserPostTaste is the single
+    taste store for both the recommendation feed and the following feed. The
+    model is kept only so the table is not dropped out from under existing
+    rows; delete both once the data has been archived.
     """
     __tablename__ = "user_taste_profiles"
 

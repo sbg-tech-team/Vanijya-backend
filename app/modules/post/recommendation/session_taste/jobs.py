@@ -21,13 +21,9 @@ from app.modules.post.recommendation.session_taste.constants import (
     IGNORE_NEG_DELTA,
     REPEATED_IGNORE_THRESHOLD,
 )
-from app.modules.post.recommendation.session_taste.models import (
-    PostInteractionEvent,
-    UserTasteProfile,
-)
+from app.modules.post.recommendation.session_taste.models import PostInteractionEvent
 from app.modules.post.recommendation.session_taste.service import (
-    _CATEGORY_COL_MAP,
-    _to_int_delta,
+    TASTE_CATEGORIES,
     derive_signal,
 )
 from app.modules.post.recommendation.session_taste import taste_service
@@ -80,12 +76,10 @@ def run_taste_update_job(db: Session) -> dict:
     Processes the oldest unprocessed dwell events (up to _BATCH_SIZE per run).
 
     Positive dwells (>= DWELL_BOUNCE_MS):
-      - user_taste_profiles  (legacy integer counters, active reranker read path)
       - user_post_taste      category, commodity, author (where applicable)
 
     Bounce dwells (< DWELL_BOUNCE_MS):
       - user_post_taste only  category, commodity — negative delta
-      - user_taste_profiles has no negative_score column; skip legacy write
 
     impressions / open_* / link_click are not processed here.
     All fetched dwell events are marked processed_at = now.
@@ -116,9 +110,6 @@ def run_taste_update_job(db: Session) -> dict:
     }
 
     # ── Accumulate deltas ─────────────────────────────────────────────────────
-    # Legacy: { profile_id → { col_name → int_delta } }
-    utp_col_deltas: dict[int, dict[str, int]] = {}
-    utp_event_counts: dict[int, int] = {}
 
     # Phase 3/4/5: { (profile_id, dim_type, dim_key) → [pos, neg, count] }
     upt_deltas: dict[tuple[int, str, str], list] = {}
@@ -130,8 +121,7 @@ def run_taste_update_job(db: Session) -> dict:
 
         category_id, commodity_id, author_profile_id = meta
         category = CATEGORY_NAMES.get(category_id)
-        col = _CATEGORY_COL_MAP.get(category) if category else None
-        if not col:
+        if category not in TASTE_CATEGORIES:
             continue
 
         pid = event.profile_id
@@ -151,14 +141,8 @@ def run_taste_update_job(db: Session) -> dict:
                         _acc(upt_deltas, pid, "commodity", str(commodity_id), 0.0, neg_delta)
                 continue
 
-            int_delta = _to_int_delta(pos_delta)
             if pos_delta <= 0:
                 continue
-
-            if int_delta > 0:
-                cols = utp_col_deltas.setdefault(pid, {})
-                cols[col] = cols.get(col, 0) + int_delta
-            utp_event_counts[pid] = utp_event_counts.get(pid, 0) + 1
 
             _acc(upt_deltas, pid, "category", category, pos_delta, 0.0)
             if commodity_id:
@@ -178,13 +162,6 @@ def run_taste_update_job(db: Session) -> dict:
             if pos_delta <= 0:
                 continue
 
-            int_delta = _to_int_delta(pos_delta)
-
-            if int_delta > 0:
-                cols = utp_col_deltas.setdefault(pid, {})
-                cols[col] = cols.get(col, 0) + int_delta
-            utp_event_counts[pid] = utp_event_counts.get(pid, 0) + 1
-
             _acc(upt_deltas, pid, "category", category, pos_delta, 0.0)
             if commodity_id:
                 _acc(upt_deltas, pid, "commodity", str(commodity_id), pos_delta, 0.0)
@@ -197,20 +174,8 @@ def run_taste_update_job(db: Session) -> dict:
             ):
                 _acc(upt_deltas, pid, "author", str(author_profile_id), pos_delta, 0.0)
 
-    # ── Apply legacy deltas ───────────────────────────────────────────────────
-    taste_updates = 0
-    for profile_id, col_deltas in utp_col_deltas.items():
-        taste = db.query(UserTasteProfile).filter(
-            UserTasteProfile.profile_id == profile_id
-        ).first()
-        if taste is None:
-            continue                        # profile created on first explicit interaction
-        for col, delta in col_deltas.items():
-            setattr(taste, col, getattr(taste, col) + delta)
-        taste.total_events += utp_event_counts.get(profile_id, 0)
-        taste_updates += 1
-
-    # ── Apply Phase 3/4/5 deltas ─────────────────────────────────────────────
+    # ── Apply taste deltas to user_post_taste (the one taste store) ──────────
+    taste_updates = len({pid for pid, _, _ in upt_deltas})
     for (profile_id, dim_type, dim_key), (pos_d, neg_d, cnt) in upt_deltas.items():
         if pos_d > 0 or neg_d > 0:
             taste_service.update_taste(

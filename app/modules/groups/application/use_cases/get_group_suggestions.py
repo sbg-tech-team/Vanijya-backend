@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.modules.groups.data.models import (
     Group,
@@ -87,19 +85,7 @@ def get_group_suggestions(
 
     # 3. HNSW ANN: fetch top candidates, excluding private groups.
     #    Overfetch (top_k * 4) to allow Python-side member filtering.
-    candidate_rows = repo.raw_sql(
-        """
-            SELECT ge.group_id,
-                   1 - (ge.embedding <=> CAST(:vec AS vector)) AS similarity
-            FROM group_embeddings ge
-            JOIN groups g ON g.id = ge.group_id
-            WHERE ge.embedding IS NOT NULL
-              AND g.accessibility != 'private'
-            ORDER BY ge.embedding <=> CAST(:vec AS vector)
-            LIMIT :limit
-        """,
-        {"vec": vec_str, "limit": top_k * 4},
-    )
+    candidate_rows = repo.ann_group_candidates(vec_str, limit=top_k * 4)
 
     # Filter out groups the user already belongs to
     candidates = [

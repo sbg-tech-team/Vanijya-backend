@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session, selectinload
 from app.modules.connections.data.models import UserConnection
 from app.modules.post.data.models import Post, PostComment, PostLike, PostSave
 from app.modules.post.recommendation.models import SeenPost
-from app.modules.post.recommendation.session_taste.models import UserTasteProfile
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.profile.data.models import Profile
 
@@ -188,6 +187,18 @@ class PostRepository(IPostRepository):
             synchronize_session=False,
         )
 
+    def record_first_view(self, post_id: int, profile_id: int) -> bool:
+        self.db.add(PostView(post_id=post_id, profile_id=profile_id))
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # Unique constraint on (post_id, profile_id) — already seen.
+            self.db.rollback()
+            return False
+        self.increment_view_count_no_commit(post_id)
+        self.db.commit()
+        return True
+
     # -- likes / saves ---------------------------------------------------------
 
     def is_liked(self, post_id: int, profile_id: int) -> bool:
@@ -283,12 +294,58 @@ class PostRepository(IPostRepository):
 
     # -- taste / seen ----------------------------------------------------------
 
-    def get_taste_profile(self, profile_id: int) -> Optional[UserTasteProfile]:
-        return (
-            self.db.query(UserTasteProfile)
-            .filter(UserTasteProfile.profile_id == profile_id)
+    def get_category_taste_weights(self, profile_id: int, role_id: int | None) -> dict[str, float]:
+        from app.modules.post.recommendation.session_taste import taste_service
+
+        return taste_service.get_taste_weights(self.db, profile_id, "category", role_id)
+
+    def upsert_post_embedding(
+        self,
+        post_id: int,
+        vector: list,
+        category: str,
+        commodity_idx: int,
+        expires_at,
+        now,
+        partition: str = "hot",
+    ) -> None:
+        from app.modules.post.recommendation.models import PostEmbedding
+
+        existing = (
+            self.db.query(PostEmbedding)
+            .filter(PostEmbedding.post_id == post_id)
             .first()
         )
+        if existing:
+            existing.vector = vector
+            existing.partition = partition
+            existing.is_active = True
+            existing.expires_at = expires_at
+            existing.category = category
+            existing.commodity_idx = commodity_idx
+            existing.created_at = now
+            return
+        self.db.add(PostEmbedding(
+            post_id=post_id,
+            vector=vector,
+            partition=partition,
+            is_active=True,
+            expires_at=expires_at,
+            category=category,
+            commodity_idx=commodity_idx,
+            created_at=now,
+        ))
+
+    def deactivate_post_embedding(self, post_id: int) -> None:
+        from app.modules.post.recommendation.models import PostEmbedding
+
+        emb = (
+            self.db.query(PostEmbedding)
+            .filter(PostEmbedding.post_id == post_id)
+            .first()
+        )
+        if emb:
+            emb.is_active = False
 
     def seen_post_ids(self, profile_id: int) -> set:
         return {

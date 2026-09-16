@@ -4,7 +4,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.database.session import SessionLocal
 from app.core.redis_client import get_redis
-from app.modules.news.application import jobs as news_jobs
+from app.modules.calling.presentation import dependencies as calling_di
+from app.modules.news.presentation import dependencies as news_di
 from app.modules.post.recommendation import jobs as post_rec_jobs
 from app.modules.post.recommendation.session_taste import jobs as post_interaction_jobs
 
@@ -20,28 +21,7 @@ def _keep_alive():
         _log.warning("Keep-alive ping failed: %s", exc)
 
 
-def _run_news_pipeline():
-    db = SessionLocal()
-    try:
-        news_jobs.run_news_pipeline(db)
-    finally:
-        db.close()
 
-
-def _run_news_trending():
-    db = SessionLocal()
-    try:
-        news_jobs.run_trending_job(db)
-    finally:
-        db.close()
-
-
-def _run_news_archive():
-    db = SessionLocal()
-    try:
-        news_jobs.run_archive_job(db)
-    finally:
-        db.close()
 
 
 def _run_expiry_job():
@@ -74,6 +54,12 @@ def _run_ignore_detection():
         post_interaction_jobs.run_ignore_detection_job(db)
     finally:
         db.close()
+
+
+
+
+
+
 
 
 def _run_global_taste_promotion():
@@ -118,11 +104,11 @@ def _run_global_taste_promotion():
 def start():
     # max_instances/coalesce carried over from app_old: without them a slow run
     # can overlap the next tick and double-ingest / double-count trending.
-    scheduler.add_job(_run_news_pipeline, "interval", minutes=30, id="news_new.pipeline",
+    scheduler.add_job(news_di.run_news_pipeline_job, "interval", minutes=30, id="news_new.pipeline",
                       max_instances=1, coalesce=True)
-    scheduler.add_job(_run_news_trending, "interval", minutes=5,  id="news_new.trending",
+    scheduler.add_job(news_di.run_news_trending_job, "interval", minutes=5,  id="news_new.trending",
                       max_instances=1, coalesce=True)
-    scheduler.add_job(_run_news_archive,  "cron",     hour=2,     id="news_new.archive")
+    scheduler.add_job(news_di.run_news_archive_job,  "cron",     hour=2,     id="news_new.archive")
 
     scheduler.add_job(_run_expiry_job,    "interval", hours=1,    id="posts.expiry")
     scheduler.add_job(_run_popular_sync,  "interval", minutes=15, id="posts.popular")
@@ -133,6 +119,23 @@ def start():
         "cron", hour=3, minute=15,
         id="recommendation.global_taste_promotion",
     )
+
+    # Calling cost guardrails, weakest assumption last. Stream bills
+    # participants x wall-clock minutes, so every way a call can fail to end is
+    # a way to run up a bill. Each job also terminates the session ON Stream —
+    # ending a call only in our database does not stop the meter.
+    scheduler.add_job(calling_di.run_ring_timeout_job,  "interval", seconds=30, id="calls.ring_timeout",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(calling_di.run_heartbeat_job, "interval", seconds=30, id="calls.heartbeat",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(calling_di.run_solo_participant_job,  "interval", minutes=1, id="calls.solo_timeout",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(calling_di.run_max_duration_job,  "interval", minutes=1, id="calls.max_duration",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(calling_di.run_provider_retry_job, "interval", minutes=5, id="calls.provider_retry",
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(calling_di.run_stale_reaper_job,  "interval", minutes=2, id="calls.stale_reaper",
+                      max_instances=1, coalesce=True)
 
     scheduler.add_job(_keep_alive,      "interval", minutes=10,  id="server.keepalive")
 

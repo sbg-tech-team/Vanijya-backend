@@ -98,6 +98,22 @@ class PostSnap:
 
 
 @dataclass
+class CallSnap:
+    """Finished-call card. Written by the calling module when a call ends, so the
+    call renders inline in the conversation the way WhatsApp does it.
+
+    No `direction` field: the message's `sender` is the call initiator, so the
+    client derives outgoing/incoming by comparing it to its own user_id — the
+    same row is outgoing for one viewer and incoming for the other.
+    """
+    call_id: str
+    media: str
+    status: str
+    end_reason: Optional[str]
+    duration_seconds: int
+
+
+@dataclass
 class DealSnap:
     """Lightweight deal preview attached to a message."""
     deal_id: UUID
@@ -148,6 +164,9 @@ class MessageEntity:
     deal: Optional[DealSnap]
     post: Optional[PostSnap]
     attachments: List[ChatAttachmentEntity] = field(default_factory=list)
+    # Present only when message_type == "call" — the finished-call card the
+    # calling module writes into the thread. Built from media_metadata.
+    call: Optional["CallSnap"] = None
     # Receipt ticks (DM only; None for group messages).
     # delivered = peer.last_delivered_at >= sent_at
     # read      = peer.last_read_at      >= sent_at

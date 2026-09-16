@@ -12,9 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy.orm import Session, joinedload
 
-from app.modules.profile.data.models import Profile
 from app.modules.groups.application.use_cases.record_view import MODULE
 from app.recommendation.amplify import commodity_ids_for, write_commodity_signals
 from app.recommendation.session_taste import ActionType
@@ -143,7 +141,6 @@ def get_members(
 ) -> dict:
     _get_group_or_raise(repo, group_id)
 
-    from sqlalchemy import case
     total = repo.count_members(group_id)
     memberships = repo.list_members(group_id, page, limit)
 

@@ -12,14 +12,6 @@ from uuid import UUID
 
 from app.modules.connections.recommendation.weights_config import ALL_COMMODITIES
 # profile models are reached through the repository
-from app.modules.profile.data.models import (  # noqa: F401
-
-    Business,
-    Commodity,
-    Profile,
-    Profile_Commodity,
-    Role,
-)
 
 # ── Search intent parsing ────────────────────────────────────────────────────
 _KNOWN_ROLES = {"trader", "broker", "exporter"}

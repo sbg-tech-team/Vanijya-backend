@@ -1,64 +1,49 @@
-"""Socket.IO server + emit helpers for chat real-time push.
+"""Chat-specific Socket.IO handlers.
 
-⚠️  SINGLE-WORKER ONLY. State here lives in-process:
-  • `_sid_user` is a plain in-memory dict (not shared across processes), and
-  • `sio` uses the default in-memory client manager (no message queue).
+Transport only. The Socket.IO server, room bookkeeping and the emit helpers are
+shared infrastructure and live in `app.core.realtime`; every membership rule
+below is decided by a use case against the repository interface.
 
-So room membership and `emit_to_user` / `is_online` only see sockets connected
-to *this* process. HTTP handlers emit from background tasks in whatever worker
-served the request — if that's a different worker than the one holding the
-recipient's socket, the push is silently dropped.
-
-➡️  Run the app with a SINGLE worker (e.g. `uvicorn ... --workers 1`). To scale
-to multiple workers later, give socketio a shared backend
-(`socketio.AsyncRedisManager(...)`) and move `_sid_user` into Redis.
+Re-exports the emit helpers so `main.py` and existing chat code keep their
+import site, but new code should import them from `app.core.realtime`.
 """
-from datetime import datetime, timezone
+import logging
 from uuid import UUID
-import socketio
+
+from app.core.realtime import (  # noqa: F401  (re-exported for callers)
+    emit_threadsafe,
+    emit_to_group,
+    emit_to_user,
+    evict_from_group_room,
+    evict_many_from_group_room,
+    is_online,
+    sio,
+    user_for_sid,
+)
 from app.core.database.session import SessionLocal
-from app.modules.chat.data.repository import ChatRepository
-from app.core.security.jwt_handler import decode_access_token
-from app.modules.chat.data.models import ConversationMember
-from app.modules.groups.data.models import GroupMember
+from app.modules.chat.presentation.dependencies import build_socket_use_cases
 
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
-
-# sid → str(user_id) — needed to verify group membership in join_group
-_sid_user: dict[str, str] = {}
+_log = logging.getLogger(__name__)
 
 
-@sio.event
-async def connect(sid, _environ, auth):
+def _with_use_cases(fn):
+    """Run `fn(use_cases)` with a short-lived session — sockets get no request scope."""
+    db = SessionLocal()
     try:
-        token = auth.get("token")
-        decoded_token = decode_access_token(token)
-    except Exception:
-        return False
-    user_id = str(decoded_token.user_id)
-    _sid_user[sid] = user_id
-    await sio.enter_room(sid, f"user:{user_id}")
-
-
-@sio.event
-async def disconnect(sid):
-    _sid_user.pop(sid, None)
+        return fn(build_socket_use_cases(db))
+    finally:
+        db.close()
 
 
 @sio.event
 async def join_group(sid, data):
     group_id = data.get("group_id")
-    user_id = _sid_user.get(sid)
+    user_id = user_for_sid(sid)
     if not group_id or not user_id:
         return
 
-    db = SessionLocal()
-    try:
-        member = ChatRepository(db).is_group_member(group_id, user_id) or None
-    finally:
-        db.close()
-
-    if member is None:
+    allowed = _with_use_cases(lambda uc: uc.can_join.execute(group_id, user_id))
+    if not allowed:
         return  # silently refuse — not a member
 
     await sio.enter_room(sid, f"group:{group_id}")
@@ -76,7 +61,7 @@ async def stop_typing(sid, data):
 
 async def _relay_typing(sid, data, event: str) -> None:
     """Relay a typing indicator to the DM peer or the group room (never echoed back)."""
-    user_id = _sid_user.get(sid)
+    user_id = user_for_sid(sid)
     context_type = (data or {}).get("context_type")
     context_id = (data or {}).get("context_id")
     if not user_id or not context_type or not context_id:
@@ -89,17 +74,9 @@ async def _relay_typing(sid, data, event: str) -> None:
         return
 
     if context_type == "dm":
-        db = SessionLocal()
-        try:
-            member_ids_from_db = ChatRepository(db).dm_member_ids(context_id)
-        finally:
-            db.close()
-        member_ids = member_ids_from_db
-        if user_id not in member_ids:
-            return  # not a member — refuse to relay
-        for mid in member_ids:
-            if mid != user_id:
-                await sio.emit(event, payload, room=f"user:{mid}")
+        peers = _with_use_cases(lambda uc: uc.relay_typing.execute(context_id, user_id))
+        for mid in peers:
+            await sio.emit(event, payload, room=f"user:{mid}")
 
 
 @sio.event
@@ -109,35 +86,18 @@ async def message_delivered(sid, data):
     flip their grey ticks. Cursor-based: one timestamp covers every message sent up to
     now, so the client acks once per batch — on receiving `new_message` and after a REST
     load of unseen messages (which covers the offline case)."""
-    user_id = _sid_user.get(sid)
+    user_id = user_for_sid(sid)
     conv_id = (data or {}).get("conv_id")
     if not user_id or not conv_id:
         return
 
-    now = datetime.now(timezone.utc)
-    db = SessionLocal()
-    try:
-        peer = ChatRepository(db).mark_delivered_and_get_peer(conv_id, user_id, now)
-        if peer is None:
-            return  # not a member — ignore
-    finally:
-        db.close()
+    result = _with_use_cases(lambda uc: uc.mark_delivered.execute(conv_id, user_id))
+    if result is None:
+        return  # not a member — ignore
 
-    if peer:
-        await sio.emit(
-            "delivered",
-            {"conv_id": str(conv_id), "delivered_to": user_id, "last_delivered_at": now.isoformat()},
-            room=f"user:{peer[0]}",
-        )
-
-
-async def emit_to_user(user_id: UUID, event: str, data: dict) -> None:
-    await sio.emit(event, data, room=f"user:{user_id}")
-
-
-async def emit_to_group(group_id: UUID, event: str, data: dict) -> None:
-    await sio.emit(event, data, room=f"group:{group_id}")
-
-
-def is_online(user_id: UUID) -> bool:
-    return bool(list(sio.manager.get_participants('/', f'user:{user_id}')))
+    peer_id, now = result
+    await sio.emit(
+        "delivered",
+        {"conv_id": str(conv_id), "delivered_to": user_id, "last_delivered_at": now.isoformat()},
+        room=f"user:{peer_id}",
+    )

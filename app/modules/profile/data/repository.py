@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.modules.profile.data.models import (
@@ -169,6 +170,24 @@ class ProfileRepository(IProfileRepository):
         if not user:
             raise ProfileNotFoundError("User not found")
         user.fcm_token = fcm_token
+
+        # Also record it as a device. users.fcm_token holds one token, so on its
+        # own a user with a phone and a tablet would only ever ring on whichever
+        # registered last — calling needs every device. The column is still
+        # written for anything else that reads it.
+        # Upsert on the token: a handset handed to another account must ring the
+        # new owner, not the previous one.
+        from app.modules.calling.data.models import UserDevice
+
+        now = datetime.now(timezone.utc)
+        self._db.execute(
+            pg_insert(UserDevice)
+            .values(id=uuid4(), user_id=user_id, fcm_token=fcm_token, last_seen_at=now, created_at=now)
+            .on_conflict_do_update(
+                index_elements=["fcm_token"],
+                set_={"user_id": user_id, "last_seen_at": now},
+            )
+        )
         self._db.commit()
 
     # ---- Profile — lookups --------------------------------------------------
@@ -391,8 +410,6 @@ class ProfileRepository(IProfileRepository):
     def get_profile_posts_feed(
         self,
         profile_id: int,
-        viewer_profile_id: int | None,
-        viewer_user_id: UUID | None,
         cursor: int | None,
         limit: int,
     ) -> tuple[list, int | None, int]:
@@ -405,16 +422,4 @@ class ProfileRepository(IProfileRepository):
             post_query = post_query.filter(Post.id < cursor)
         posts = post_query.order_by(Post.id.desc()).limit(limit).all()
         next_cursor = posts[-1].id if len(posts) == limit else None
-        page_count = len(posts)
-
-        # Imported lazily: post.application.service imports profile models, so a
-        # module-level import here is a circular import. app_old did the same
-        # (app_old/modules/profile/service.py:429).
-        from app.modules.post.application.service import _batch_feed_cards
-
-        feed_cards = (
-            _batch_feed_cards(self._db, posts, viewer_profile_id, viewer_users_id=viewer_user_id)
-            if viewer_profile_id
-            else []
-        )
-        return feed_cards, next_cursor, page_count
+        return posts, next_cursor, len(posts)

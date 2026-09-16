@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
-from app.dependencies import get_current_profile_id, get_db
+from app.dependencies import get_current_profile_id, get_current_user_id, get_db
 from app.modules.post.recommendation import service, jobs
 from app.modules.post.recommendation.schemas import (
     FeedResponse,
@@ -23,6 +23,14 @@ from app.modules.post.recommendation.schemas import (
 from app.modules.post.recommendation.constants import FEED_SIZE
 
 router = APIRouter(prefix="/posts/recommendation", tags=["post-recommendation"])
+
+# The job triggers below duplicate work the scheduler already does, so an open
+# endpoint is an unbounded write amplifier. Gated the same way /news/admin/* is.
+jobs_router = APIRouter(
+    prefix="/posts/recommendation/jobs",
+    tags=["post-recommendation"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 @router.get("/feed", response_model=FeedResponse)
@@ -52,13 +60,13 @@ def mark_seen(
     pass
 
 
-@router.post("/jobs/expiry", response_model=JobResult)
+@jobs_router.post("/expiry", response_model=JobResult)
 def trigger_expiry_job(db: Session = Depends(get_db)):
     result = jobs.run_expiry_job(db)
     return JobResult(status="ok", details=result)
 
 
-@router.post("/jobs/popular-sync", response_model=JobResult)
+@jobs_router.post("/popular-sync", response_model=JobResult)
 def trigger_popular_sync(db: Session = Depends(get_db)):
     result = jobs.run_popular_posts_sync(db)
     return JobResult(status="ok", details=result)

@@ -25,6 +25,8 @@ callers must map name → id via commodity_id_by_name(db) before boosting.
 """
 from __future__ import annotations
 
+import logging
+
 import time
 
 import redis as _redis
@@ -33,6 +35,8 @@ from sqlalchemy.orm import Session
 from app.recommendation.global_session import merge_weights, sync_module_to_global
 from app.recommendation.global_taste import read_global_taste_weights
 from app.recommendation.session_taste import ActionType, SessionSignal, write_signals
+
+log = logging.getLogger(__name__)
 
 # ── Tunables ───────────────────────────────────────────────────────────────────
 # BOOST_MAX  — the strongest multiplier a fully session-hot commodity can add.
@@ -105,8 +109,11 @@ def write_commodity_signals(
                 )
             )
         write_signals(rc, profile_id, module, signals)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Session taste is best-effort; Redis being down degrades ranking, it
+        # does not fail the request. One line, not a traceback — when Redis is
+        # down this fires on every request.
+        log.warning("commodity signals not written for profile %s: %s", profile_id, exc)
 
 
 def write_post_signals(
@@ -154,8 +161,8 @@ def write_post_signals(
             ))
         if signals:
             write_signals(rc, profile_id, "post", signals)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("post signals not written for profile %s: %s", profile_id, exc)
 
 
 def write_news_signals(
@@ -194,8 +201,8 @@ def write_news_signals(
             ))
         if signals:
             write_signals(rc, profile_id, "news", signals)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("news signals not written for profile %s: %s", profile_id, exc)
 
 
 # ── Read-side orchestration ────────────────────────────────────────────────────
@@ -223,8 +230,8 @@ def get_amplify_weights(
     # Layer 1 → Layer 2 — push this module's unsynced commodity delta to global
     try:
         sync_module_to_global(rc, profile_id, module)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("global-session sync failed for profile %s (%s): %s", profile_id, module, exc)
 
     # Blend all three layers (confidence-gated inside merge_weights)
     try:

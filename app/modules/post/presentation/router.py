@@ -2,11 +2,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy.orm import Session
 
 from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.chat.presentation.dependencies import (
+    get_deliver_shared_content_uc,
+    get_share_recipients_uc,
+)
 from app.modules.post.presentation.dependencies import get_post_repo
-from app.dependencies import get_current_profile_id, get_current_user_id, get_db
+from app.dependencies import get_current_profile_id, get_current_user_id
 from app.modules.post.presentation.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse, PostSendRequest, PostSendResponse
 from app.modules.post.application import service
 from app.shared.utils.response import ok
@@ -212,14 +215,14 @@ def delete_comment_api(
 def get_post_share_recipients(
     post_id: int,
     user_id: UUID = Depends(get_current_user_id),
-    repo: IPostRepository = Depends(get_post_repo),
+    share_uc=Depends(get_share_recipients_uc),
 ):
     """
     Called when the user taps Share on a post.
     Returns the DM connections and groups the user can forward the post to.
     """
-    from app.modules.chat.data.repository import ChatRepository
-    return ChatRepository(repo.session).get_share_recipients(user_id)
+    # chat owns this data — go through its use case, not its repository
+    return share_uc.execute(user_id)
 
 
 @router.post("/{post_id}/send", response_model=PostSendResponse)
@@ -230,14 +233,15 @@ async def send_post_api(
     profile_id: int = Depends(get_current_profile_id),
     user_id: UUID = Depends(get_current_user_id),
     repo: IPostRepository = Depends(get_post_repo),
+    deliver_uc=Depends(get_deliver_shared_content_uc),
 ):
     """
     Called when the user taps Send after selecting recipients on the share sheet.
     Delivers the post to selected DMs and groups, then increments share_count once.
     """
-    from app.modules.chat.presentation.connection_manager import emit_to_user, emit_to_group
+    from app.core.realtime import emit_to_user, emit_to_group
     try:
-        result = service.send_post(repo, post_id, profile_id, user_id, payload)
+        result = service.send_post(repo, deliver_uc, post_id, profile_id, user_id, payload)
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

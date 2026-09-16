@@ -19,9 +19,8 @@ from app.modules.post.application.use_cases.get_post import (
     get_saved_posts,
     _record_view,
     _batch_post_responses,
-    _batch_feed_cards,
+    batch_feed_cards,
     _batch_my_post_cards,
-    _following_taste_counts,
     _score_following_posts,
 )
 from app.modules.post.application.use_cases.interact_post import (
@@ -85,8 +84,7 @@ __all__ = [
     # internal helpers (kept for any code that imported them directly)
     "_record_view",
     "_batch_post_responses",
-    "_batch_feed_cards",
+    "batch_feed_cards",
     "_batch_my_post_cards",
-    "_following_taste_counts",
     "_score_following_posts",
 ]

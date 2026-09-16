@@ -1,13 +1,15 @@
-from sqlalchemy.orm import Session
+
+import logging
 
 from app.modules.post.data.models import Post
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.post.domain.exceptions import PostNotFoundError, PostForbiddenError
-from app.modules.profile.data.models import Profile
 from app.modules.post.recommendation import service as rec_service
 from app.shared.utils.storage import StorageError, delete_object, path_from_url
 
 import os
+
+log = logging.getLogger(__name__)
 
 _POST_STORAGE_BUCKET = os.environ.get("POST_STORAGE_BUCKET", "posts")
 
@@ -38,10 +40,12 @@ async def delete_post(repo: IPostRepository, post_id: int, profile_id: int) -> N
 
     image_urls = post.image_urls or []
 
+    # De-index and delete commit together — a half-applied delete would leave
+    # the post alive but invisible to the recommender, or vice versa.
     try:
-        rec_service.remove_post_index(repo.session, post_id)
+        rec_service.remove_post_index(repo, post_id)
     except Exception:
-        pass
+        log.exception("de-indexing failed for post %s being deleted", post_id)
 
     repo.delete(post)
     repo.commit()
@@ -51,4 +55,5 @@ async def delete_post(repo: IPostRepository, post_id: int, profile_id: int) -> N
             old_path = path_from_url(_POST_STORAGE_BUCKET, url)
             await delete_object(_POST_STORAGE_BUCKET, old_path)
         except StorageError:
-            pass
+            # Orphaned object — the row is gone, the bytes are not. Billable.
+            log.warning("could not delete post image %s for deleted post %s", url, post_id)
