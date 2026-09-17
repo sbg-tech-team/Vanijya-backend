@@ -82,6 +82,12 @@ jobs:
       - name: Every endpoint refuses an unauthenticated caller
         run: python tests/test_endpoint_auth.py
 
+      - name: One user cannot write another user's data
+        run: python tests/test_authorization.py
+
+      - name: ORM and migrations agree on the schema
+        run: python tests/test_schema_drift.py
+
       - name: App imports and every router registers
         run: python -c "import main; print('boot ok')"
 
