@@ -46,6 +46,11 @@ BUDGET = {
     "/api/v1/groups/": 6,
     "/profile/1": 14,
     "/posts/1": 12,
+    # News feeds: the recommendation engine moved onto the repository, and
+    # trending/saved/geo are pure database filters that skip it entirely.
+    "/news/feed": 10,
+    "/news/trending": 6,
+    "/news/feed/saved": 6,
 }
 
 counter = collections.Counter()

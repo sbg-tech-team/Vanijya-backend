@@ -116,12 +116,14 @@ class GetFeedUseCase:
         rc: redis.Redis | None,
     ) -> list[UUID]:
         if feed_type in _UNCACHED_FEED_TYPES:
+            # These three are pure database filters with no ranking, so they go
+            # straight to the repository rather than through the engine.
             if feed_type == "trending":
-                return self._engine.get_trending_ids()
+                return self._repo.get_trending_ids()
             if feed_type == "saved":
-                return self._engine.get_saved_ids(profile_id)
+                return self._repo.get_saved_ids(profile_id)
             if feed_type in _GEO_FEED_TYPES:
-                return self._engine.get_filtered_ids(feed_type)
+                return self._repo.get_filtered_ids(feed_type)
 
         # "default" - cache check
         cached = self._repo.get_feed_ranking_cache(profile_id, feed_type)

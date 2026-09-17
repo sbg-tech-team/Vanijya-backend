@@ -97,7 +97,7 @@ def get_repo(db: DbDep) -> NewsRepository:
 
 
 def get_engine(db: DbDep) -> NewsRecommendationEngine:
-    return NewsRecommendationEngine(db)
+    return NewsRecommendationEngine(NewsRepository(db))
 
 
 def get_feed_use_case(

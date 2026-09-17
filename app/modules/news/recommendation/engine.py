@@ -30,7 +30,6 @@ from uuid import UUID
 
 import redis
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app.modules.news.data.models import (
     EnrichedArticle,
@@ -61,8 +60,8 @@ _MODULE = "news"
 
 class NewsRecommendationEngine:
 
-    def __init__(self, db: Session) -> None:
-        self._db = db
+    def __init__(self, repo) -> None:
+        self._repo = repo
 
     def rank_feed(
         self,
@@ -76,7 +75,7 @@ class NewsRecommendationEngine:
         Return article IDs ranked by final_score (highest first).
         Caller (get_feed use case) stores in FeedRankingCache.
         """
-        candidates = self._get_candidate_pool()
+        candidates = self._repo.news_candidate_pool()
         if not candidates:
             return []
 
@@ -89,9 +88,9 @@ class NewsRecommendationEngine:
         state_weights: dict[str, float] = {}
         if rc is not None:
             try:
-                commodity_weights = get_amplify_weights(self._db, rc, profile_id, _MODULE, "commodity")
-                city_weights = get_amplify_weights(self._db, rc, profile_id, _MODULE, "city")
-                state_weights = get_amplify_weights(self._db, rc, profile_id, _MODULE, "state")
+                commodity_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "commodity")
+                city_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "city")
+                state_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "state")
             except Exception:
                 log.exception("amplify weights unavailable for profile %s; ranking without them", profile_id)
 
@@ -115,7 +114,7 @@ class NewsRecommendationEngine:
             if commodity_weights:
                 session_boost = _commodity_boost(
                     commodity_weights,
-                    commodity_ids_for(self._db, enriched.commodity_tags or []),
+                    commodity_ids_for(self._repo.session, enriched.commodity_tags or []),
                 )
             if city_weights and enriched.location_city:
                 city_boost = _location_boost(city_weights, [enriched.location_city])
@@ -128,108 +127,8 @@ class NewsRecommendationEngine:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [article_id for article_id, _ in scored]
 
-    def get_trending_ids(self) -> list[UUID]:
-        """
-        Merges two pools, velocity-first:
-          1. Velocity pool (cap 100) - NewsTrending articles by velocity_score DESC
-          2. Recency pool  (cap 50)  - latest enriched articles not in pool 1,
-             by platform_arrived_at DESC
-        No profile scoring or taste filtering.
-        """
-        velocity_ids = list(
-            self._db.execute(
-                select(RawArticle.id)
-                .join(NewsTrending, NewsTrending.article_id == RawArticle.id)
-                .where(RawArticle.is_active.is_(True), NewsTrending.velocity_score > 0)
-                .order_by(NewsTrending.velocity_score.desc(), RawArticle.platform_arrived_at.desc())
-                .limit(TRENDING_POOL_CAP)
-            ).scalars()
-        )
 
-        recency_q = (
-            select(RawArticle.id)
-            .where(
-                RawArticle.is_active.is_(True),
-                RawArticle.intelligence_status == IntelligenceStatus.ENRICHED.value,
-            )
-            .order_by(RawArticle.platform_arrived_at.desc())
-            .limit(RECENCY_POOL_CAP)
-        )
-        if velocity_ids:
-            recency_q = recency_q.where(~RawArticle.id.in_(velocity_ids))
 
-        recency_ids = list(self._db.execute(recency_q).scalars())
-
-        return velocity_ids + recency_ids
-
-    def get_saved_ids(self, profile_id: int) -> list[UUID]:
-        """Article ids the profile has saved, most-recently-saved first."""
-        return list(
-            self._db.execute(
-                select(NewsSave.article_id)
-                .where(NewsSave.profile_id == profile_id)
-                .order_by(NewsSave.created_at.desc())
-            ).scalars()
-        )
-
-    def get_filtered_ids(self, feed_filter: str) -> list[UUID]:
-        """
-        Pure DB filter for global/domestic/government tabs - no recommendation,
-        no scoring.
-          - "global" / "domestic" -> geo_category match
-          - "government"          -> is_government = True (any geo)
-        Ordered by platform_arrived_at DESC.
-        """
-        if feed_filter == "government":
-            enriched_ids_q = select(EnrichedArticle.raw_article_id).where(
-                EnrichedArticle.is_government.is_(True)
-            )
-        else:
-            enriched_ids_q = select(EnrichedArticle.raw_article_id).where(
-                EnrichedArticle.geo_category == feed_filter
-            )
-        filtered_ids = list(self._db.execute(enriched_ids_q).scalars())
-        if not filtered_ids:
-            return []
-
-        return list(
-            self._db.execute(
-                select(RawArticle.id)
-                .where(RawArticle.is_active.is_(True), RawArticle.id.in_(filtered_ids))
-                .order_by(RawArticle.platform_arrived_at.desc(), RawArticle.id.desc())
-            ).scalars()
-        )
 
     # -- Candidate pool ------------------------------------------------------
 
-    def _get_candidate_pool(
-        self,
-    ) -> list[tuple[UUID, EnrichedArticle | None]]:
-        """
-        Time-bucketed candidate fetch: try buckets in order until MIN_POOL_SIZE.
-        Returns list of (raw_article_id, enriched_article | None).
-        """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        for hours in BUCKET_HOURS:
-            cutoff = now - timedelta(hours=hours)
-            rows = self._db.execute(
-                select(RawArticle.id, EnrichedArticle)
-                .outerjoin(
-                    EnrichedArticle,
-                    EnrichedArticle.raw_article_id == RawArticle.id,
-                )
-                .where(
-                    RawArticle.is_active.is_(True),
-                    RawArticle.is_duplicate.is_(False),
-                    RawArticle.intelligence_status == IntelligenceStatus.ENRICHED.value,
-                    RawArticle.platform_arrived_at >= cutoff,
-                )
-                .order_by(RawArticle.platform_arrived_at.desc())
-                .limit(TRENDING_POOL_CAP + RECENCY_POOL_CAP)
-            ).all()
-
-            if len(rows) >= MIN_POOL_SIZE:
-                return [(row[0], row[1]) for row in rows]
-
-        return []
