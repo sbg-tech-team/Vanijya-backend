@@ -5,6 +5,7 @@ from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.database.session import SessionLocal
+from app.core.monitoring import set_user_context
 from app.core.security.jwt_handler import (
     OnboardingClaims,
     decode_access_token,
@@ -35,17 +36,22 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
     Both IDs come from JWT claims — zero DB calls.
     """
     claims = decode_access_token(token)
+    set_user_context(claims.user_id, claims.profile_id)
     return CurrentUser(user_id=claims.user_id, profile_id=claims.profile_id)
 
 
 def get_current_user_id(token: str = Depends(oauth2_scheme)) -> UUID:
     """Convenience dep for endpoints that only need user_id."""
-    return decode_access_token(token).user_id
+    claims = decode_access_token(token)
+    set_user_context(claims.user_id, claims.profile_id)
+    return claims.user_id
 
 
 def get_current_profile_id(token: str = Depends(oauth2_scheme)) -> int:
     """Convenience dep for endpoints that only need profile_id."""
-    return decode_access_token(token).profile_id
+    claims = decode_access_token(token)
+    set_user_context(claims.user_id, claims.profile_id)
+    return claims.profile_id
 
 
 def get_onboarding_claims(token: str = Depends(oauth2_scheme)) -> OnboardingClaims:

@@ -108,9 +108,25 @@ def smoke(base: str) -> bool:
     return True
 
 
+def set_release() -> None:
+    """Stamp the commit onto the service so Sentry can attribute an error to a
+    deploy. Without it every issue reads 'release: none' and 'which deploy broke
+    this' is guesswork."""
+    sha = os.environ.get("GITHUB_SHA", "")
+    if not sha:
+        return
+    try:
+        api(f"/services/{SERVICE}/env-vars/RELEASE", "PUT", {"value": sha[:12]})
+        log(f"release stamped: {sha[:12]}")
+    except Exception as exc:
+        log(f"::warning::could not set RELEASE: {exc}")
+
+
 def main() -> int:
     previous = live_deploy_id()
     log(f"currently live: {previous or '(none)'}")
+
+    set_release()
 
     new = api(f"/services/{SERVICE}/deploys", "POST", {"clearCache": "do_not_clear"})["id"]
     log(f"started deploy: {new}")

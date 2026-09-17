@@ -72,6 +72,27 @@ def init_sentry() -> bool:
     return True
 
 
+def set_user_context(user_id, profile_id=None) -> None:
+    """Attach the caller's identity to the current Sentry scope.
+
+    Without this an error tells you something broke but not for whom, so
+    "is this one account or everybody" needs a database dig every time. Sentry
+    also uses it for the users-affected count on an issue.
+
+    IDs only — no phone number, no name. send_default_pii stays off.
+    """
+    if not _enabled:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.get_current_scope().set_user(
+            {"id": str(user_id), "profile_id": profile_id}
+        )
+    except Exception as exc:
+        log.debug("sentry user context failed: %s", exc)
+
+
 def set_call_context(
     call_id,
     call_type: str | None = None,
