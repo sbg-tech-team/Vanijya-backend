@@ -75,7 +75,7 @@ class SendArticleUseCase:
                     )
                 write_news_signals(
                     rc, sender_profile_id,
-                    commodity_ids_for(self._repo.session, enriched.commodity_tags or []),
+                    commodity_ids_for(self._repo, enriched.commodity_tags or []),
                     enriched.location_city, enriched.location_state, ActionType.SHARE,
                 )
             self._repo.commit()

@@ -60,10 +60,6 @@ class CallingRepository(ICallingRepository):
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    @property
-    def session(self) -> Session:
-        """Escape hatch for cross-module helpers that still take a Session."""
-        return self.db
 
     def commit(self) -> None:
         self.db.commit()

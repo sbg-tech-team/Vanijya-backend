@@ -12,12 +12,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, text
 from sqlalchemy.orm import Session, aliased, joinedload
 
+from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.connections.data.models import MessageRequest, UserConnection
 from app.modules.connections.domain.interfaces.repository import IConnectionsRepository
 from app.modules.profile.data.models import Business, Commodity, Profile, Profile_Commodity, Role
 
 
-class ConnectionsRepository(IConnectionsRepository):
+class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
 
     def __init__(self, db: Session):
         self.db = db
@@ -409,8 +410,3 @@ class ConnectionsRepository(IConnectionsRepository):
         ).mappings().all()
         return [dict(m) for m in rows]
 
-    @property
-    def session(self) -> Session:
-        """Escape hatch for cross-module helpers that still take a Session
-        (amplify's get_amplify_weights reads the persistent taste table)."""
-        return self.db

@@ -88,9 +88,9 @@ class NewsRecommendationEngine:
         state_weights: dict[str, float] = {}
         if rc is not None:
             try:
-                commodity_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "commodity")
-                city_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "city")
-                state_weights = get_amplify_weights(self._repo.session, rc, profile_id, _MODULE, "state")
+                commodity_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "commodity")
+                city_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "city")
+                state_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "state")
             except Exception:
                 log.exception("amplify weights unavailable for profile %s; ranking without them", profile_id)
 
@@ -114,7 +114,7 @@ class NewsRecommendationEngine:
             if commodity_weights:
                 session_boost = _commodity_boost(
                     commodity_weights,
-                    commodity_ids_for(self._repo.session, enriched.commodity_tags or []),
+                    commodity_ids_for(self._repo, enriched.commodity_tags or []),
                 )
             if city_weights and enriched.location_city:
                 city_boost = _location_boost(city_weights, [enriched.location_city])

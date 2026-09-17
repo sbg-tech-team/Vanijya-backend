@@ -171,6 +171,12 @@ for _dp, _, _fns in os.walk("app"):
 _silent = [x for x in _silent if not x.startswith("app/core/monitoring.py")]
 check("no bare `except Exception: pass` (log it instead)", sorted(_silent), [])
 
+# 10b. no repository hands out its raw Session
+check("no repository exposes .session",
+      files("grep -rlE '^\\s+def session' --include='*.py' app/modules/*/data app/modules/*/domain 2>/dev/null"), [])
+check("nothing calls repo.session",
+      files("grep -rlE '(repo|_repo)\\.session' --include='*.py' app/modules 2>/dev/null"), [])
+
 # 11. cross-layer call sites actually bind (a silent TypeError here meant no post
 #     was ever indexed — see tests/test_post_indexing.py)
 try:
@@ -201,5 +207,6 @@ if fails:
     print(f"FAIL ({len(fails)})\n" + "\n".join(fails)); sys.exit(1)
 print("PASS - zero architectural violations: SQL only in data/, framework-free application "
       "layer, dependency-free domain, data never reaches up, routers go through use cases, "
-      "no unauthenticated endpoints, no silently swallowed failures, indexing call sites bind, "
+      "no unauthenticated endpoints, no silently swallowed failures, no raw Session "
+      "handed out by a repository, indexing call sites bind, "
       f"no stubs, no shadowing, all {len(REPOS)} repositories behind interfaces")

@@ -46,19 +46,12 @@ _PROMOTION_THRESHOLD_FNS = {
 # ── Read ──────────────────────────────────────────────────────────────────────
 
 def get_weights(
-    db: Session,
+    repo,
     profile_id: int,
     dimension_type: str,
 ) -> dict[str, float]:
     """Return decay-adjusted net weights for all keys of one dimension."""
-    rows: list[UserGlobalTaste] = (
-        db.query(UserGlobalTaste)
-        .filter(
-            UserGlobalTaste.profile_id == profile_id,
-            UserGlobalTaste.dimension_type == dimension_type,
-        )
-        .all()
-    )
+    rows: list[UserGlobalTaste] = repo.global_taste_rows(profile_id, dimension_type)
     weights: dict[str, float] = {}
     for row in rows:
         net = decayed_score(row.positive_score, row.negative_score, row.last_event_at, TASTE_DECAY_LAMBDA)

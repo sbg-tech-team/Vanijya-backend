@@ -9,11 +9,6 @@ from uuid import UUID
 class IPostRepository(ABC):
     """Every database access in the post module goes through this interface."""
 
-    @property
-    @abstractmethod
-    def session(self) -> Any:
-        """Escape hatch for cross-module helpers that still take a Session."""
-        ...
 
     @abstractmethod
     def add(self, obj) -> None:

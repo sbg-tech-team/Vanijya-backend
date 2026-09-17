@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.post.data.models import Post
 from app.modules.post.data.taste_models import PostInteractionEvent, UserPostTaste
 from app.modules.post.domain.interfaces.taste_repository import ITasteRepository
@@ -21,13 +22,10 @@ from app.modules.profile.data.models import Business, Profile
 _ENGAGED_EVENTS = ("dwell", "open_read_more", "open_carousel", "open_comments", "revisit")
 
 
-class TasteRepository(ITasteRepository):
+class TasteRepository(AmplifyLookupMixin, ITasteRepository):
     def __init__(self, db: Session):
         self.db = db
 
-    @property
-    def session(self) -> Session:
-        return self.db
 
     def commit(self) -> None:
         self.db.commit()

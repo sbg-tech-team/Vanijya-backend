@@ -113,7 +113,7 @@ def get_group_suggestions(
     #     final = 0.75 x (semantic x commodity_boost) + 0.25 x activity
     # app_old did this; app_new had dropped it, so suggestions were unpersonalised.
     try:
-        weights = get_amplify_weights(repo.session, rc, profile.id, _MODULE) if rc is not None else {}
+        weights = get_amplify_weights(repo, rc, profile.id, _MODULE) if rc is not None else {}
     except Exception:
         weights = {}
 
@@ -129,7 +129,7 @@ def get_group_suggestions(
             member_growth_7d=cache.member_growth_7d if cache else 0,
         )
         boost = (
-            commodity_boost(weights, commodity_ids_for(repo.session, group.commodity or []))
+            commodity_boost(weights, commodity_ids_for(repo, group.commodity or []))
             if weights else 1.0
         )
         final = compute_final_score(sim * boost, act)

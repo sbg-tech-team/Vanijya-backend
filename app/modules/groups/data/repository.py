@@ -18,6 +18,7 @@ from uuid import UUID
 from sqlalchemy import case, or_, text
 from sqlalchemy.orm import Session, joinedload
 
+from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.groups.data.models import (
     Group, GroupActivityCache, GroupDeal, GroupEmbedding, GroupJoinRequest,
     GroupMedia, GroupMember,
@@ -26,17 +27,13 @@ from app.modules.groups.domain.interfaces.repository import IGroupsRepository
 from app.modules.profile.data.models import Profile, Profile_Commodity
 
 
-class GroupsRepository(IGroupsRepository):
+class GroupsRepository(AmplifyLookupMixin, IGroupsRepository):
 
     def __init__(self, db: Session):
         self.db = db
 
     # -- unit of work ----------------------------------------------------------
 
-    @property
-    def session(self) -> Session:
-        """Escape hatch for cross-module helpers that still take a Session."""
-        return self.db
 
     def add(self, obj) -> None: self.db.add(obj)
     def delete(self, obj) -> None: self.db.delete(obj)

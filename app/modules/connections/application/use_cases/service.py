@@ -183,11 +183,11 @@ def get_recommendations(
     # candidate is nudged by its hottest session-active commodity. This reorders
     # the already-fetched page only; a larger-pool re-rank is a future step.
     try:
-        weights = get_amplify_weights(repo.session, r, profile.id, _MODULE)
+        weights = get_amplify_weights(repo, r, profile.id, _MODULE)
         if weights:
             results.sort(
                 key=lambda res: res["similarity"] * commodity_boost(
-                    weights, commodity_ids_for(repo.session, res.get("commodity", []))
+                    weights, commodity_ids_for(repo, res.get("commodity", []))
                 ),
                 reverse=True,
             )

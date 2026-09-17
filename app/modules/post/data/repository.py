@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.connections.data.models import UserConnection
 from app.modules.post.data.models import Post, PostComment, PostLike, PostSave, PostView
 from app.modules.post.data.recommendation_models import SeenPost
@@ -34,7 +35,7 @@ from app.modules.post.recommendation.constants import (
 from app.modules.profile.data.models import Profile
 
 
-class PostRepository(IPostRepository):
+class PostRepository(AmplifyLookupMixin, IPostRepository):
 
     def __init__(self, db: Session):
         self.db = db
@@ -52,10 +53,6 @@ class PostRepository(IPostRepository):
             self._taste = TasteRepository(self.db)
         return self._taste
 
-    @property
-    def session(self) -> Session:
-        """Escape hatch for cross-module helpers that still take a Session."""
-        return self.db
 
     def add(self, obj) -> None: self.db.add(obj)
     def delete(self, obj) -> None: self.db.delete(obj)

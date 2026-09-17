@@ -14,12 +14,6 @@ from typing import Any
 
 
 class ITasteRepository(ABC):
-    @property
-    @abstractmethod
-    def session(self) -> Any:
-        """Escape hatch for the shared amplify/global-taste helpers, which still
-        take a Session. Remove once app/recommendation/ takes repositories."""
-        ...
 
     # ── Taste rows ───────────────────────────────────────────────────────────
 

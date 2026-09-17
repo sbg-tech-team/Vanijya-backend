@@ -34,11 +34,6 @@ class INewsRepository(ABC):
 
     # ── Transaction control ───────────────────────────────────────────────────
 
-    @property
-    @abstractmethod
-    def session(self) -> Any:
-        """Escape hatch for cross-module helpers that still take a raw
-        SQLAlchemy Session (e.g. app.recommendation.amplify.commodity_ids_for)."""
 
     @abstractmethod
     def commit(self) -> None:

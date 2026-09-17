@@ -145,8 +145,3 @@ eager-loading behaviour."""
         """Cosine-ANN matches with no exclusions — the signed-out preview search."""
         ...
 
-    @property
-    @abstractmethod
-    def session(self) -> Any:
-        """Escape hatch for cross-module helpers that still take a Session"""
-        ...

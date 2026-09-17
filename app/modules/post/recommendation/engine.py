@@ -457,8 +457,8 @@ def get_recommended_posts(
     cat_weights       = _taste["category"]
     commodity_weights = _taste["commodity"]
     author_weights    = _taste["author"]
-    city_weights      = read_global_taste_weights(repo.session, profile_id, "city")
-    state_weights     = read_global_taste_weights(repo.session, profile_id, "state")
+    city_weights      = read_global_taste_weights(repo, profile_id, "city")
+    state_weights     = read_global_taste_weights(repo, profile_id, "state")
 
     try:
         sync_module_to_global(rc, profile_id, "post")

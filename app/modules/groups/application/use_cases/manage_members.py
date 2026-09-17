@@ -77,7 +77,7 @@ def join_group(
         if actor_profile_id is not None:
             write_commodity_signals(
                 rc, actor_profile_id, MODULE,
-                commodity_ids_for(repo.session, group.commodity or []),
+                commodity_ids_for(repo, group.commodity or []),
                 ActionType.GROUP_JOIN,
             )
 

@@ -30,7 +30,6 @@ import logging
 import time
 
 import redis as _redis
-from sqlalchemy.orm import Session
 
 from app.recommendation.global_session import merge_weights, sync_module_to_global
 from app.recommendation.global_taste import read_global_taste_weights
@@ -53,19 +52,17 @@ BOOST_REF: float = 3.0
 _commodity_id_by_name: dict[str, int] | None = None
 
 
-def commodity_id_by_name(db: Session) -> dict[str, int]:
+def commodity_id_by_name(repo) -> dict[str, int]:
     """Return {lowercase_commodity_name: commodity_id}, loaded once from the DB."""
     global _commodity_id_by_name
     if _commodity_id_by_name is None:
-        from app.modules.profile.data.models import Commodity
-        rows = db.query(Commodity).all()
-        _commodity_id_by_name = {r.name.lower(): r.id for r in rows}
+        _commodity_id_by_name = {r.name.lower(): r.id for r in repo.all_commodities()}
     return _commodity_id_by_name
 
 
-def commodity_ids_for(db: Session, commodity_names: list[str]) -> list[int]:
+def commodity_ids_for(repo, commodity_names: list[str]) -> list[int]:
     """Map a list of commodity names → ids, dropping anything unknown."""
-    lut = commodity_id_by_name(db)
+    lut = commodity_id_by_name(repo)
     return [lut[n.lower()] for n in commodity_names if n.lower() in lut]
 
 
@@ -208,7 +205,7 @@ def write_news_signals(
 # ── Read-side orchestration ────────────────────────────────────────────────────
 
 def get_amplify_weights(
-    db: Session,
+    repo,
     rc: _redis.Redis,
     profile_id: int,
     module: str,
@@ -223,7 +220,7 @@ def get_amplify_weights(
     """
     # Layer 3 — persistent (table may not exist yet; empty on any failure)
     try:
-        persistent = read_global_taste_weights(db, profile_id, dimension_type)
+        persistent = read_global_taste_weights(repo, profile_id, dimension_type)
     except Exception:
         persistent = {}
 

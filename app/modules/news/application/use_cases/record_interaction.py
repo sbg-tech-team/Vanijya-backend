@@ -141,7 +141,7 @@ class RecordInteractionUseCase:
                 continue
             write_news_signals(
                 rc, profile_id,
-                commodity_ids_for(self._repo.session, enriched.commodity_tags or []),
+                commodity_ids_for(self._repo, enriched.commodity_tags or []),
                 enriched.location_city, enriched.location_state, action,
             )
 
@@ -226,7 +226,7 @@ class RecordInteractionUseCase:
         if session_action is not None:
             write_news_signals(
                 rc, profile_id,
-                commodity_ids_for(self._repo.session, enriched.commodity_tags or []),
+                commodity_ids_for(self._repo, enriched.commodity_tags or []),
                 enriched.location_city, enriched.location_state, session_action,
             )
 

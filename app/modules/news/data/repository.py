@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update, delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.news.domain.entities import (
     EnrichedArticle as DomainEnrichedArticle,
     FeedRankingCache as DomainFeedRankingCache,
@@ -135,18 +136,13 @@ def _cache_to_domain(row: FeedRankingCache) -> DomainFeedRankingCache:
 
 # ── Repository ────────────────────────────────────────────────────────────────
 
-class NewsRepository(INewsRepository):
+class NewsRepository(AmplifyLookupMixin, INewsRepository):
 
     def __init__(self, db: Session) -> None:
         self._db = db
 
     # ── Transaction control ───────────────────────────────────────────────────
 
-    @property
-    def session(self) -> Session:
-        """Escape hatch for cross-module helpers that still take a Session
-        (e.g. app.recommendation.amplify.commodity_ids_for)."""
-        return self._db
 
     def commit(self) -> None:
         self._db.commit()
