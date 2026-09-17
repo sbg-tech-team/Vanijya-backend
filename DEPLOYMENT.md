@@ -180,6 +180,26 @@ the entire database round trip. At ~15 ms per request a worker can serve many;
 at ~1.2 s it can serve very few. **Co-locating the app and the database is worth
 more than any amount of tuning**, and it is a config change, not a code change.
 
+### The ceiling was the connection pool
+
+`create_engine` was called without pool settings, so it ran on SQLAlchemy's
+default: **5 connections plus 10 overflow — 15 per worker, total**. A 5000-user
+run died on `QueuePool limit of size 5 overflow 10 reached` long before CPU or
+memory mattered.
+
+It bites hardest in production, where the database is a round trip away. A
+request holds its connection for the whole trip, so the ceiling is roughly
+`pool / latency`. At ~1.2 s to Tokyo that is **about 12 requests per second**,
+however large the instance.
+
+Now 20 + 20, with `pool_timeout=10` (fail fast rather than parking a request for
+30 s) and `pool_recycle=1800`. All four are env vars — `DB_POOL_SIZE`,
+`DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` — and the pool size is
+logged at boot next to the host.
+
+If you raise workers, remember the pool is **per worker**: 4 workers x 40 is 160
+connections, which must stay under what Supabase allows.
+
 ### Redis outage
 
 Verified: with `REDIS_URL` pointed at a dead port, every endpoint still returned
