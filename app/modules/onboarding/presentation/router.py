@@ -1,3 +1,4 @@
+import logging
 import os
 from uuid import uuid4
 
@@ -5,6 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.config import settings
+from app.core.rate_limiter import RateLimiter
+from app.core.redis_client import get_redis
+
+log = logging.getLogger(__name__)
 from app.core.security.jwt_handler import (
     create_access_token,
     create_onboarding_token,
@@ -75,6 +80,24 @@ def dev_token(
 # POST /auth/firebase-verify
 # ---------------------------------------------------------------------------
 
+# Auth endpoints are the ones worth brute-forcing, and they were the only
+# unthrottled writes left. Per-IP sliding window; a Redis outage must not lock
+# people out of signing in, so a limiter failure is logged, not raised.
+_limiter = RateLimiter()
+_VERIFY_LIMIT, _VERIFY_WINDOW = 10, 60      # 10 sign-in attempts per minute per IP
+_REFRESH_LIMIT, _REFRESH_WINDOW = 30, 60    # refresh is legitimate but not hot
+
+
+def _throttle(key: str, limit: int, window: int) -> None:
+    try:
+        _limiter.check(get_redis(), key, limit=limit, window=window)
+    except HTTPException:
+        raise                      # 429 — the limiter did its job
+    except Exception as exc:
+        # Redis down must never lock people out of signing in.
+        log.warning("rate limiting unavailable for %s: %s", key, exc)
+
+
 @router.post("/firebase-verify", status_code=200)
 def firebase_verify(
     payload: FirebaseVerifyRequest,
@@ -88,6 +111,7 @@ def firebase_verify(
     - access_token + refresh_token  → returning user, ready to use the app
     """
     ip = request.client.host if request.client else None
+    _throttle(f"auth:verify:{ip or 'unknown'}", _VERIFY_LIMIT, _VERIFY_WINDOW)
 
     try:
         phone_number, country_code = verify_firebase_token(verifier, payload.firebase_id_token)
@@ -142,9 +166,12 @@ def firebase_verify(
 @router.post("/refresh", response_model=TokenPairResponse, status_code=200)
 def refresh_tokens(
     payload: RefreshTokenRequest,
+    request: Request,
     repo: IOnboardingRepository = Depends(get_onboarding_repo),
 ):
     """Exchange a valid refresh token for a new access + refresh token pair."""
+    ip = request.client.host if request.client else "unknown"
+    _throttle(f"auth:refresh:{ip}", _REFRESH_LIMIT, _REFRESH_WINDOW)
     try:
         new_access, new_refresh = refresh_session(repo, payload.refresh_token)
     except (ValueError, OnboardingDomainError) as e:

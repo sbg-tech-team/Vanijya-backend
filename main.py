@@ -22,7 +22,7 @@ import socketio
 from fastapi import FastAPI
 
 from app.routers import register_routers
-from app.core.realtime import sio
+from app.core.realtime import sio, start_evict_listener
 # Imported for its @sio.event side effects — registers the chat socket handlers.
 import app.modules.chat.presentation.connection_manager  # noqa: F401
 from app.core import scheduler as _scheduler
@@ -30,6 +30,8 @@ from app.core import scheduler as _scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Each worker listens for room evictions from the others. No-op without Redis.
+    await start_evict_listener()
     _scheduler.start()
     yield
     _scheduler.stop()
