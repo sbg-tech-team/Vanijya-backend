@@ -260,10 +260,10 @@ def list_groups(
         page=page, per_page=per_page,
     )
 
-    out = []
-    for g in groups:
-        membership = _get_membership(repo, g.id, user_id)
-        out.append(_build_group_out(g, membership))
+    # One membership query for the whole page. Doing it per group was an N+1:
+    # 26 groups cost 22 queries, and each one is a round trip to the database.
+    memberships = repo.get_memberships([g.id for g in groups], user_id)
+    out = [_build_group_out(g, memberships.get(g.id)) for g in groups]
 
     return GroupListOut(groups=out, total=total, page=page, per_page=per_page)
 

@@ -68,6 +68,15 @@ class IGroupsRepository(ABC):
         ...
 
     @abstractmethod
+    def get_memberships(self, group_ids: list[UUID], user_id: UUID) -> dict:
+        """This user's membership in each of `group_ids`, keyed by group_id.
+
+        One query for a whole page. Fetching them one group at a time is an N+1,
+        and every one of those is a database round trip.
+        """
+        ...
+
+    @abstractmethod
     def get_membership(self, group_id: UUID, user_id: UUID) -> Optional[GroupMember]:
         ...
 

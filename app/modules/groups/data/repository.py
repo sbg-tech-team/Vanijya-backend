@@ -119,6 +119,16 @@ class GroupsRepository(IGroupsRepository):
 
     # -- membership ------------------------------------------------------------
 
+    def get_memberships(self, group_ids: list[UUID], user_id: UUID) -> dict:
+        if not group_ids:
+            return {}
+        rows = (
+            self.db.query(GroupMember)
+            .filter(GroupMember.group_id.in_(group_ids), GroupMember.user_id == user_id)
+            .all()
+        )
+        return {m.group_id: m for m in rows}
+
     def get_membership(self, group_id: UUID, user_id: UUID) -> Optional[GroupMember]:
         return (
             self.db.query(GroupMember)

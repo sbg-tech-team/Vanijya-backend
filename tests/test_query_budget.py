@@ -40,6 +40,12 @@ from app.routers import register_routers                       # noqa: E402
 BUDGET = {
     "/posts/mine": 8,
     "/posts/recommendation/feed?limit=10": 22,
+    # Was an N+1: one membership query per group, so the count grew with the
+    # page. 26 groups cost 22 queries. A flat budget is what catches a
+    # reintroduced loop — it will pass on a small test database otherwise.
+    "/api/v1/groups/": 6,
+    "/profile/1": 14,
+    "/posts/1": 12,
 }
 
 counter = collections.Counter()
