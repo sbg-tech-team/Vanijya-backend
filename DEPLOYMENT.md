@@ -140,3 +140,47 @@ do not leave it as a trap.
 `app/core/scheduler.py` pings `https://vanijyaa-backend.onrender.com/` to keep
 the instance warm. That host currently returns `x-render-routing: no-server`, so
 the ping fails every 10 minutes. Point it at the real URL, or make it an env var.
+
+## Load testing
+
+`_migration/locustfile.py`. Run it against a LOCAL server — the production
+service is a single free-plan instance, so real load there degrades the app for
+actual users.
+
+    # terminal 1: app on a throwaway database
+    DB_SSLMODE=disable SYNC_DATABASE_URL=postgresql+psycopg2://…/vanijyaa_test \
+      uvicorn main:app --port 8000 --workers 1
+
+    # terminal 2
+    LOAD_TOKEN=<jwt> LOAD_POST_IDS=1,2,3 locust -f _migration/locustfile.py \
+      --host http://127.0.0.1:8000 --headless -u 300 -r 30 -t 30s
+
+### Measured, one worker, database on the same machine
+
+| Concurrent users | req/s | p50 | p95 | failures |
+|---|---|---|---|---|
+| 100 | 78 | 13 ms | 36 ms | 0 |
+| 300 | 201 | 30 ms | 150 ms | 0 |
+| 600 | 160 | 130 ms | 340 ms | 0 |
+
+The knee is around 300 concurrent users / ~200 req/s. Past that, throughput
+*falls* while latency climbs — the classic sign of saturation, not a cliff.
+Nothing errored at any level.
+
+### Why production will not reach these numbers
+
+Those figures come from a database on localhost, about 1 ms away. Production
+runs the app in Oregon and the database in `ap-northeast-1` (Tokyo). The same
+endpoint measured against production:
+
+    GET /posts/mine   1.13 – 1.86 s, median ~1.17 s
+
+This is a synchronous, thread-per-request application, so a thread is held for
+the entire database round trip. At ~15 ms per request a worker can serve many;
+at ~1.2 s it can serve very few. **Co-locating the app and the database is worth
+more than any amount of tuning**, and it is a config change, not a code change.
+
+### Redis outage
+
+Verified: with `REDIS_URL` pointed at a dead port, every endpoint still returned
+200 and the recommendation feed degraded instead of failing.
