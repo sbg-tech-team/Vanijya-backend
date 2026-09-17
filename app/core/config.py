@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     CALLS_PER_USER_DAILY_MINUTES: int = 600
     CALLS_PLATFORM_MONTHLY_MINUTES: int = 300_000
 
+    # Translation module — model string must be verified against Google's
+    # current Gemini model catalog before shipping; this is an unverified
+    # placeholder, not a confirmed live model id.
+    TRANSLATION_GEMINI_MODEL: str = "gemini-flash-lite-latest"
+    TRANSLATION_SUMMARY_REFRESH_EVERY_N_MESSAGES: int = 20
+    TRANSLATION_SUMMARY_REFRESH_TTL_HOURS: int = 24
+
     class Config:
         env_file = ".env"
         extra = "ignore"

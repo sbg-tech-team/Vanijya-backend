@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -29,11 +30,25 @@ from app.modules.chat.presentation.schemas import (
     OpenConversationResponse,
     SendGroupMessageRequest,
     SendMessageRequest,
+    ToggleContinuousTranslationRequest,
+    ToggleContinuousTranslationResponse,
+    TranslateMessageRequest,
+    TranslateMessageResponse,
 )
 from app.modules.groups.domain.interfaces.repository import IGroupsRepository
 from app.modules.groups.presentation.dependencies import get_groups_repo
 from app.modules.groups.presentation.schemas import GroupDealCreate
 from app.modules.groups.application.use_cases.service import GroupPermissionError, create_group_deal
+from app.core.database.session import SessionLocal
+from app.modules.translation.domain.exceptions import ContinuousNotAllowedError
+from app.modules.translation.domain.exceptions import MessageNotFoundError as TranslationMessageNotFoundError
+from app.modules.translation.presentation.dependencies import (
+    get_handle_incoming_message_uc,
+    get_toggle_continuous_uc,
+    get_translate_message_uc,
+    get_translation_pipeline,
+    get_translation_repo,
+)
 
 from app.modules.chat.domain.exceptions import (
     ChatMediaUploadError,
@@ -78,6 +93,35 @@ def chat_exception_status(exc: Exception) -> int:
     """HTTP code for a chat domain exception. Unmapped subclasses get 400 rather
     than 500 — a business-rule violation is never a server fault."""
     return _CHAT_STATUS.get(type(exc), 400)
+
+
+def _translate_incoming_for_receiver(receiver_id: UUID, message_id: UUID) -> None:
+    """Continuous mode only — DMs only (HandleIncomingMessageUseCase itself
+    no-ops for anything else). Runs as a BackgroundTask, so it opens its own
+    DB session rather than reusing the request's (which is already closed by
+    the time background tasks run)."""
+    db = SessionLocal()
+    try:
+        repo = get_translation_repo(db)
+        pipeline = get_translation_pipeline(repo)
+        uc = get_handle_incoming_message_uc(repo, pipeline)
+        result = uc.execute(receiver_id, message_id)
+        if result is not None:
+            # This function runs sync in BackgroundTasks' worker thread — no
+            # event loop is already running here, so it's safe to start one.
+            asyncio.run(
+                emit_to_user(
+                    receiver_id,
+                    "message_translated",
+                    {
+                        "message_id": str(message_id),
+                        "translated_text": result.translated_text,
+                        "target_lang": result.target_lang,
+                    },
+                )
+            )
+    finally:
+        db.close()
 
 
 # ── DM Conversations ──────────────────────────────────────────────────────────
@@ -185,7 +229,46 @@ async def send_message(
         post_id=body.post_id,
     )
     background_tasks.add_task(emit_to_user, receiver_id, "new_message", jsonable_encoder(msg))
+    background_tasks.add_task(_translate_incoming_for_receiver, receiver_id, msg.id)
     return msg
+
+
+# ── Translation ───────────────────────────────────────────────────────────────
+
+@router.post("/messages/{message_id}/translate", response_model=TranslateMessageResponse)
+def translate_message(
+    message_id: UUID,
+    body: TranslateMessageRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_translate_message_uc),
+):
+    """Single-tap — translates one message the caller received. Never call
+    this for the caller's own sent messages; there's nothing to disambiguate
+    there and the resolution chain is reader-specific."""
+    try:
+        return uc.execute(reader_id=user_id, message_id=message_id, explicit_target_lang=body.target_lang)
+    except TranslationMessageNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)
+def toggle_continuous_translation(
+    conv_id: UUID,
+    body: ToggleContinuousTranslationRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_toggle_continuous_uc),
+):
+    """DMs only — continuous mode does not exist for groups."""
+    try:
+        return uc.execute(
+            user_id=user_id,
+            conversation_id=conv_id,
+            context_type="dm",
+            enabled=body.enabled,
+            explicit_target_lang=body.target_lang,
+        )
+    except ContinuousNotAllowedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/conversations/{conv_id}/read")

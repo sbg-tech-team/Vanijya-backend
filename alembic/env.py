@@ -68,6 +68,11 @@ from app.modules.safety.data.models import (  # noqa: F401
     UserBlock,
     UserReport,
 )
+from app.modules.translation.data.models import (  # noqa: F401
+    ConversationTranslationContext,
+    ReaderConversationTranslationPref,
+    ReaderTranslationDefault,
+)
 from app.recommendation.global_taste.models import UserGlobalTaste  # noqa: F401
 
 from app.core.config import settings

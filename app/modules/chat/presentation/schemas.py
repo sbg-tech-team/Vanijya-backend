@@ -59,3 +59,30 @@ class OpenConversationResponse(BaseModel):
     id: UUID
     status: str
     created: bool
+
+
+class TranslateMessageRequest(BaseModel):
+    target_lang: Optional[str] = Field(None, max_length=10)
+
+
+class TranslateMessageResponse(BaseModel):
+    translated_text: str
+    target_lang: str
+    used_cache: bool
+
+    class Config:
+        from_attributes = True
+
+
+class ToggleContinuousTranslationRequest(BaseModel):
+    enabled: bool
+    target_lang: Optional[str] = Field(None, max_length=10)
+
+
+class ToggleContinuousTranslationResponse(BaseModel):
+    conversation_id: UUID
+    target_lang: Optional[str]
+    continuous_enabled: bool
+
+    class Config:
+        from_attributes = True
