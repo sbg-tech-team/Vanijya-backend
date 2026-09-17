@@ -85,6 +85,9 @@ jobs:
       - name: One user cannot write another user's data
         run: python tests/test_authorization.py
 
+      - name: Realtime auth and membership rules
+        run: python tests/test_realtime.py
+
       - name: ORM and migrations agree on the schema
         run: python tests/test_schema_drift.py
 
