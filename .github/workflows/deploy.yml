@@ -88,6 +88,9 @@ jobs:
       - name: Realtime auth and membership rules
         run: python tests/test_realtime.py
 
+      - name: End-to-end flows return the right data
+        run: python tests/test_flows.py
+
       - name: ORM and migrations agree on the schema
         run: python tests/test_schema_drift.py
 

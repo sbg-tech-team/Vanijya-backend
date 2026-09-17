@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.modules.connections.data.models import UserConnection
-from app.modules.post.data.models import Post, PostComment, PostLike, PostSave
+from app.modules.post.data.models import Post, PostComment, PostLike, PostSave, PostView
 from app.modules.post.recommendation.models import SeenPost
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.profile.data.models import Profile
