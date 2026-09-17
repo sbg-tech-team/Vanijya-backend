@@ -76,8 +76,19 @@ the only trigger.
 app import that registers every router. Runs on dummy DB credentials; these
 checks never open a connection. A failure here stops the deploy.
 
-**deploy** — `alembic upgrade head` against production, *then* the Render API
-deploy, polled to completion so a failed build fails the job.
+**deploy** — `alembic upgrade head` against production, then
+`_migration/render_deploy.py`, which:
+
+1. records the deploy currently serving traffic,
+2. triggers the new deploy and waits for it,
+3. smoke-tests the live service, and
+4. **rolls back to the recorded deploy if the smoke test fails.**
+
+Render calling a deploy "live" only means the process booted and answered the
+health check once — it does not mean the app works. The smoke test checks that
+`/` responds, that `/openapi.json` has the full route table, and that an
+unauthenticated write is refused with 401 (which catches a deploy that came up
+with auth misconfigured).
 That order is the point: migrations have never run automatically on this
 service, so every schema change used to depend on someone remembering.
 
@@ -85,12 +96,37 @@ service, so every schema change used to depend on someone remembering.
 
 Actions tab → **deploy** → *Run workflow*. Same path, same gates.
 
-## Rolling back
+## Failure handling
 
-Revert the commit and push to `main`. Migrations do not auto-revert — if the bad
-deploy included one, downgrade it yourself:
+| Failure | What happens |
+|---|---|
+| A test fails | Nothing deploys. Users stay on the current version. |
+| Migration fails | Deploy never starts. Users stay on the current version. |
+| Build fails | Render keeps serving the old version. Job fails. |
+| App boots but is broken | Smoke test catches it → **automatic rollback**. |
+| Health check fails at runtime | Render stops routing to the bad instance. |
+
+### The one case that is not automatic
+
+Migrations run **before** the deploy, so a rollback returns the *code* but not
+the *schema*. Old code then runs against a newer schema.
+
+Keep migrations backward-compatible and this is a non-event:
+
+- Adding a column, table or index — always safe.
+- Renaming or dropping — do it in two releases. Release 1 adds the new thing and
+  writes to both. Release 2, once the old code is gone, drops the old thing.
+
+If you must revert a schema change by hand:
 
     alembic downgrade -1
+
+### Known limits
+
+The service is on Render's **free plan**: one instance, no zero-downtime deploy,
+and it spins down when idle. There is a short gap on every deploy, and the first
+request after an idle period is slow. `scheduler.py`'s keep-alive ping covers the
+idle part; removing the deploy gap needs a paid plan with more than one instance.
 
 ## Known gaps
 
