@@ -200,6 +200,32 @@ logged at boot next to the host.
 If you raise workers, remember the pool is **per worker**: 4 workers x 40 is 160
 connections, which must stay under what Supabase allows.
 
+### Maximum throughput (wrk, 6 workers, local database)
+
+Locust measures user behaviour; for a raw ceiling it becomes the bottleneck
+itself. These come from `wrk` (C, negligible client cost):
+
+| Endpoint | req/s | p99 |
+|---|---|---|
+| `GET /` (no database, no auth) | **14,427** | — |
+| `GET /posts/mine` (auth + simple query) | **1,073** | 39 ms |
+| `GET /posts/recommendation/feed` (heaviest query) | **480** | 169 ms |
+
+The framework is not the limit — it does 14 k/s. The database is: one query
+drops it 13x, and the ranking query halves it again. Optimising Python here
+would buy nothing; the query path is where the time goes.
+
+### Sizing the pool against the database's own limit
+
+Running 6 workers x 50 connections asked local Postgres for 300 and produced
+`FATAL: sorry, too many clients already`, turning half of all requests into
+500s. The pool is **per worker**, so:
+
+    workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW)  <  the database's max_connections
+
+Exceed it and the failure is not graceful — it is a hard refusal at connect
+time. Check Supabase's limit for your plan before raising either number.
+
 ### Redis outage
 
 Verified: with `REDIS_URL` pointed at a dead port, every endpoint still returned
