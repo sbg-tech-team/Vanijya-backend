@@ -17,6 +17,7 @@ from app.modules.connections.domain.exceptions import (
     AlreadyConnectedError,
     MessageRequestAlreadySentError,
     NoPendingRequestError,
+    ProfileNotFoundError,
     SelfRequestError,
 )
 from app.recommendation.session_taste import ActionType
@@ -49,6 +50,10 @@ def send_message_request(
 
     if sender_id == receiver_id:
         raise SelfRequestError()
+    # Same foreign key trap as follow_user: a made-up receiver id reached the
+    # insert and came back as a 500.
+    if not repo.load_profile(receiver_id):
+        raise ProfileNotFoundError(receiver_id)
     existing = repo.get_message_request(sender_id, receiver_id)
     if existing:
         if existing.status == "declined":

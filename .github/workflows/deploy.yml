@@ -91,6 +91,9 @@ jobs:
       - name: End-to-end flows return the right data
         run: python tests/test_flows.py
 
+      - name: Malformed input is rejected, never a 5xx
+        run: python tests/test_input_validation.py
+
       - name: ORM and migrations agree on the schema
         run: python tests/test_schema_drift.py
 

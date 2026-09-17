@@ -15,6 +15,7 @@ from app.modules.connections.application.formatters import fmt_profile
 from app.modules.connections.domain.exceptions import (
     AlreadyFollowingError,
     NotFollowingError,
+    ProfileNotFoundError,
     SelfFollowError,
 )
 from app.modules.connections.domain.interfaces.repository import IConnectionsRepository
@@ -40,6 +41,10 @@ def follow_user(
 ) -> dict:
     if follower_id == following_id:
         raise SelfFollowError()
+    # Without this the insert hits a foreign key violation and surfaces as a 500.
+    # Any client can trigger it with a made-up id.
+    if not repo.load_profile(following_id):
+        raise ProfileNotFoundError(following_id)
     if repo.get_follow(follower_id, following_id):
         raise AlreadyFollowingError(following_id)
     repo.add_follow(follower_id, following_id)

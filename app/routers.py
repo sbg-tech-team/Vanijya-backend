@@ -64,16 +64,43 @@ def register_routers(app) -> list[str]:
 
 
 def _register_exception_handlers(app) -> None:
-    """Map chat domain exceptions to HTTP codes.
+    """Map domain and database exceptions to HTTP codes.
 
     The chat router catches nothing itself, so without this every business rule
     — not a member, blocked conversation, message already gone — surfaces as a
     500. Registered app-wide so new exception types are covered automatically.
     """
+    import logging
+
     from fastapi.responses import JSONResponse
+    from sqlalchemy.exc import IntegrityError
 
     from app.modules.chat.domain.exceptions import ChatError
     from app.modules.chat.presentation.router import chat_exception_status
+
+    log = logging.getLogger(__name__)
+
+    @app.exception_handler(IntegrityError)
+    async def _integrity_error(_request, exc: IntegrityError):
+        """A constraint violation is the client naming something that is not
+        there, or already is. Both were surfacing as 500.
+
+        Any id in a URL can be made up, so `POST /connections/follow/<random>`
+        and a dozen like it answered 500 to a perfectly ordinary mistake. The
+        handler lives here rather than in each endpoint because the trap is the
+        same everywhere: the row reaches the insert before anything checks it.
+        """
+        name = type(getattr(exc, "orig", None)).__name__
+        if name == "ForeignKeyViolation":
+            return JSONResponse(status_code=404,
+                                content={"detail": "Referenced record not found"})
+        if name == "UniqueViolation":
+            return JSONResponse(status_code=409,
+                                content={"detail": "Already exists"})
+        # Anything else is a real defect — a NOT NULL or CHECK we did not guard.
+        log.exception("unhandled integrity error")
+        return JSONResponse(status_code=400,
+                            content={"detail": "Request violates a data constraint"})
 
     @app.exception_handler(ChatError)
     async def _chat_error(_request, exc: ChatError):
