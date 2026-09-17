@@ -77,6 +77,9 @@ _user_sids: dict[str, set[str]] = {}
 # there is nobody to emit to, so None is the correct no-op.
 _loop: asyncio.AbstractEventLoop | None = None
 
+# The Redis eviction subscriber, cancelled on shutdown.
+_evict_task: "asyncio.Task | None" = None
+
 
 def user_for_sid(sid: str) -> str | None:
     """str(user_id) behind a socket, or None if it is not authenticated."""
@@ -210,7 +213,8 @@ def is_online(user_id: UUID) -> bool:
 
 async def start_evict_listener() -> None:
     """Subscribe this worker to eviction broadcasts. Called from the app lifespan."""
-    if not _REDIS_URL:
+    global _evict_task
+    if not _REDIS_URL or _evict_task is not None:
         return
 
     async def _listen() -> None:
@@ -235,4 +239,20 @@ async def start_evict_listener() -> None:
                 _log.warning("evict listener dropped, retrying in 5s: %s", exc)
                 await asyncio.sleep(5)
 
-    asyncio.create_task(_listen())
+    _evict_task = asyncio.create_task(_listen())
+
+
+async def stop_evict_listener() -> None:
+    """Cancel the listener on shutdown, otherwise asyncio logs
+    'Task was destroyed but it is pending!' on every restart."""
+    global _evict_task
+    task, _evict_task = _evict_task, None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        _log.warning("evict listener shutdown: %s", exc)

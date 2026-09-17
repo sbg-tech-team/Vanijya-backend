@@ -22,7 +22,7 @@ import socketio
 from fastapi import FastAPI
 
 from app.routers import register_routers
-from app.core.realtime import sio, start_evict_listener
+from app.core.realtime import sio, start_evict_listener, stop_evict_listener
 # Imported for its @sio.event side effects — registers the chat socket handlers.
 import app.modules.chat.presentation.connection_manager  # noqa: F401
 from app.core import scheduler as _scheduler
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     _scheduler.start()
     yield
     _scheduler.stop()
+    await stop_evict_listener()
 
 
 app = FastAPI(title="Vanijyaa API", lifespan=lifespan)
