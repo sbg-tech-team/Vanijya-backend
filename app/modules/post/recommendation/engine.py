@@ -338,7 +338,10 @@ def _rerank(
         })
 
     scored.sort(key=lambda x: x["final_score"], reverse=True)
-    return scored, posts
+    # `profiles` goes back with the rest so _build_feed_cards does not fetch the
+    # same authors again. Locally that is a couple of milliseconds; against a
+    # database a round trip away it is two round trips per feed request.
+    return scored, posts, profiles
 
 
 def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
@@ -368,6 +371,7 @@ def _build_feed_cards(
     viewer_profile_id: int,
     posts: dict | None = None,
     followed_user_ids: set | None = None,
+    authors: dict | None = None,
 ) -> list:
     from app.modules.post.data.models import Post, PostLike, PostSave
     from app.modules.post.application.schemas import PostDealResponse, FeedPostCard
@@ -385,14 +389,15 @@ def _build_feed_cards(
             .all()
         }
 
-    author_ids = list({p.profile_id for p in posts.values()})
-    authors = {
-        p.id: p
-        for p in db.query(Profile)
-        .options(selectinload(Profile.business))
-        .filter(Profile.id.in_(author_ids))
-        .all()
-    }
+    if authors is None:
+        author_ids = list({p.profile_id for p in posts.values()})
+        authors = {
+            p.id: p
+            for p in db.query(Profile)
+            .options(selectinload(Profile.business))
+            .filter(Profile.id.in_(author_ids))
+            .all()
+        }
 
     liked_ids = {
         r[0] for r in db.query(PostLike.post_id).filter(
@@ -557,9 +562,13 @@ def get_recommended_posts(
             commodity_quantity=(float(profile.quantity_min) + float(profile.quantity_max)) / 2,
         )
 
-    cat_weights       = taste_service.get_taste_weights(db, profile_id, "category", profile.role_id)
-    commodity_weights = taste_service.get_taste_weights(db, profile_id, "commodity")
-    author_weights    = taste_service.get_taste_weights(db, profile_id, "author")
+    # One query for all three dimensions; they live in the same table.
+    _taste = taste_service.get_taste_weights_bulk(
+        db, profile_id, ("category", "commodity", "author"), profile.role_id
+    )
+    cat_weights       = _taste["category"]
+    commodity_weights = _taste["commodity"]
+    author_weights    = _taste["author"]
     city_weights      = read_global_taste_weights(db, profile_id, "city")
     state_weights     = read_global_taste_weights(db, profile_id, "state")
 
@@ -622,10 +631,11 @@ def get_recommended_posts(
     )
     pool.extend(fresh)
 
-    scored, posts = _rerank(
+    scored, posts, authors = _rerank(
         db, pool, cat_weights, commodity_weights, author_weights,
         city_weights, state_weights, followed_user_ids,
     )
     final = _apply_diversity(scored, limit=limit)
 
-    return _build_feed_cards(db, final, profile_id, posts=posts, followed_user_ids=followed_user_ids)
+    return _build_feed_cards(db, final, profile_id, posts=posts,
+                             followed_user_ids=followed_user_ids, authors=authors)

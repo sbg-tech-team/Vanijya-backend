@@ -81,6 +81,32 @@ def update_taste(
     db.execute(stmt)
 
 
+def get_taste_weights_bulk(
+    db: Session,
+    profile_id: int,
+    dimension_types: tuple[str, ...],
+    role_id: int | None = None,
+) -> dict[str, dict[str, float]]:
+    """Every requested dimension in ONE query instead of one query each.
+
+    The feed reads category, commodity and author on every request. Against a
+    database a round trip away that was three trips for rows that live in the
+    same table.
+    """
+    rows = (
+        db.query(UserPostTaste)
+        .filter(
+            UserPostTaste.profile_id == profile_id,
+            UserPostTaste.dimension_type.in_(dimension_types),
+        )
+        .all()
+    )
+    grouped: dict[str, list] = {d: [] for d in dimension_types}
+    for row in rows:
+        grouped.setdefault(row.dimension_type, []).append(row)
+    return {d: _weights_from_rows(grouped[d], d, role_id) for d in dimension_types}
+
+
 def get_taste_weights(
     db: Session,
     profile_id: int,
@@ -110,6 +136,11 @@ def get_taste_weights(
         .all()
     )
 
+    return _weights_from_rows(rows, dimension_type, role_id)
+
+
+def _weights_from_rows(rows, dimension_type: str, role_id: int | None) -> dict[str, float]:
+    """Decay, floor and confidence-blend a set of UserPostTaste rows."""
     # Cold start — return role defaults for category, empty for other dimensions
     if not rows:
         if dimension_type == "category" and role_id is not None:
