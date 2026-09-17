@@ -130,14 +130,21 @@ def follow_status(
     return ok({"following": following}, "Follow status fetched")
 
 
-# Public — viewing any user's social graph
+# Any user's social graph, visible to signed-in users.
+#
+# These were the only reads in the app that answered without a token, while
+# /profile/{profile_id} right next to them required one — so the profile was
+# private but that same person's whole follower list was not. Combined with
+# /share/user/{profile_id}, whose id is sequential, that allowed an anonymous
+# crawl of the user base and the graph.
 
 @connections_router.get("/{user_id}/followers")
 def list_followers(
     user_id: UUID,
+    _viewer: UUID = Depends(get_current_user_id),
     repo: IConnectionsRepository = Depends(get_connections_repo),
 ):
-    """Everyone who follows user_id (public)."""
+    """Everyone who follows user_id. Any signed-in user may look."""
     followers = service.get_followers(repo, user_id)
     return ok({"total": len(followers), "followers": followers}, "Followers fetched")
 
@@ -145,9 +152,10 @@ def list_followers(
 @connections_router.get("/{user_id}/following")
 def list_following(
     user_id: UUID,
+    _viewer: UUID = Depends(get_current_user_id),
     repo: IConnectionsRepository = Depends(get_connections_repo),
 ):
-    """Everyone user_id follows (public)."""
+    """Everyone user_id follows. Any signed-in user may look."""
     following = service.get_following(repo, user_id)
     return ok({"total": len(following), "following": following}, "Following fetched")
 

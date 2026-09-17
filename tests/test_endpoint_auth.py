@@ -30,12 +30,6 @@ PUBLIC = {
     ("GET", "/share/post/{post_id}"),
     ("GET", "/share/news/{article_id}"),
     ("GET", "/share/user/{profile_id}"),
-    # Social graph, public by product decision (the handlers say so).
-    # FLAGGED: combined with the share links above this allows an anonymous
-    # crawl of the whole graph. Raised with the team; listed here so the sweep
-    # tracks intent rather than silently passing.
-    ("GET", "/connections/{user_id}/followers"),
-    ("GET", "/connections/{user_id}/following"),
     # The auth handshake itself.
     ("POST", "/auth/firebase-verify"),
     ("POST", "/auth/refresh"),
