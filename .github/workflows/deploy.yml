@@ -61,7 +61,11 @@ jobs:
 
       - name: Migrations replay onto an empty database
         run: |
-          psql "$SYNC_DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+          # psql cannot parse the SQLAlchemy-style postgresql+psycopg2:// URL.
+          psql -h localhost -U postgres -d vanijyaa_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+          # PYTHONPATH must be empty here: the repo has an alembic/ directory
+          # that shadows the installed alembic package.
           PYTHONPATH= alembic upgrade head
         env:
           PGPASSWORD: postgres
