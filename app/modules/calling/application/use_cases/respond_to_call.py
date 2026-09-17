@@ -48,6 +48,13 @@ def accept_call(
     if me is None:
         raise NotParticipantError("You are not a participant in this call.")
 
+    # The initiator is a participant, so the membership check above lets them
+    # through. Accepting your own call forces it ACTIVE without anybody
+    # answering: billing starts, the ring timeout no longer applies, and the
+    # callee can no longer reject it ("Call is no longer ringing").
+    if user_id == call.initiator_id:
+        raise NotParticipantError("You cannot accept a call you started.")
+
     if call.status not in (CallStatus.RINGING.value, CallStatus.ACTIVE.value):
         raise CallNotRingingError("Call is no longer ringing.")
 
@@ -146,6 +153,13 @@ def reject_call(
     me = call.participant(user_id)
     if me is None:
         raise NotParticipantError("You are not a participant in this call.")
+
+    # Same trap as accept_call: the initiator is a participant. Letting them
+    # reject records their own cancellation as end_reason "rejected", which is
+    # the wrong story in call history and in the chat card. Hanging up before
+    # an answer is POST /end, which records it as cancelled.
+    if user_id == call.initiator_id:
+        raise NotParticipantError("You cannot reject a call you started.")
 
     if call.status != CallStatus.RINGING.value:
         raise CallNotRingingError("Call is no longer ringing.")

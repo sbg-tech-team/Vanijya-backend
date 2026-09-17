@@ -1000,6 +1000,39 @@ def test_presence_sweep_skips_calls_with_no_data():
     assert victims == [], "a live call was swept using presence data that did not exist"
 
 
+def test_caller_cannot_accept_their_own_call():
+    """Found against production: the initiator is a participant, so the
+    membership check let them through. Accepting your own call forces it ACTIVE
+    with nobody on the other end — Stream starts billing, the ring timeout stops
+    applying, and the callee can no longer reject because it is "no longer
+    ringing"."""
+    from app.modules.calling.domain.exceptions import NotParticipantError
+    prov, repo = FakeProvider(), FakeRepo()
+    d = _start(repo, provider=prov)
+    try:
+        accept_call(repo, prov, call_id=d.result.call_id, user_id=ALICE)
+        raise AssertionError("the caller accepted their own call")
+    except NotParticipantError:
+        pass
+    assert repo.get_call(d.result.call_id).status == "ringing"
+
+
+def test_caller_cannot_reject_their_own_call():
+    """Same trap on the other branch. It would record the caller's own
+    cancellation as end_reason "rejected", which is the wrong story in call
+    history and in the chat card. Hanging up before an answer is POST /end."""
+    from app.modules.calling.application.use_cases.respond_to_call import reject_call
+    from app.modules.calling.domain.exceptions import NotParticipantError
+    prov, repo = FakeProvider(), FakeRepo()
+    d = _start(repo, provider=prov)
+    try:
+        reject_call(repo, call_id=d.result.call_id, user_id=ALICE, provider=prov)
+        raise AssertionError("the caller rejected their own call")
+    except NotParticipantError:
+        pass
+    assert repo.get_call(d.result.call_id).status == "ringing"
+
+
 def test_cursor_roundtrip():
     now = datetime.now(timezone.utc)
     assert _decode_cursor(_encode_cursor(now)) == now
