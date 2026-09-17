@@ -141,6 +141,26 @@ do not leave it as a trap.
 the instance warm. That host currently returns `x-render-routing: no-server`, so
 the ping fails every 10 minutes. Point it at the real URL, or make it an env var.
 
+## Backups
+
+Verified end to end on 2026-09-17: production dumped, restored into a throwaway
+local database, and compared table by table. **64 tables, every row count
+matching.** That had never been tested before — Supabase takes the backups, but
+nobody had proven one restores.
+
+    brew install postgresql@17          # must match the SERVER version
+    SYNC_DATABASE_URL=<prod> _migration/backup_restore_check.sh
+
+Reads production, writes only locally. Takes about 90 s for a 4.4 MB dump.
+
+`pg_restore` reports 4 errors and they are expected: `supabase_vault`,
+`vault.secrets`, `transaction_timeout` and a `NULLS` clause are Supabase
+platform objects and newer-server syntax, none of which is application data.
+The row-count comparison is what decides whether a restore is good.
+
+Re-run it whenever the schema changes materially, and before anything that could
+require a restore.
+
 ## Load testing
 
 `_migration/locustfile.py`. Run it against a LOCAL server — the production
