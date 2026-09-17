@@ -263,7 +263,7 @@ def _get_post_or_raise(repo: IPostRepository, post_id: int) -> Post:
 def _record_view(repo: IPostRepository, post_id: int, profile_id: int) -> None:
     if not repo.record_first_view(post_id, profile_id):
         # Already seen — a revisit is its own signal, not another view.
-        interaction_service.record_revisit_event(repo.session, profile_id, post_id)
+        interaction_service.record_revisit_event(repo.taste, profile_id, post_id)
 
 
 # ----------------------------------------------------------------------------

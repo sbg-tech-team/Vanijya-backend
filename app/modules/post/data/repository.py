@@ -38,8 +38,19 @@ class PostRepository(IPostRepository):
 
     def __init__(self, db: Session):
         self.db = db
+        self._taste = None
 
     # -- unit of work ----------------------------------------------------------
+
+    @property
+    def taste(self):
+        """Taste store over the same session, so post writes and taste writes
+        commit together. Separate interface, one transaction."""
+        from app.modules.post.data.taste_repository import TasteRepository
+
+        if self._taste is None:
+            self._taste = TasteRepository(self.db)
+        return self._taste
 
     @property
     def session(self) -> Session:
@@ -315,7 +326,7 @@ class PostRepository(IPostRepository):
     def get_category_taste_weights(self, profile_id: int, role_id: int | None) -> dict[str, float]:
         from app.modules.post.recommendation.session_taste import taste_service
 
-        return taste_service.get_taste_weights(self.db, profile_id, "category", role_id)
+        return taste_service.get_taste_weights(self.taste, profile_id, "category", role_id)
 
     def upsert_post_embedding(
         self,

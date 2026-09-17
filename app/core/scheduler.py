@@ -9,6 +9,7 @@ from app.core.redis_client import get_redis
 from app.modules.calling.presentation import dependencies as calling_di
 from app.modules.news.presentation import dependencies as news_di
 from app.modules.post.data.repository import PostRepository
+from app.modules.post.data.taste_repository import TasteRepository
 from app.modules.post.recommendation import jobs as post_rec_jobs
 from app.modules.post.recommendation.session_taste import jobs as post_interaction_jobs
 
@@ -53,7 +54,7 @@ def _run_popular_sync():
 def _run_taste_update():
     db = SessionLocal()
     try:
-        post_interaction_jobs.run_taste_update_job(db)
+        post_interaction_jobs.run_taste_update_job(TasteRepository(db))
     finally:
         db.close()
 
@@ -61,7 +62,7 @@ def _run_taste_update():
 def _run_ignore_detection():
     db = SessionLocal()
     try:
-        post_interaction_jobs.run_ignore_detection_job(db)
+        post_interaction_jobs.run_ignore_detection_job(TasteRepository(db))
     finally:
         db.close()
 

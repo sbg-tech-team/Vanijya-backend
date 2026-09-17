@@ -67,7 +67,7 @@ def toggle_like(repo: IPostRepository, post_id: int, profile_id: int) -> LikeRes
         repo.commit()
         repo.refresh(post)
         try:
-            interaction_service.record_interaction(repo.session, profile_id, post.category_id, "like", post.commodity_id, post.profile_id)
+            interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "like", post.commodity_id, post.profile_id)
         except Exception:
             log.exception("taste update failed for like on post %s by profile %s", post_id, profile_id)
         return LikeResponse(liked=True, like_count=post.like_count)
@@ -90,7 +90,7 @@ def add_comment(repo: IPostRepository, post_id: int, profile_id: int, payload: C
     repo.refresh(comment)
 
     try:
-        interaction_service.record_interaction(repo.session, profile_id, post.category_id, "comment", post.commodity_id, post.profile_id)
+        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "comment", post.commodity_id, post.profile_id)
     except Exception:
         log.exception("taste update failed for comment on post %s by profile %s", post_id, profile_id)
 
@@ -175,7 +175,7 @@ def record_share(repo: IPostRepository, post_id: int, profile_id: int) -> ShareR
     repo.commit()
     repo.refresh(post)
     try:
-        interaction_service.record_interaction(repo.session, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
+        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
     except Exception:
         log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
     return ShareResponse(share_count=post.share_count)
@@ -214,7 +214,7 @@ def send_post(
     repo.commit()
     repo.refresh(post)
     try:
-        interaction_service.record_interaction(repo.session, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
+        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
     except Exception:
         log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
 
@@ -244,7 +244,7 @@ def toggle_save(repo: IPostRepository, post_id: int, profile_id: int) -> SaveRes
         repo.bump_counter(post_id, "save_count", 1)
         repo.commit()
         try:
-            interaction_service.record_interaction(repo.session, profile_id, post.category_id, "save", post.commodity_id, post.profile_id)
+            interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "save", post.commodity_id, post.profile_id)
         except Exception:
             log.exception("taste update failed for save on post %s by profile %s", post_id, profile_id)
         return SaveResponse(saved=True)

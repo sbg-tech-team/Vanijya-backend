@@ -47,19 +47,19 @@ def submit_interaction_batch(
     Events older than 2 hours or referencing non-existent posts are silently
     dropped; the response reports accepted vs dropped counts.
     """
-    result = interaction_service.process_interaction_batch(repo.session, profile_id, payload.events, rc)
+    result = interaction_service.process_interaction_batch(repo.taste, profile_id, payload.events, rc)
     return InteractionBatchResult(**result)
 
 
 @jobs_router.post("/taste-update", response_model=JobResult)
 def trigger_taste_update(repo: IPostRepository = Depends(get_post_repo)):
     """Manually trigger one batch of the dwell taste update job."""
-    result = interaction_jobs.run_taste_update_job(repo.session)
+    result = interaction_jobs.run_taste_update_job(repo.taste)
     return JobResult(status="ok", details=result)
 
 
 @jobs_router.post("/ignore-detect", response_model=JobResult)
 def trigger_ignore_detection(repo: IPostRepository = Depends(get_post_repo)):
     """Manually trigger the repeated-ignore detection job."""
-    result = interaction_jobs.run_ignore_detection_job(repo.session)
+    result = interaction_jobs.run_ignore_detection_job(repo.taste)
     return JobResult(status="ok", details=result)

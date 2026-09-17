@@ -452,7 +452,7 @@ def get_recommended_posts(
 
     # One query for all three dimensions; they live in the same table.
     _taste = taste_service.get_taste_weights_bulk(
-        repo.session, profile_id, ("category", "commodity", "author"), profile.role_id
+        repo.taste, profile_id, ("category", "commodity", "author"), profile.role_id
     )
     cat_weights       = _taste["category"]
     commodity_weights = _taste["commodity"]

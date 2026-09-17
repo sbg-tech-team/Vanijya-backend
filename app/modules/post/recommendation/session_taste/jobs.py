@@ -12,7 +12,6 @@ run_ignore_detection_job()  – daily: finds (profile, post) pairs with N+ impre
 from datetime import datetime, timezone
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.modules.post.recommendation.session_taste.constants import (
     AUTHOR_TASTE_MIN_DELTA,
@@ -71,7 +70,7 @@ def _acc(
 # Job 1: Dwell taste update (every 15 min)
 # ---------------------------------------------------------------------------
 
-def run_taste_update_job(db: Session) -> dict:
+def run_taste_update_job(repo) -> dict:
     """
     Processes the oldest unprocessed dwell events (up to _BATCH_SIZE per run).
 
@@ -87,14 +86,7 @@ def run_taste_update_job(db: Session) -> dict:
     now = datetime.now(timezone.utc)
 
     events: list[PostInteractionEvent] = (
-        db.query(PostInteractionEvent)
-        .filter(
-            PostInteractionEvent.event_type.in_(_PASSIVE_EVENT_TYPES),
-            PostInteractionEvent.processed_at.is_(None),
-        )
-        .order_by(PostInteractionEvent.id)
-        .limit(_BATCH_SIZE)
-        .all()
+        repo.unprocessed_events(tuple(_PASSIVE_EVENT_TYPES), _BATCH_SIZE)
     )
 
     if not events:
@@ -102,12 +94,7 @@ def run_taste_update_job(db: Session) -> dict:
 
     # Bulk-fetch category, commodity, author for all referenced posts
     post_ids = list({e.post_id for e in events})
-    post_meta: dict[int, tuple[int, int, int]] = {
-        row[0]: (row[1], row[2], row[3])
-        for row in db.query(Post.id, Post.category_id, Post.commodity_id, Post.profile_id)
-        .filter(Post.id.in_(post_ids))
-        .all()
-    }
+    post_meta: dict[int, tuple[int, int, int]] = repo.post_author_meta(post_ids)
 
     # ── Accumulate deltas ─────────────────────────────────────────────────────
 
@@ -179,16 +166,12 @@ def run_taste_update_job(db: Session) -> dict:
     for (profile_id, dim_type, dim_key), (pos_d, neg_d, cnt) in upt_deltas.items():
         if pos_d > 0 or neg_d > 0:
             taste_service.update_taste(
-                db, profile_id, dim_type, dim_key, pos_d, neg_d, cnt
+            repo, profile_id, dim_type, dim_key, pos_d, neg_d, cnt
             )
 
     # ── Mark all fetched dwell events processed ───────────────────────────────
-    event_ids = [e.id for e in events]
-    db.query(PostInteractionEvent).filter(
-        PostInteractionEvent.id.in_(event_ids)
-    ).update({"processed_at": now}, synchronize_session=False)
-
-    db.commit()
+    repo.mark_events_processed([e.id for e in events], now)
+    repo.commit()
     return {"processed": len(events), "taste_updates": taste_updates}
 
 
@@ -196,7 +179,7 @@ def run_taste_update_job(db: Session) -> dict:
 # Job 2: Repeated-ignore detection (daily)
 # ---------------------------------------------------------------------------
 
-def run_ignore_detection_job(db: Session) -> dict:
+def run_ignore_detection_job(repo) -> dict:
     """
     Finds (profile_id, post_id) pairs where:
       - impression_count >= REPEATED_IGNORE_THRESHOLD
@@ -213,40 +196,15 @@ def run_ignore_detection_job(db: Session) -> dict:
     """
     now = datetime.now(timezone.utc)
 
-    rows = db.execute(
-        text("""
-            SELECT profile_id, post_id
-            FROM post_interaction_events
-            GROUP BY profile_id, post_id
-            HAVING
-                SUM(CASE WHEN event_type = 'impression' THEN 1 ELSE 0 END)
-                    >= :threshold
-                AND SUM(CASE WHEN event_type IN (
-                        'dwell', 'open_read_more', 'open_carousel',
-                        'open_comments', 'revisit'
-                    ) THEN 1 ELSE 0 END) = 0
-                AND SUM(CASE WHEN event_type = 'impression'
-                             AND processed_at IS NULL THEN 1 ELSE 0 END) > 0
-            ORDER BY profile_id, post_id
-            LIMIT :limit
-        """),
-        {"threshold": REPEATED_IGNORE_THRESHOLD, "limit": _IGNORE_BATCH_SIZE},
-    ).mappings().all()
+    ignore_pairs = repo.repeated_ignore_pairs(REPEATED_IGNORE_THRESHOLD, _IGNORE_BATCH_SIZE)
 
-    if not rows:
+    if not ignore_pairs:
         return {"pairs_detected": 0, "taste_updates": 0}
-
-    ignore_pairs: list[tuple[int, int]] = [
-        (r["profile_id"], r["post_id"]) for r in rows
-    ]
 
     # Bulk-fetch post metadata
     post_ids = list({ppid for _, ppid in ignore_pairs})
     post_meta: dict[int, tuple[int, int]] = {
-        row[0]: (row[1], row[2])
-        for row in db.query(Post.id, Post.category_id, Post.commodity_id)
-        .filter(Post.id.in_(post_ids))
-        .all()
+        pid: (meta[0], meta[1]) for pid, meta in repo.post_author_meta(post_ids).items()
     }
 
     # Apply negative taste deltas
@@ -261,27 +219,16 @@ def run_ignore_detection_job(db: Session) -> dict:
             continue
 
         taste_service.update_taste(
-            db, profile_id, "category", category, 0.0, IGNORE_NEG_DELTA
+            repo, profile_id, "category", category, 0.0, IGNORE_NEG_DELTA
         )
         if commodity_id:
             taste_service.update_taste(
-                db, profile_id, "commodity", str(commodity_id), 0.0, IGNORE_NEG_DELTA
+            repo, profile_id, "commodity", str(commodity_id), 0.0, IGNORE_NEG_DELTA
             )
         taste_updates += 1
 
     # Mark impression events for all detected pairs as processed
     # Both values are DB integers — no injection risk from string format.
-    pairs_str = ",".join(f"({pid},{ppid})" for pid, ppid in ignore_pairs)
-    db.execute(
-        text(f"""
-            UPDATE post_interaction_events
-            SET processed_at = :now
-            WHERE event_type = 'impression'
-              AND processed_at IS NULL
-              AND (profile_id, post_id) IN ({pairs_str})
-        """),
-        {"now": now},
-    )
-
-    db.commit()
+    repo.mark_impressions_processed(ignore_pairs, now)
+    repo.commit()
     return {"pairs_detected": len(ignore_pairs), "taste_updates": taste_updates}

@@ -15,8 +15,6 @@ NOTE: This service is both the write path and the read path for every post
 import math
 from datetime import datetime, timezone
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
 
 from app.modules.post.recommendation.session_taste.constants import (
     AUTHOR_AFFINITY_MAX,
@@ -25,7 +23,6 @@ from app.modules.post.recommendation.session_taste.constants import (
     TASTE_BOOTSTRAP_EVENTS,
     TASTE_DECAY_LAMBDA,
 )
-from app.modules.post.data.taste_models import UserPostTaste
 from app.shared.utils.time_decay import decayed_score
 
 _SCORE_FLOOR = 0.05          # no dimension can fall below this weight
@@ -33,7 +30,7 @@ _NEG_DISCOUNT = 0.6          # negative_score is discounted before subtracting
 
 
 def update_taste(
-    db: Session,
+    repo,
     profile_id: int,
     dimension_type: str,
     dimension_key: str,
@@ -50,39 +47,12 @@ def update_taste(
     Does NOT commit — caller is responsible for the commit so that taste
     writes and the triggering interaction (like / dwell) commit atomically.
     """
-    now = datetime.now(timezone.utc)
-    stmt = (
-        pg_insert(UserPostTaste.__table__)
-        .values(
-            profile_id=profile_id,
-            dimension_type=dimension_type,
-            dimension_key=dimension_key,
-            positive_score=positive_delta,
-            negative_score=negative_delta,
-            event_count=event_count,
-            last_event_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=["profile_id", "dimension_type", "dimension_key"],
-            set_={
-                "positive_score": (
-                    UserPostTaste.__table__.c.positive_score + positive_delta
-                ),
-                "negative_score": (
-                    UserPostTaste.__table__.c.negative_score + negative_delta
-                ),
-                "event_count": (
-                    UserPostTaste.__table__.c.event_count + event_count
-                ),
-                "last_event_at": now,
-            },
-        )
-    )
-    db.execute(stmt)
+    repo.upsert_taste(profile_id, dimension_type, dimension_key,
+                      positive_delta, negative_delta, event_count)
 
 
 def get_taste_weights_bulk(
-    db: Session,
+    repo,
     profile_id: int,
     dimension_types: tuple[str, ...],
     role_id: int | None = None,
@@ -93,14 +63,7 @@ def get_taste_weights_bulk(
     database a round trip away that was three trips for rows that live in the
     same table.
     """
-    rows = (
-        db.query(UserPostTaste)
-        .filter(
-            UserPostTaste.profile_id == profile_id,
-            UserPostTaste.dimension_type.in_(dimension_types),
-        )
-        .all()
-    )
+    rows = repo.taste_rows(profile_id, dimension_types)
     grouped: dict[str, list] = {d: [] for d in dimension_types}
     for row in rows:
         grouped.setdefault(row.dimension_type, []).append(row)
@@ -108,7 +71,7 @@ def get_taste_weights_bulk(
 
 
 def get_taste_weights(
-    db: Session,
+    repo,
     profile_id: int,
     dimension_type: str,
     role_id: int | None = None,
@@ -127,14 +90,7 @@ def get_taste_weights(
     Caller normalises via log1p before using in the reranker.
     Returns {} for non-category dimensions with no data yet.
     """
-    rows = (
-        db.query(UserPostTaste)
-        .filter(
-            UserPostTaste.profile_id == profile_id,
-            UserPostTaste.dimension_type == dimension_type,
-        )
-        .all()
-    )
+    rows = repo.taste_rows(profile_id, (dimension_type,))
 
     return _weights_from_rows(rows, dimension_type, role_id)
 
@@ -187,29 +143,10 @@ def get_author_affinity(decayed_net_score: float) -> float:
     return 1.0 + (AUTHOR_AFFINITY_MAX - 1.0) * min(normalized, 1.0)
 
 
-def seed_taste_from_role(db: Session, profile_id: int, role_id: int) -> None:
+def seed_taste_from_role(repo, profile_id: int, role_id: int) -> None:
     """
     Inserts initial category rows using role-seeded defaults.
     ON CONFLICT DO NOTHING — never overwrites existing learned data.
     Intended for user onboarding; not called automatically by record_interaction.
     """
-    now = datetime.now(timezone.utc)
-    defaults = DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1])
-
-    for category, default_count in defaults.items():
-        stmt = (
-            pg_insert(UserPostTaste.__table__)
-            .values(
-                profile_id=profile_id,
-                dimension_type="category",
-                dimension_key=category,
-                positive_score=float(default_count),
-                negative_score=0.0,
-                event_count=0,
-                last_event_at=now,
-            )
-            .on_conflict_do_nothing()
-        )
-        db.execute(stmt)
-
-    db.commit()
+    repo.seed_taste_rows(profile_id, DEFAULT_TASTE.get(role_id, DEFAULT_TASTE[1]))

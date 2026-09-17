@@ -16,7 +16,6 @@ from datetime import datetime, timezone, timedelta
 
 import redis
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.modules.post.recommendation.session_taste.constants import (
     AUTHOR_TASTE_MIN_DELTA,
@@ -90,7 +89,7 @@ def _classify_action(event_type: str, value_ms: int | None) -> ActionType | None
 # ---------------------------------------------------------------------------
 
 def process_interaction_batch(
-    db: Session,
+    repo,
     profile_id: int,
     events: list[InteractionEventItem],
     rc: redis.Redis | None = None,
@@ -110,13 +109,9 @@ def process_interaction_batch(
     stale_cutoff = now - timedelta(hours=MAX_EVENT_AGE_HOURS)
 
     raw_post_ids = list({e.post_id for e in events})
-    post_meta: dict[int, tuple[int, int, str | None, str | None]] = {
-        row[0]: (row[1], row[2], row[3], row[4])
-        for row in db.query(Post.id, Post.category_id, Post.commodity_id, Business.city, Business.state)
-        .outerjoin(Business, Business.profile_id == Post.profile_id)
-        .filter(Post.id.in_(raw_post_ids))
-        .all()
-    }
+    post_meta: dict[int, tuple[int, int, str | None, str | None]] = (
+        repo.post_taste_meta(raw_post_ids)
+    )
     valid_post_ids: set[int] = set(post_meta.keys())
 
     rows: list[PostInteractionEvent] = []
@@ -160,23 +155,12 @@ def process_interaction_batch(
             seen_post_ids.append(event.post_id)
 
     if rows:
-        db.bulk_save_objects(rows)
+        repo.bulk_add_events(rows)
 
     if seen_post_ids:
-        db.execute(
-            text("""
-                INSERT INTO seen_posts (profile_id, post_id, seen_at)
-                SELECT :profile_id, unnest(CAST(:post_ids AS int[])), :seen_at
-                ON CONFLICT (profile_id, post_id) DO NOTHING
-            """),
-            {
-                "profile_id": profile_id,
-                "post_ids": "{" + ",".join(str(p) for p in seen_post_ids) + "}",
-                "seen_at": now,
-            },
-        )
+        repo.mark_posts_seen(profile_id, seen_post_ids, now)
 
-    db.commit()
+    repo.commit()
 
     for post_id, event_type, value_ms in signal_events:
         category_id, commodity_id, post_city, post_state = post_meta[post_id]
@@ -193,7 +177,7 @@ def process_interaction_batch(
 # Server-generated revisit event
 # ---------------------------------------------------------------------------
 
-def record_revisit_event(db: Session, profile_id: int, post_id: int) -> None:
+def record_revisit_event(repo, profile_id: int, post_id: int) -> None:
     """
     Called from post/service._record_view() when the unique constraint on
     post_views fires — the user has opened this post before.
@@ -204,7 +188,7 @@ def record_revisit_event(db: Session, profile_id: int, post_id: int) -> None:
     """
     now = datetime.now(timezone.utc)
     try:
-        db.add(PostInteractionEvent(
+        repo.add_interaction_events([PostInteractionEvent(
             profile_id=profile_id,
             post_id=post_id,
             event_type="revisit",
@@ -212,18 +196,18 @@ def record_revisit_event(db: Session, profile_id: int, post_id: int) -> None:
             occurred_at=now,
             created_at=now,
             processed_at=now,      # handled synchronously — no async job pickup needed
-        ))
-        db.commit()
+        )])
+        repo.commit()
     except Exception:
-        db.rollback()
+        repo.rollback()
         return
 
     # Update taste — look up post for category + commodity + author
-    post = db.query(Post).filter(Post.id == post_id).first()
+    post = repo.get_post_for_taste(post_id)
     if post:
         try:
             record_interaction(
-                db, profile_id,
+                repo, profile_id,
                 post.category_id, "revisit",
                 post.commodity_id, post.profile_id,
             )
@@ -241,7 +225,7 @@ TASTE_CATEGORIES = frozenset({"market_update", "deal_req", "discussion", "knowle
 
 
 def record_interaction(
-    db: Session,
+    repo,
     profile_id: int,
     category_id: int,
     signal_type: str = "like",
@@ -270,14 +254,16 @@ def record_interaction(
 
     # A deleted profile has no taste to record (the legacy write used to be the
     # thing that caught this).
-    if db.query(Profile.id).filter(Profile.id == profile_id).first() is None:
+    if not repo.profile_exists(profile_id):
         return
 
     # user_post_taste is the one taste store — see get_taste_weights().
-    taste_service.update_taste(db, profile_id, "category", category, pos_delta, neg_delta)
+    taste_service.update_taste(
+            repo, profile_id, "category", category, pos_delta, neg_delta)
 
     if commodity_id is not None:
-        taste_service.update_taste(db, profile_id, "commodity", str(commodity_id), pos_delta, neg_delta)
+        taste_service.update_taste(
+            repo, profile_id, "commodity", str(commodity_id), pos_delta, neg_delta)
 
     # Author affinity: only for high-confidence signals; never self-interaction
     if (
@@ -285,6 +271,7 @@ def record_interaction(
         and author_profile_id != profile_id
         and pos_delta >= AUTHOR_TASTE_MIN_DELTA
     ):
-        taste_service.update_taste(db, profile_id, "author", str(author_profile_id), pos_delta, neg_delta)
+        taste_service.update_taste(
+            repo, profile_id, "author", str(author_profile_id), pos_delta, neg_delta)
 
-    db.commit()
+    repo.commit()
