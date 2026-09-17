@@ -22,6 +22,6 @@ def mark_seen(repo: IPostRepository, profile_id: int, post_ids: list[int]) -> No
     if not post_ids:
         return
     try:
-        rec_service.record_seen(repo.session, profile_id, post_ids)
+        rec_service.record_seen(repo, profile_id, post_ids)
     except Exception:
         log.exception("record_seen failed for profile %s (%d posts)", profile_id, len(post_ids))

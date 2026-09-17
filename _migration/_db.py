@@ -37,7 +37,7 @@ def import_all_models():
         "app.modules.safety.data.models",
         "app.modules.verification.data.models",
         "app.recommendation.global_taste.models",
-        "app.modules.post.recommendation.models",
+        "app.modules.post.data.recommendation_models",
     ]
     loaded, failed = [], []
     for m in mods:

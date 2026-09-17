@@ -76,6 +76,12 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
+    def all_followed_user_ids(self, viewer_users_id) -> set:
+        """Every user this viewer follows. following_user_ids() narrows to a
+        candidate list; the feed needs the whole set to mark is_following."""
+        ...
+
+    @abstractmethod
     def get_post(self, post_id: int) -> Optional[Post]:
         ...
 
@@ -211,6 +217,51 @@ class IPostRepository(ABC):
     @abstractmethod
     def deactivate_post_embedding(self, post_id: int) -> None:
         """Drop a post out of the recommendation index. Does not commit."""
+        ...
+
+    @abstractmethod
+    def ann_post_candidates(
+        self, vector: str, partition: str, limit: int, exclude_ids: set
+    ) -> list[dict]:
+        """HNSW cosine ANN over post_embeddings within one freshness partition.
+
+        Rows are {"post_id", "category", "vector"}. `vector` is a pgvector
+        literal. Hand-written SQL: the <=> operator has no ORM expression and
+        the index is only used when ORDER BY is written this way.
+        """
+        ...
+
+    @abstractmethod
+    def fresh_post_candidates(
+        self, cutoff, limit: int, commodity_idxs: set, exclude_ids: set
+    ) -> list[dict]:
+        """Recently published posts, so a new post enters the pool even when the
+        ANN search ranks it below the cutoff.
+
+        Rows are {"post_id", "category", "vector", "target_roles"}.
+        """
+        ...
+
+    @abstractmethod
+    def popular_post_candidates(
+        self, commodity_idxs: set, exclude_ids: set, limit: int
+    ) -> list:
+        """Top `limit` rows from popular_posts for these commodities, by velocity."""
+        ...
+
+    @abstractmethod
+    def record_seen_posts(self, profile_id: int, post_ids: list[int]) -> None:
+        """Mark posts as seen by this profile. Commits."""
+        ...
+
+    @abstractmethod
+    def seen_post_ids_since(self, profile_id: int, cutoff) -> set:
+        """Post ids this profile has seen since `cutoff`."""
+        ...
+
+    @abstractmethod
+    def user_post_feed_vector(self, users_id):
+        """The stored post-feed embedding for a user, or None."""
         ...
 
     @abstractmethod

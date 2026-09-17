@@ -21,7 +21,7 @@ from app.modules.post.recommendation.session_taste.constants import (
     IGNORE_NEG_DELTA,
     REPEATED_IGNORE_THRESHOLD,
 )
-from app.modules.post.recommendation.session_taste.models import PostInteractionEvent
+from app.modules.post.data.taste_models import PostInteractionEvent
 from app.modules.post.recommendation.session_taste.service import (
     TASTE_CATEGORIES,
     derive_signal,

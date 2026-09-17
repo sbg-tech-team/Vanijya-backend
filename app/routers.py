@@ -25,11 +25,11 @@ def register_routers(app) -> list[str]:
     from app.modules.news.presentation.router import router as news_router
     from app.modules.onboarding.presentation.router import router as onboarding_router
     from app.modules.post.presentation.router import router as post_router
-    from app.modules.post.recommendation.router import (
+    from app.modules.post.presentation.recommendation_router import (
         jobs_router as post_rec_jobs_router,
         router as post_rec_router,
     )
-    from app.modules.post.recommendation.session_taste.router import (
+    from app.modules.post.presentation.taste_router import (
         jobs_router as post_interaction_jobs_router,
         router as post_interactions_router,
     )

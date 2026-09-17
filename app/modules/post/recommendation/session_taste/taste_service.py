@@ -25,7 +25,7 @@ from app.modules.post.recommendation.session_taste.constants import (
     TASTE_BOOTSTRAP_EVENTS,
     TASTE_DECAY_LAMBDA,
 )
-from app.modules.post.recommendation.session_taste.models import UserPostTaste
+from app.modules.post.data.taste_models import UserPostTaste
 from app.shared.utils.time_decay import decayed_score
 
 _SCORE_FLOOR = 0.05          # no dimension can fall below this weight

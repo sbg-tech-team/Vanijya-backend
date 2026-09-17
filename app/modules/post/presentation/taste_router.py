@@ -7,17 +7,18 @@ POST /posts/interactions/jobs/ignore-detect  – manually trigger the ignore det
 """
 import redis
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
-from app.dependencies import get_current_profile_id, get_current_user_id, get_db
+from app.dependencies import get_current_profile_id, get_current_user_id
+from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.post.presentation.dependencies import get_post_repo
 from app.modules.post.recommendation.session_taste import service as interaction_service
 from app.modules.post.recommendation.session_taste import jobs as interaction_jobs
-from app.modules.post.recommendation.session_taste.schemas import (
+from app.modules.post.presentation.taste_schemas import (
     InteractionBatchPayload,
     InteractionBatchResult,
 )
-from app.modules.post.recommendation.schemas import JobResult
+from app.modules.post.presentation.recommendation_schemas import JobResult
 
 router = APIRouter(prefix="/posts/interactions", tags=["post-interactions"])
 
@@ -33,7 +34,7 @@ jobs_router = APIRouter(
 def submit_interaction_batch(
     payload: InteractionBatchPayload,
     profile_id: int = Depends(get_current_profile_id),
-    db: Session = Depends(get_db),
+    repo: IPostRepository = Depends(get_post_repo),
     rc: redis.Redis = Depends(get_redis),
 ):
     """
@@ -46,19 +47,19 @@ def submit_interaction_batch(
     Events older than 2 hours or referencing non-existent posts are silently
     dropped; the response reports accepted vs dropped counts.
     """
-    result = interaction_service.process_interaction_batch(db, profile_id, payload.events, rc)
+    result = interaction_service.process_interaction_batch(repo.session, profile_id, payload.events, rc)
     return InteractionBatchResult(**result)
 
 
 @jobs_router.post("/taste-update", response_model=JobResult)
-def trigger_taste_update(db: Session = Depends(get_db)):
+def trigger_taste_update(repo: IPostRepository = Depends(get_post_repo)):
     """Manually trigger one batch of the dwell taste update job."""
-    result = interaction_jobs.run_taste_update_job(db)
+    result = interaction_jobs.run_taste_update_job(repo.session)
     return JobResult(status="ok", details=result)
 
 
 @jobs_router.post("/ignore-detect", response_model=JobResult)
-def trigger_ignore_detection(db: Session = Depends(get_db)):
+def trigger_ignore_detection(repo: IPostRepository = Depends(get_post_repo)):
     """Manually trigger the repeated-ignore detection job."""
-    result = interaction_jobs.run_ignore_detection_job(db)
+    result = interaction_jobs.run_ignore_detection_job(repo.session)
     return JobResult(status="ok", details=result)

@@ -23,7 +23,7 @@ from app.modules.post.recommendation.constants import (
     MAX_PER_AUTHOR, MAX_PER_CATEGORY, MIN_POOL_SIZE, POPULAR_LIMIT,
     _ROLE_NAMES,
 )
-from app.modules.post.recommendation.models import (
+from app.modules.post.data.recommendation_models import (
     PostEmbedding, PopularPost, SeenPost,
 )
 from app.modules.post.recommendation.session_taste import taste_service
@@ -142,85 +142,41 @@ def remove_post_index(repo, post_id: int) -> None:
 
 
 
-def _seen_post_ids(db: Session, profile_id: int) -> set[int]:
+def _seen_post_ids(repo, profile_id: int) -> set[int]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-    rows = (
-        db.query(SeenPost.post_id)
-        .filter(SeenPost.profile_id == profile_id, SeenPost.seen_at >= cutoff)
-        .all()
-    )
-    return {r[0] for r in rows}
+    return repo.seen_post_ids_since(profile_id, cutoff)
 
 
-def record_seen(db: Session, profile_id: int, post_ids: list[int]) -> None:
-    """Record posts as seen. Called by the client-driven /seen endpoint and on explicit post open."""
-    now = datetime.now(timezone.utc)
-    for pid in post_ids:
-        db.add(SeenPost(profile_id=profile_id, post_id=pid, seen_at=now))
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
 
-# ---------------------------------------------------------------------------
-# ANN pre-filter: fetch candidates from the most relevant partition(s) using HNSW vector search
+def record_seen(repo, profile_id: int, post_ids: list[int]) -> None:
+    """Mark posts as seen so they stop being re-served."""
+    if post_ids:
+        repo.record_seen_posts(profile_id, post_ids)
+
+
 def _query_partition(
-    db: Session, partition: str, limit: int, exclude_ids: set[int], user_vec: list[float]
+    repo, partition: str, limit: int, exclude_ids: set[int], user_vec: list[float]
 ) -> list[dict]:
+    """HNSW ANN pre-filter for one freshness partition.
+
+    Returns raw vectors so the caller can apply the exact weighted cosine for
+    the final vec_score. The SQL lives in the repository; this only shapes the
+    request.
     """
-    HNSW ANN pre-filter: fetches the most relevant posts in a partition
-    ordered by approximate cosine distance. Returns raw vectors so the
-    caller can apply exact weighted_cosine_similarity for the final vec_score.
-    """
-    # convert user_vec list[float] to Postgres array literal format: '[v1,v2,...]'
     vec_str = "[" + ",".join(str(v) for v in user_vec) + "]"
-
-    # exclude_ids takes set pool_exclude which is seeded with seen post_ids "and expanded with already fetched candidates as we query multiple partitions. This ensures we don't fetch the same post multiple times across hot/warm/cold."
-    exclude_clause = (
-        f"AND post_id NOT IN ({','.join(str(i) for i in exclude_ids)})"
-        if exclude_ids else ""
-    )
-
-    # <=> is cosine distance operator provided by pgvector.
-    # :partition is as asked in get_recommended_posts() and determines the freshness bucket (hot/warm/cold).
-    rows = db.execute(
-        text(f"""
-            SELECT post_id, category, vector
-            FROM post_embeddings
-            WHERE partition = :partition
-              AND is_active = true
-              {exclude_clause}
-            ORDER BY vector <=> CAST(:vec AS vector)
-            LIMIT :limit
-        """),
-        {"vec": vec_str, "partition": partition, "limit": limit},
-    ).mappings().all()
-
-    return [
-        {"post_id": r["post_id"], "category": r["category"], "vector": _parse_vec(r["vector"])}
-        for r in rows
-    ]
+    return repo.ann_post_candidates(vec_str, partition, limit, exclude_ids)
 
 
 def _get_popular_posts(
-    db: Session, commodity_idxs: set[int], exclude_ids: set[int]
+    repo, commodity_idxs: set[int], exclude_ids: set[int]
 ) -> list[dict]:
-    q = db.query(PopularPost).filter(
-        PopularPost.commodity_idx.in_(list(commodity_idxs)),
-        PopularPost.is_active == True,
-    )
-    if exclude_ids:
-        q = q.filter(~PopularPost.post_id.in_(list(exclude_ids)))
-    rows = q.order_by(PopularPost.velocity_score.desc()).limit(POPULAR_LIMIT).all()
+    """Platform-popular posts for the viewer's commodities, as pool entries."""
+    rows = repo.popular_post_candidates(commodity_idxs, exclude_ids, POPULAR_LIMIT)
     return [
         {"post_id": r.post_id, "category": r.category, "vec_score": 0.5}
         for r in rows
     ]
 
-
-# ---------------------------------------------------------------------------
-# Reranking
-# ---------------------------------------------------------------------------
 
 def _category_weight(cat_weights: dict[str, float], category: str) -> float:
     total = sum(math.log1p(v) for v in cat_weights.values())
@@ -264,7 +220,7 @@ def _freshness(created_at: datetime) -> float:
 
 
 def _rerank(
-    db: Session,
+    repo,
     candidates: list[dict],
     cat_weights: dict[str, float],
     commodity_weights: dict[str, float],
@@ -279,22 +235,10 @@ def _rerank(
         return [], {}
 
     post_ids = list({c["post_id"] for c in candidates})
-    posts = {
-        p.id: p
-        for p in db.query(Post)
-        .options(selectinload(Post.deal_details))
-        .filter(Post.id.in_(post_ids))
-        .all()
-    }
+    posts = {p.id: p for p in repo.get_posts_by_ids(post_ids)}
 
     profile_ids = list({p.profile_id for p in posts.values()})
-    profiles = {
-        p.id: p
-        for p in db.query(Profile)
-        .options(selectinload(Profile.business))
-        .filter(Profile.id.in_(profile_ids))
-        .all()
-    }
+    profiles = repo.get_authors_with_business(profile_ids)
 
     scored: list[dict] = []
     for c in candidates:
@@ -366,7 +310,7 @@ def _apply_diversity(scored: list[dict], limit: int = FEED_SIZE) -> list[dict]:
 
 
 def _build_feed_cards(
-    db: Session,
+    repo,
     final: list[dict],
     viewer_profile_id: int,
     posts: dict | None = None,
@@ -381,36 +325,14 @@ def _build_feed_cards(
 
     post_ids = [f["post_id"] for f in final]
     if posts is None:
-        posts = {
-            p.id: p
-            for p in db.query(Post)
-            .options(selectinload(Post.deal_details))
-            .filter(Post.id.in_(post_ids))
-            .all()
-        }
+        posts = {p.id: p for p in repo.get_posts_by_ids(post_ids)}
 
     if authors is None:
         author_ids = list({p.profile_id for p in posts.values()})
-        authors = {
-            p.id: p
-            for p in db.query(Profile)
-            .options(selectinload(Profile.business))
-            .filter(Profile.id.in_(author_ids))
-            .all()
-        }
+        authors = repo.get_authors_with_business(author_ids)
 
-    liked_ids = {
-        r[0] for r in db.query(PostLike.post_id).filter(
-            PostLike.post_id.in_(post_ids),
-            PostLike.profile_id == viewer_profile_id,
-        ).all()
-    }
-    saved_ids = {
-        r[0] for r in db.query(PostSave.post_id).filter(
-            PostSave.post_id.in_(post_ids),
-            PostSave.profile_id == viewer_profile_id,
-        ).all()
-    }
+    liked_ids = repo.liked_post_ids(viewer_profile_id, post_ids)
+    saved_ids = repo.saved_post_ids(viewer_profile_id, post_ids)
 
     cards = []
     for f in final:
@@ -459,7 +381,7 @@ def _build_feed_cards(
 # ---------------------------------------------------------------------------
 
 def _ensure_fresh_in_pool(
-    db: Session,
+    repo,
     viewer_role_id: int,
     commodity_idxs: set[int],
     exclude_ids: set[int],
@@ -477,37 +399,14 @@ def _ensure_fresh_in_pool(
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=FRESH_INJECT_HOURS)
 
-    exclude_clause = (
-        f"AND pe.post_id NOT IN ({','.join(str(i) for i in exclude_ids)})"
-        if exclude_ids else ""
-    )
-    commodity_clause = (
-        f"AND pe.commodity_idx IN ({','.join(str(i) for i in commodity_idxs)})"
-        if commodity_idxs else ""
-    )
-
-    rows = db.execute(
-        text(f"""
-            SELECT pe.post_id, pe.category, pe.vector, p.target_roles
-            FROM post_embeddings pe
-            JOIN posts p ON p.id = pe.post_id
-            WHERE pe.is_active = true
-              AND p.created_at >= :cutoff
-              AND p.is_public = true
-              {commodity_clause}
-              {exclude_clause}
-            ORDER BY p.created_at DESC
-            LIMIT :limit
-        """),
-        {"cutoff": cutoff, "limit": limit * 3},
-    ).mappings().all()
+    rows = repo.fresh_post_candidates(cutoff, limit * 3, commodity_idxs, exclude_ids)
 
     result = []
     for r in rows:
         target = r["target_roles"]
         if target and viewer_role_id not in target:
             continue
-        vec_score = weighted_cosine_similarity(user_vec, _parse_vec(r["vector"]))
+        vec_score = weighted_cosine_similarity(user_vec, r["vector"])
         result.append({
             "post_id": r["post_id"],
             "category": r["category"],
@@ -524,20 +423,12 @@ def _ensure_fresh_in_pool(
 # ---------------------------------------------------------------------------
 
 def get_recommended_posts(
-    db: Session,
+    repo,
     profile_id: int,
     limit: int = FEED_SIZE,
     rc: redis.Redis | None = None,
 ) -> list:
-    profile = (
-        db.query(Profile)
-        .options(
-            selectinload(Profile.commodities),
-            selectinload(Profile.business),
-        )
-        .filter(Profile.id == profile_id)
-        .first()
-    )
+    profile = repo.get_profile_with_commodities(profile_id)
     if not profile:
         raise ValueError(f"Profile {profile_id} not found")
 
@@ -546,13 +437,10 @@ def get_recommended_posts(
         COMMODITY_ID_TO_IDX[cid] for cid in commodity_ids if cid in COMMODITY_ID_TO_IDX
     }
     # user vector fetch
-    from app.modules.profile.data.models import UserEmbedding
-    emb_row = db.query(UserEmbedding).filter(
-        UserEmbedding.user_id == profile.users_id
-    ).first()
+    stored_vec = repo.user_post_feed_vector(profile.users_id)
     # user vector convert or build
-    if emb_row and emb_row.post_feed_vector is not None:
-        user_vec = _parse_vec(emb_row.post_feed_vector)
+    if stored_vec is not None:
+        user_vec = _parse_vec(stored_vec)
     else:
         user_vec = build_user_feed_vector(
             commodity_ids=commodity_ids,
@@ -564,13 +452,13 @@ def get_recommended_posts(
 
     # One query for all three dimensions; they live in the same table.
     _taste = taste_service.get_taste_weights_bulk(
-        db, profile_id, ("category", "commodity", "author"), profile.role_id
+        repo.session, profile_id, ("category", "commodity", "author"), profile.role_id
     )
     cat_weights       = _taste["category"]
     commodity_weights = _taste["commodity"]
     author_weights    = _taste["author"]
-    city_weights      = read_global_taste_weights(db, profile_id, "city")
-    state_weights     = read_global_taste_weights(db, profile_id, "state")
+    city_weights      = read_global_taste_weights(repo.session, profile_id, "city")
+    state_weights     = read_global_taste_weights(repo.session, profile_id, "state")
 
     try:
         sync_module_to_global(rc, profile_id, "post")
@@ -583,38 +471,33 @@ def get_recommended_posts(
         # Fall back to the persistent weights already loaded above.
         log.warning("session-taste merge failed for profile %s; ranking on persistent taste only: %s", profile_id, exc)
 
-    followed_user_ids = {
-        row.following_id
-        for row in db.query(UserConnection.following_id)
-        .filter(UserConnection.follower_id == profile.users_id)
-        .all()
-    }
+    followed_user_ids = repo.all_followed_user_ids(profile.users_id)
 
-    seen_ids = _seen_post_ids(db, profile_id)
+    seen_ids = _seen_post_ids(repo, profile_id)
     pool_exclude: set[int] = set(seen_ids)
     pool: list[dict] = []
 
-    hot_embs = _query_partition(db, "hot", FETCH_TARGET, pool_exclude, user_vec)
+    hot_embs = _query_partition(repo, "hot", FETCH_TARGET, pool_exclude, user_vec)
     for emb in hot_embs:
         score = weighted_cosine_similarity(user_vec, emb["vector"])
         pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
         pool_exclude.add(emb["post_id"])
 
     if len(pool) < MIN_POOL_SIZE:
-        warm_embs = _query_partition(db, "warm", FETCH_TARGET - len(pool), pool_exclude, user_vec)
+        warm_embs = _query_partition(repo, "warm", FETCH_TARGET - len(pool), pool_exclude, user_vec)
         for emb in warm_embs:
             score = weighted_cosine_similarity(user_vec, emb["vector"])
             pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
             pool_exclude.add(emb["post_id"])
 
     if len(pool) < MIN_POOL_SIZE:
-        cold_embs = _query_partition(db, "cold", FETCH_TARGET - len(pool), pool_exclude, user_vec)
+        cold_embs = _query_partition(repo, "cold", FETCH_TARGET - len(pool), pool_exclude, user_vec)
         for emb in cold_embs:
             score = weighted_cosine_similarity(user_vec, emb["vector"])
             pool.append({"post_id": emb["post_id"], "category": emb["category"], "vec_score": score})
             pool_exclude.add(emb["post_id"])
 
-    popular = _get_popular_posts(db, commodity_idxs or {0, 1, 2}, pool_exclude)
+    popular = _get_popular_posts(repo, commodity_idxs or {0, 1, 2}, pool_exclude)
     pool.extend(popular)
     for p in popular:
         pool_exclude.add(p["post_id"])
@@ -622,7 +505,7 @@ def get_recommended_posts(
     # Guarantee fresh posts are in the pool even if the hot ANN missed them.
     # They enter with their actual vec_score and compete via score + freshness boost.
     fresh = _ensure_fresh_in_pool(
-        db=db,
+        repo=repo,
         viewer_role_id=profile.role_id,
         commodity_idxs=commodity_idxs or {0, 1, 2},
         exclude_ids=pool_exclude,
@@ -632,10 +515,10 @@ def get_recommended_posts(
     pool.extend(fresh)
 
     scored, posts, authors = _rerank(
-        db, pool, cat_weights, commodity_weights, author_weights,
+        repo, pool, cat_weights, commodity_weights, author_weights,
         city_weights, state_weights, followed_user_ids,
     )
     final = _apply_diversity(scored, limit=limit)
 
-    return _build_feed_cards(db, final, profile_id, posts=posts,
+    return _build_feed_cards(repo, final, profile_id, posts=posts,
                              followed_user_ids=followed_user_ids, authors=authors)

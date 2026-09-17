@@ -10,12 +10,13 @@ Interaction events → POST /posts/interactions/batch  (post_user_interaction ro
 """
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
-from app.dependencies import get_current_profile_id, get_current_user_id, get_db
+from app.dependencies import get_current_profile_id, get_current_user_id
+from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.post.presentation.dependencies import get_post_repo
 from app.modules.post.recommendation import service, jobs
-from app.modules.post.recommendation.schemas import (
+from app.modules.post.presentation.recommendation_schemas import (
     FeedResponse,
     JobResult,
     PostSeenPayload,
@@ -36,12 +37,12 @@ jobs_router = APIRouter(
 @router.get("/feed", response_model=FeedResponse)
 def get_feed(
     profile_id: int = Depends(get_current_profile_id),
-    db: Session = Depends(get_db),
+    repo: IPostRepository = Depends(get_post_repo),
     rc: redis.Redis = Depends(get_redis),
     limit: int = Query(default=FEED_SIZE, ge=1, le=50),
 ):
     try:
-        posts = service.get_recommended_posts(db, profile_id, limit=limit, rc=rc)
+        posts = service.get_recommended_posts(repo, profile_id, limit=limit, rc=rc)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return FeedResponse(posts=posts, has_more=len(posts) >= limit)
@@ -51,7 +52,6 @@ def get_feed(
 def mark_seen(
     payload: PostSeenPayload,
     profile_id: int = Depends(get_current_profile_id),
-    db: Session = Depends(get_db),
 ):
     """
     Deprecated — use POST /posts/recommendation/interactions instead.
@@ -61,12 +61,12 @@ def mark_seen(
 
 
 @jobs_router.post("/expiry", response_model=JobResult)
-def trigger_expiry_job(db: Session = Depends(get_db)):
-    result = jobs.run_expiry_job(db)
+def trigger_expiry_job(repo: IPostRepository = Depends(get_post_repo)):
+    result = jobs.run_expiry_job(repo)
     return JobResult(status="ok", details=result)
 
 
 @jobs_router.post("/popular-sync", response_model=JobResult)
-def trigger_popular_sync(db: Session = Depends(get_db)):
-    result = jobs.run_popular_posts_sync(db)
+def trigger_popular_sync(repo: IPostRepository = Depends(get_post_repo)):
+    result = jobs.run_popular_posts_sync(repo)
     return JobResult(status="ok", details=result)

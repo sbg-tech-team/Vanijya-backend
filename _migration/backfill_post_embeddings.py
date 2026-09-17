@@ -37,7 +37,7 @@ from app.modules.post.recommendation.constants import (       # noqa: E402
     COMMODITY_ID_TO_IDX,
 )
 from app.modules.post.recommendation.engine import resolve_partition  # noqa: E402
-from app.modules.post.recommendation.models import PostEmbedding      # noqa: E402
+from app.modules.post.data.recommendation_models import PostEmbedding      # noqa: E402
 from app.modules.post.recommendation.vectors import build_post_vector # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")

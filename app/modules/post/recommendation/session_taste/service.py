@@ -31,8 +31,8 @@ from app.modules.post.recommendation.session_taste.constants import (
     SIGNAL_WEIGHTS,
     TASTE_BOOTSTRAP_EVENTS,
 )
-from app.modules.post.recommendation.session_taste.models import PostInteractionEvent
-from app.modules.post.recommendation.session_taste.schemas import InteractionEventItem
+from app.modules.post.data.taste_models import PostInteractionEvent
+from app.modules.post.presentation.taste_schemas import InteractionEventItem
 from app.modules.post.recommendation.session_taste import taste_service
 from app.modules.post.data.models import Post
 from app.modules.profile.data.models import Business, Profile

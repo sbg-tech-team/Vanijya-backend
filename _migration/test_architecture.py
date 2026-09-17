@@ -120,8 +120,8 @@ try:
     _probe = _FA(); _rr(_probe); _probe.openapi()
     unauth = set()
     import app.routers as _routers_mod
-    for _mod_name in ["app.modules.post.recommendation.router",
-                      "app.modules.post.recommendation.session_taste.router",
+    for _mod_name in ["app.modules.post.presentation.recommendation_router",
+                      "app.modules.post.presentation.taste_router",
                       "app.modules.news.presentation.router",
                       "app.modules.post.presentation.router",
                       "app.modules.groups.presentation.router",

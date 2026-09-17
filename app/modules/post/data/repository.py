@@ -10,17 +10,27 @@ writes, so add/delete/commit/flush/refresh/rollback are exposed directly.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.modules.connections.data.models import UserConnection
 from app.modules.post.data.models import Post, PostComment, PostLike, PostSave, PostView
-from app.modules.post.recommendation.models import SeenPost
+from app.modules.post.data.recommendation_models import SeenPost
 from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.post.data.recommendation_models import PopularPost, PostEmbedding
+from app.modules.post.recommendation.constants import (
+    CATEGORY_EXPIRY_DAYS,
+    COLD_MAX_HOURS,
+    HOT_MAX_HOURS,
+    PARTITION_ALLOWED,
+    POPULAR_LIMIT,
+    WARM_MAX_HOURS,
+)
 from app.modules.profile.data.models import Profile
 
 
@@ -93,6 +103,14 @@ class PostRepository(IPostRepository):
             )
             .all()
         }
+
+    def all_followed_user_ids(self, viewer_users_id) -> set:
+        rows = (
+            self.db.query(UserConnection.following_id)
+            .filter(UserConnection.follower_id == viewer_users_id)
+            .all()
+        )
+        return {r[0] for r in rows}
 
     def followed_profile_ids(self, viewer_users_id) -> list[int]:
         return [
@@ -309,7 +327,7 @@ class PostRepository(IPostRepository):
         now,
         partition: str = "hot",
     ) -> None:
-        from app.modules.post.recommendation.models import PostEmbedding
+        from app.modules.post.data.recommendation_models import PostEmbedding
 
         existing = (
             self.db.query(PostEmbedding)
@@ -337,7 +355,7 @@ class PostRepository(IPostRepository):
         ))
 
     def deactivate_post_embedding(self, post_id: int) -> None:
-        from app.modules.post.recommendation.models import PostEmbedding
+        from app.modules.post.data.recommendation_models import PostEmbedding
 
         emb = (
             self.db.query(PostEmbedding)
@@ -346,6 +364,277 @@ class PostRepository(IPostRepository):
         )
         if emb:
             emb.is_active = False
+
+    # ── Recommendation reads ─────────────────────────────────────────────────
+    # The ranking maths lives in post/recommendation/engine.py; the SQL lives
+    # here, so the engine can be driven with a fake repository and the data
+    # layer stays the only place that talks to the database.
+
+    def ann_post_candidates(
+        self, vector: str, partition: str, limit: int, exclude_ids: set
+    ) -> list[dict]:
+        from app.modules.post.recommendation.engine import _parse_vec
+
+        exclude_clause = (
+            f"AND post_id NOT IN ({','.join(str(int(i)) for i in exclude_ids)})"
+            if exclude_ids else ""
+        )
+        rows = self.db.execute(
+            text(f"""
+                SELECT post_id, category, vector
+                FROM post_embeddings
+                WHERE partition = :partition
+                  AND is_active = true
+                  {exclude_clause}
+                ORDER BY vector <=> CAST(:vec AS vector)
+                LIMIT :limit
+            """),
+            {"vec": vector, "partition": partition, "limit": limit},
+        ).mappings().all()
+        return [
+            {"post_id": r["post_id"], "category": r["category"],
+             "vector": _parse_vec(r["vector"])}
+            for r in rows
+        ]
+
+    def fresh_post_candidates(
+        self, cutoff, limit: int, commodity_idxs: set, exclude_ids: set
+    ) -> list[dict]:
+        from app.modules.post.recommendation.engine import _parse_vec
+
+        exclude_clause = (
+            f"AND pe.post_id NOT IN ({','.join(str(int(i)) for i in exclude_ids)})"
+            if exclude_ids else ""
+        )
+        commodity_clause = (
+            f"AND pe.commodity_idx IN ({','.join(str(int(i)) for i in commodity_idxs)})"
+            if commodity_idxs else ""
+        )
+        rows = self.db.execute(
+            text(f"""
+                SELECT pe.post_id, pe.category, pe.vector, p.target_roles
+                FROM post_embeddings pe
+                JOIN posts p ON p.id = pe.post_id
+                WHERE pe.is_active = true
+                  AND p.created_at >= :cutoff
+                  AND p.is_public = true
+                  {commodity_clause}
+                  {exclude_clause}
+                ORDER BY p.created_at DESC
+                LIMIT :limit
+            """),
+            {"cutoff": cutoff, "limit": limit},
+        ).mappings().all()
+        return [
+            {"post_id": r["post_id"], "category": r["category"],
+             "vector": _parse_vec(r["vector"]), "target_roles": r["target_roles"]}
+            for r in rows
+        ]
+
+    def popular_post_candidates(
+        self, commodity_idxs: set, exclude_ids: set, limit: int
+    ) -> list:
+        from app.modules.post.data.recommendation_models import PopularPost
+
+        q = self.db.query(PopularPost).filter(
+            PopularPost.commodity_idx.in_(list(commodity_idxs))
+        )
+        if exclude_ids:
+            q = q.filter(~PopularPost.post_id.in_(list(exclude_ids)))
+        return q.order_by(PopularPost.velocity_score.desc()).limit(limit).all()
+
+    def record_seen_posts(self, profile_id: int, post_ids: list[int]) -> None:
+        from app.modules.post.data.recommendation_models import SeenPost
+
+        now = datetime.now(timezone.utc)
+        for pid in post_ids:
+            self.db.add(SeenPost(profile_id=profile_id, post_id=pid, seen_at=now))
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # Already seen — the unique constraint is the dedup, and re-seeing a
+            # post is not an error worth failing the caller for.
+            self.db.rollback()
+
+    def seen_post_ids_since(self, profile_id: int, cutoff) -> set:
+        from app.modules.post.data.recommendation_models import SeenPost
+
+        rows = (
+            self.db.query(SeenPost.post_id)
+            .filter(SeenPost.profile_id == profile_id, SeenPost.seen_at >= cutoff)
+            .all()
+        )
+        return {r[0] for r in rows}
+
+    def user_post_feed_vector(self, users_id):
+        from app.modules.profile.data.models import UserEmbedding
+
+        row = (
+            self.db.query(UserEmbedding)
+            .filter(UserEmbedding.user_id == users_id)
+            .first()
+        )
+        return row.post_feed_vector if row else None
+
+
+    # ── Recommendation maintenance (batch) ───────────────────────────────────
+    # Bulk partition demotion and the popular-posts rebuild. Both are pure data
+    # operations; the job functions that used to hold this SQL are now thin
+    # wrappers so the scheduler can keep calling them.
+
+    def run_embedding_expiry(self) -> dict:
+        now = datetime.now(timezone.utc)
+
+        expired = (
+            self.db.query(PostEmbedding)
+            .filter(PostEmbedding.is_active == True, PostEmbedding.expires_at <= now)
+            .all()
+        )
+        for emb in expired:
+            emb.is_active = False
+
+        expired_ids = {emb.post_id for emb in expired}
+        if expired_ids:
+            self.db.query(PopularPost).filter(
+                PopularPost.post_id.in_(expired_ids)
+            ).delete(synchronize_session=False)
+
+        hot_cutoff = now - timedelta(hours=HOT_MAX_HOURS)
+        warm_allowed = list(PARTITION_ALLOWED["warm"])
+        to_warm = (
+            self.db.query(PostEmbedding)
+            .filter(
+                PostEmbedding.partition == "hot",
+                PostEmbedding.is_active == True,
+                PostEmbedding.created_at <= hot_cutoff,
+                PostEmbedding.category.in_(warm_allowed),
+            )
+            .all()
+        )
+        for emb in to_warm:
+            emb.partition = "warm"
+
+        warm_cutoff = now - timedelta(hours=WARM_MAX_HOURS)
+        cold_allowed = list(PARTITION_ALLOWED["cold"])
+        to_cold = (
+            self.db.query(PostEmbedding)
+            .filter(
+                PostEmbedding.partition == "warm",
+                PostEmbedding.is_active == True,
+                PostEmbedding.created_at <= warm_cutoff,
+                PostEmbedding.category.in_(cold_allowed),
+            )
+            .all()
+        )
+        for emb in to_cold:
+            emb.partition = "cold"
+
+        deleted = (
+            self.db.query(PostEmbedding)
+            .filter(
+                PostEmbedding.partition == "cold",
+                PostEmbedding.created_at <= now - timedelta(hours=COLD_MAX_HOURS),
+            )
+            .delete(synchronize_session=False)
+        )
+
+        self.db.commit()
+        return {
+            "soft_expired": len(expired),
+            "migrated_to_warm": len(to_warm),
+            "migrated_to_cold": len(to_cold),
+            "hard_deleted": deleted,
+        }
+
+    def rebuild_popular_posts(self) -> dict:
+        now = datetime.now(timezone.utc)
+        lookback = now - timedelta(days=30)
+
+        active_post_ids = {
+            row[0]
+            for row in self.db.query(PostEmbedding.post_id)
+            .filter(PostEmbedding.is_active == True)
+            .all()
+        }
+
+        posts = (
+            self.db.query(Post)
+            .filter(Post.created_at >= lookback, Post.id.in_(active_post_ids))
+            .all()
+        )
+
+        scored: list[tuple[int, float]] = []
+        for post in posts:
+            created = post.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            hours = max((now - created).total_seconds() / 3600, 0.0)
+            saves = getattr(post, "save_count", 0)
+            velocity = (saves * 3 + post.comment_count * 2 + post.like_count) / ((hours + 1) ** 1.5)
+            scored.append((post.id, velocity))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        emb_map = {
+            row[0]: row[1]
+            for row in self.db.query(PostEmbedding.post_id, PostEmbedding.commodity_idx)
+            .filter(PostEmbedding.post_id.in_([s[0] for s in scored]))
+            .all()
+        }
+        cat_map = {
+            row[0]: row[1]
+            for row in self.db.query(PostEmbedding.post_id, PostEmbedding.category)
+            .filter(PostEmbedding.post_id.in_([s[0] for s in scored]))
+            .all()
+        }
+
+        per_commodity: dict[int, list] = {}
+        for post_id, vel in scored:
+            cidx = emb_map.get(post_id)
+            if cidx is None:
+                continue
+            per_commodity.setdefault(cidx, []).append((post_id, vel))
+        top_ids: set[int] = set()
+        for cidx, entries in per_commodity.items():
+            for post_id, _ in entries[:50]:
+                top_ids.add(post_id)
+
+        # Replace the entire popular_posts table in one shot:
+        # delete-all then bulk-insert avoids ORM dirty-object race conditions
+        # with the concurrent expiry_job which also deletes from popular_posts.
+        self.db.query(PopularPost).delete(synchronize_session=False)
+
+        post_map = {p.id: p for p in posts}
+        new_rows = []
+        for post_id, velocity in scored:
+            if post_id not in top_ids:
+                continue
+            post = post_map.get(post_id)
+            if not post:
+                continue
+
+            created = post.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            hours = max((now - created).total_seconds() / 3600, 0.0)
+            saves = getattr(post, "save_count", 0)
+
+            new_rows.append(PopularPost(
+                post_id=post_id,
+                commodity_idx=emb_map.get(post_id, 0),
+                category=cat_map.get(post_id, "other"),
+                velocity_score=velocity,
+                saves_count=saves,
+                likes_count=post.like_count,
+                comments_count=post.comment_count,
+                hours_since_post=hours,
+                last_updated_at=now,
+                is_active=True,
+            ))
+
+        self.db.bulk_save_objects(new_rows)
+        self.db.commit()
+        return {"synced": len(new_rows), "top_ids_count": len(top_ids)}
 
     def seen_post_ids(self, profile_id: int) -> set:
         return {

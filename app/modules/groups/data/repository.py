@@ -359,7 +359,7 @@ class GroupsRepository(IGroupsRepository):
         now,
         partition: str = "hot",
     ) -> None:
-        from app.modules.post.recommendation.models import PostEmbedding
+        from app.modules.post.data.recommendation_models import PostEmbedding
 
         existing = (
             self.db.query(PostEmbedding)
@@ -387,7 +387,7 @@ class GroupsRepository(IGroupsRepository):
         ))
 
     def deactivate_post_embedding(self, post_id: int) -> None:
-        from app.modules.post.recommendation.models import PostEmbedding
+        from app.modules.post.data.recommendation_models import PostEmbedding
 
         emb = (
             self.db.query(PostEmbedding)

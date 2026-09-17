@@ -12,7 +12,7 @@ from app.modules.post.application.schemas import (
     MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
 )
 from app.modules.post.recommendation import service as rec_service
-from app.modules.post.recommendation.models import SeenPost
+from app.modules.post.data.recommendation_models import SeenPost
 from app.modules.post.recommendation.constants import FRESH_BOOST_PEAK, FRESH_DECAY_TAU, _ROLE_NAMES
 from app.shared.utils.time_decay import freshness_boost
 from app.modules.post.recommendation.session_taste import service as interaction_service
@@ -275,7 +275,7 @@ def get_post(repo: IPostRepository, post_id: int, viewer_profile_id: int) -> Pos
     _record_view(repo, post_id, viewer_profile_id)
     repo.refresh(post)
     try:
-        rec_service.record_seen(repo.session, viewer_profile_id, [post_id])
+        rec_service.record_seen(repo, viewer_profile_id, [post_id])
     except Exception:
         log.exception("record_seen failed for profile %s on post %s", viewer_profile_id, post_id)
     return _to_post_response(repo, post, viewer_profile_id)

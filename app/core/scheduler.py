@@ -8,6 +8,7 @@ from app.core.database.session import SessionLocal
 from app.core.redis_client import get_redis
 from app.modules.calling.presentation import dependencies as calling_di
 from app.modules.news.presentation import dependencies as news_di
+from app.modules.post.data.repository import PostRepository
 from app.modules.post.recommendation import jobs as post_rec_jobs
 from app.modules.post.recommendation.session_taste import jobs as post_interaction_jobs
 
@@ -36,7 +37,7 @@ def _keep_alive():
 def _run_expiry_job():
     db = SessionLocal()
     try:
-        post_rec_jobs.run_expiry_job(db)
+        post_rec_jobs.run_expiry_job(PostRepository(db))
     finally:
         db.close()
 
@@ -44,7 +45,7 @@ def _run_expiry_job():
 def _run_popular_sync():
     db = SessionLocal()
     try:
-        post_rec_jobs.run_popular_posts_sync(db)
+        post_rec_jobs.run_popular_posts_sync(PostRepository(db))
     finally:
         db.close()
 
