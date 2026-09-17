@@ -25,12 +25,27 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A throwaway Postgres with pgvector. The migration chain is replayed onto
+    # it from empty, which is also the check that a fresh database can still be
+    # built - it could not be, until the deal_type migrations were made
+    # idempotent.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vanijyaa_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
     # Dummy values: these checks import the app but never open a connection.
     # storage.py and jwt_handler read env at import, so they need to be present
     # even though nothing here talks to Supabase or signs a token.
     env:
-      DATABASE_URL: postgresql+asyncpg://u:p@localhost/x
-      SYNC_DATABASE_URL: postgresql+psycopg2://u:p@localhost/x
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/vanijyaa_test
+      SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/vanijyaa_test
+      DB_SSLMODE: disable
       REDIS_URL: redis://localhost:6379/0
       JWT_SECRET_KEY: ci-dummy
       DATABASE_STORAGE_URL: https://example.supabase.co
@@ -44,6 +59,13 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
 
+      - name: Migrations replay onto an empty database
+        run: |
+          psql "$SYNC_DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+          PYTHONPATH= alembic upgrade head
+        env:
+          PGPASSWORD: postgres
+
       - name: Architecture gate
         run: python _migration/test_architecture.py
 
@@ -52,6 +74,9 @@ jobs:
 
       - name: Post indexing test
         run: python tests/test_post_indexing.py
+
+      - name: Every endpoint refuses an unauthenticated caller
+        run: python tests/test_endpoint_auth.py
 
       - name: App imports and every router registers
         run: python -c "import main; print('boot ok')"
