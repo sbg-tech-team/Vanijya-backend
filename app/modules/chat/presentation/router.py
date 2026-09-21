@@ -40,7 +40,7 @@ from app.modules.groups.presentation.dependencies import get_groups_repo
 from app.modules.groups.presentation.schemas import GroupDealCreate
 from app.modules.groups.application.use_cases.service import GroupPermissionError, create_group_deal
 from app.core.database.session import SessionLocal
-from app.modules.translation.domain.exceptions import ContinuousNotAllowedError
+from app.modules.translation.domain.exceptions import ContinuousNotAllowedError, TranslationEngineUnavailableError
 from app.modules.translation.domain.exceptions import MessageNotFoundError as TranslationMessageNotFoundError
 from app.modules.translation.presentation.dependencies import (
     get_handle_incoming_message_uc,
@@ -105,7 +105,12 @@ def _translate_incoming_for_receiver(receiver_id: UUID, message_id: UUID) -> Non
         repo = get_translation_repo(db)
         pipeline = get_translation_pipeline(repo)
         uc = get_handle_incoming_message_uc(repo, pipeline)
-        result = uc.execute(receiver_id, message_id)
+        try:
+            result = uc.execute(receiver_id, message_id)
+        except TranslationEngineUnavailableError:
+            # Engine has no key configured — nothing to notify, skip quietly
+            # rather than spamming logs on every message in this environment.
+            return
         if result is not None:
             # This function runs sync in BackgroundTasks' worker thread — no
             # event loop is already running here, so it's safe to start one.
@@ -249,6 +254,8 @@ def translate_message(
         return uc.execute(reader_id=user_id, message_id=message_id, explicit_target_lang=body.target_lang)
     except TranslationMessageNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except TranslationEngineUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)

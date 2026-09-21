@@ -21,6 +21,7 @@ from app.modules.translation.application.use_cases.handle_incoming_message impor
 from app.modules.translation.application.use_cases.resolve_target_language import ResolveTargetLanguageUseCase
 from app.modules.translation.application.use_cases.toggle_continuous import ToggleContinuousTranslationUseCase
 from app.modules.translation.application.use_cases.translate_message import TranslateMessageUseCase
+from app.modules.translation.data.adapters.gemini_engine import GeminiTranslationEngine
 from app.modules.translation.data.adapters.inmemory_cache import InMemoryTranslationCache
 from app.modules.translation.domain.entities import (
     ContextMessage,
@@ -29,7 +30,11 @@ from app.modules.translation.domain.entities import (
     ReaderConversationPrefs,
     TranslatableMessage,
 )
-from app.modules.translation.domain.exceptions import ContinuousNotAllowedError, MessageNotFoundError
+from app.modules.translation.domain.exceptions import (
+    ContinuousNotAllowedError,
+    MessageNotFoundError,
+    TranslationEngineUnavailableError,
+)
 from app.modules.translation.domain.prompt import STATIC_SYSTEM_INSTRUCTION, assemble_prompt
 from app.modules.translation.domain.value_objects import AUTO_FALLBACK
 
@@ -379,6 +384,23 @@ def test_toggle_continuous_disable_does_not_clear_existing_target():
     assert pref.target_lang == "ta"
 
 
+# ── GeminiTranslationEngine — must survive a missing API key at import time ────
+
+def test_gemini_engine_construction_never_raises_without_a_key():
+    """This is what CI actually hit: presentation/dependencies.py builds this
+    as a module-level singleton at import time, so __init__ raising here would
+    crash importing the chat router in any environment without the key set."""
+    engine = GeminiTranslationEngine(api_key=None, model="gemini-flash-lite-latest")
+    assert engine.is_configured is False
+
+
+def test_gemini_engine_translate_raises_unavailable_without_a_key():
+    engine = GeminiTranslationEngine(api_key=None, model="gemini-flash-lite-latest")
+    prompt = assemble_prompt(summary=None, context_messages=[], message_text="hi", target_lang="en", request_summary_update=False)
+    with pytest.raises(TranslationEngineUnavailableError):
+        engine.translate(prompt)
+
+
 # ── HTTP wiring — chat's new endpoints, dependencies overridden (no DB/Gemini) ──
 
 import main  # noqa: E402
@@ -424,6 +446,16 @@ def test_translate_endpoint_404s_on_missing_message(http_client):
     _fastapi_app.dependency_overrides[get_translate_message_uc] = lambda: StubUC()
     resp = http_client.post(f"/chat/messages/{uuid4()}/translate", json={})
     assert resp.status_code == 404
+
+
+def test_translate_endpoint_503s_when_engine_unconfigured(http_client):
+    class StubUC:
+        def execute(self, reader_id, message_id, explicit_target_lang=None):
+            raise TranslationEngineUnavailableError("Gemini API key is not configured")
+
+    _fastapi_app.dependency_overrides[get_translate_message_uc] = lambda: StubUC()
+    resp = http_client.post(f"/chat/messages/{uuid4()}/translate", json={})
+    assert resp.status_code == 503
 
 
 def test_toggle_continuous_endpoint_forces_dm_context_type(http_client):
