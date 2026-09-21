@@ -37,6 +37,7 @@ from app.modules.connections.data.models import UserConnection
 from app.recommendation.global_session import merge_weights, sync_module_to_global
 from app.recommendation.global_taste import read_global_taste_weights
 from app.shared.utils.time_decay import freshness_boost
+from app.modules.post.domain.exceptions import ProfileNotFoundError
 
 log = logging.getLogger(__name__)
 
@@ -228,11 +229,14 @@ def _rerank(
     city_weights: dict[str, float],
     state_weights: dict[str, float],
     followed_user_ids: set,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, dict]:
     from app.modules.post.data.models import Post
 
     if not candidates:
-        return [], {}
+        # Three values, like the success path below. Returning two crashed the
+        # caller's unpack for any profile whose candidate pool came back empty
+        # — a new account, or one that has seen everything.
+        return [], {}, {}
 
     post_ids = list({c["post_id"] for c in candidates})
     posts = {p.id: p for p in repo.get_posts_by_ids(post_ids)}
@@ -430,7 +434,7 @@ def get_recommended_posts(
 ) -> list:
     profile = repo.get_profile_with_commodities(profile_id)
     if not profile:
-        raise ValueError(f"Profile {profile_id} not found")
+        raise ProfileNotFoundError(f"Profile {profile_id} not found")
 
     commodity_ids = [pc.commodity_id for pc in profile.commodities]
     commodity_idxs = {

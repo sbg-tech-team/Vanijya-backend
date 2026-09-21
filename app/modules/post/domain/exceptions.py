@@ -38,3 +38,12 @@ class DealDetailsRequiredError(Exception):
 
 class InvalidPostCategoryError(Exception):
     """Raised when an operation is attempted on a post category that does not support it."""
+
+
+class ProfileNotFoundError(Exception):
+    """No profile behind the authenticated user. -> 404.
+
+    Distinct from ValueError so an internal ValueError (a bad unpack, a bad
+    cast) surfaces as a 500 and reaches Sentry, instead of being reported to
+    the client as "not found" with the raw Python message attached.
+    """

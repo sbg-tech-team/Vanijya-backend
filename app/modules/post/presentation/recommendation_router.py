@@ -22,6 +22,7 @@ from app.modules.post.presentation.recommendation_schemas import (
     PostSeenPayload,
 )
 from app.modules.post.recommendation.constants import FEED_SIZE
+from app.modules.post.domain.exceptions import ProfileNotFoundError
 
 router = APIRouter(prefix="/posts/recommendation", tags=["post-recommendation"])
 
@@ -43,7 +44,10 @@ def get_feed(
 ):
     try:
         posts = service.get_recommended_posts(repo, profile_id, limit=limit, rc=rc)
-    except ValueError as exc:
+    except ProfileNotFoundError as exc:
+        # Deliberately narrow. This used to catch ValueError, which meant an
+        # internal bug (a bad tuple unpack) was reported to the client as a
+        # 404 with the raw Python message, and never reached Sentry.
         raise HTTPException(status_code=404, detail=str(exc))
     return FeedResponse(posts=posts, has_more=len(posts) >= limit)
 

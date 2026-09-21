@@ -100,6 +100,9 @@ jobs:
       - name: ORM and migrations agree on the schema
         run: python tests/test_schema_drift.py
 
+      - name: Recommendation feed survives an empty pool
+        run: python tests/test_recommendation_feed.py
+
       - name: Translation unit tests
         run: python -m pytest tests/ -q
 
