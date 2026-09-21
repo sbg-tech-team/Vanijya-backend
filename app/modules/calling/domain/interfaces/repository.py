@@ -174,9 +174,15 @@ class ICallingRepository(ABC):
 
     @abstractmethod
     def register_device(
-        self, user_id: UUID, fcm_token: str, platform: str | None, now: datetime
+        self, user_id: UUID, fcm_token: str, platform: str | None, now: datetime,
+        token_type: str = "fcm",
     ) -> None:
         """Record or refresh one device's push token."""
+        ...
+
+    @abstractmethod
+    def delete_devices(self, fcm_tokens: list[str]) -> int:
+        """Forget push tokens FCM reported as unregistered."""
         ...
 
     # -- jobs ------------------------------------------------------------------

@@ -22,9 +22,20 @@ class ITranslationRepository(ABC):
         ...
 
     @abstractmethod
+    def reader_is_member(self, reader_id: UUID, context_type: str, context_id: UUID) -> bool:
+        """Is this reader allowed to see messages in this DM/group at all?"""
+        ...
+
+    @abstractmethod
     def get_preceding_messages(
         self, context_type: str, context_id: UUID, before_message_id: UUID, limit: int
     ) -> list[ContextMessage]:
+        ...
+
+    @abstractmethod
+    def save_translation(self, message_id: UUID, target_lang: str, translated_text: str) -> None:
+        """Persist a finished translation so it survives scroll-back, thread
+        reopen, socket reconnect and process restart."""
         ...
 
     # ── reader preferences ────────────────────────────────────────────────────

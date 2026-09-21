@@ -30,6 +30,7 @@ from app.modules.translation.domain.entities import (
     ReaderConversationPrefs,
     TranslatableMessage,
 )
+from app.modules.translation.domain.exceptions import NotAConversationMemberError
 from app.modules.translation.domain.exceptions import (
     ContinuousNotAllowedError,
     MessageNotFoundError,
@@ -52,10 +53,21 @@ class FakeRepo:
     k: int = 3
     ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     save_summary_calls: list = field(default_factory=list)
+    saved_translations: dict = field(default_factory=dict)  # (msg_id, lang) -> text
+    # (reader_id, context_type, context_id) the reader may read; None = allow all
+    memberships: Optional[set] = None
 
     # message history
     def get_message(self, message_id: UUID) -> Optional[TranslatableMessage]:
         return self.messages.get(message_id)
+
+    def save_translation(self, message_id, target_lang, translated_text) -> None:
+        self.saved_translations[(message_id, target_lang)] = translated_text
+
+    def reader_is_member(self, reader_id, context_type, context_id) -> bool:
+        if self.memberships is None:
+            return True
+        return (reader_id, context_type, context_id) in self.memberships
 
     def get_preceding_messages(self, context_type, context_id, before_message_id, limit):
         return self.history.get((context_type, context_id), [])[-limit:]
@@ -242,6 +254,40 @@ def test_translate_message_not_found_raises():
     )
     with pytest.raises(MessageNotFoundError):
         uc.execute(reader_id=uuid4(), message_id=uuid4())
+
+
+def test_translate_message_refuses_a_non_member():
+    """Anyone authenticated can guess a message id; without the membership
+    check /translate hands back the plaintext of any DM on the platform."""
+    repo = FakeRepo(memberships=set())  # reader is in nothing
+    message = make_message(body="namaste")
+    repo.messages[message.id] = message
+    engine = FakeEngine(response=EngineResponse(translated_text="SHOULD NOT BE USED"))
+
+    uc = TranslateMessageUseCase(
+        repository=repo, context_store=repo, translation_cache=InMemoryTranslationCache(),
+        pipeline=TranslationPipeline(repo, repo, engine),
+        resolve_target_language=ResolveTargetLanguageUseCase(repo),
+    )
+    with pytest.raises(NotAConversationMemberError):
+        uc.execute(reader_id=uuid4(), message_id=message.id, explicit_target_lang="en")
+    assert engine.calls == []  # and we never paid Gemini for it
+
+
+def test_translate_message_allows_a_member():
+    repo = FakeRepo()
+    message = make_message(body="namaste")
+    repo.messages[message.id] = message
+    reader = uuid4()
+    repo.memberships = {(reader, message.context_type, message.context_id)}
+    engine = FakeEngine(response=EngineResponse(translated_text="hello"))
+
+    uc = TranslateMessageUseCase(
+        repository=repo, context_store=repo, translation_cache=InMemoryTranslationCache(),
+        pipeline=TranslationPipeline(repo, repo, engine),
+        resolve_target_language=ResolveTargetLanguageUseCase(repo),
+    )
+    assert uc.execute(reader_id=reader, message_id=message.id, explicit_target_lang="en").translated_text == "hello"
 
 
 def test_translate_message_cache_hit_skips_engine_call():

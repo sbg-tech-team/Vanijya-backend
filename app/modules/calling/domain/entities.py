@@ -95,6 +95,13 @@ class StreamCredentials:
 
 @dataclass
 class PushTarget:
-    """One device to ring. `fcm_token` may be None — such users are skipped."""
+    """One device to ring. `fcm_token` may be None — such users are skipped.
+
+    `token_type` says which transport can reach it. An iOS PushKit token is a
+    raw APNs device token, not an FCM registration token: Firebase cannot
+    deliver to it at all, so it has to be stored distinctly and routed to APNs
+    directly. Everything else is an ordinary FCM token.
+    """
     user_id: UUID
     fcm_token: str | None
+    token_type: str = "fcm"  # fcm | voip

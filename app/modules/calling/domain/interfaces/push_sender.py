@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Callable
 
 from app.modules.calling.domain.entities import PushTarget
 
@@ -14,7 +15,17 @@ class IPushSender(ABC):
     """
 
     @abstractmethod
-    def send_data(self, targets: list[PushTarget], data: dict[str, str]) -> int:
+    def send_data(
+        self,
+        targets: list[PushTarget],
+        data: dict[str, str],
+        on_dead: Callable[[str], None] | None = None,
+    ) -> int:
         """Deliver one data-only message to every target. Returns how many were
-        accepted by the transport. Never raises."""
+        accepted by the transport. Never raises.
+
+        `on_dead` is called with each token the transport reports as
+        permanently gone (uninstalled app, rotated token) so the caller can
+        forget it. Callers that do not care may omit it.
+        """
         ...

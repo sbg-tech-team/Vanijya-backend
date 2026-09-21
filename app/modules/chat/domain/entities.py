@@ -172,6 +172,11 @@ class MessageEntity:
     # read      = peer.last_read_at      >= sent_at
     delivered: Optional[bool] = None
     read: Optional[bool] = None
+    # Filled only when the reader has continuous translation on for this
+    # conversation AND a translation for their language already exists. Null
+    # otherwise — the client falls back to `body`.
+    translated_text: Optional[str] = None
+    target_lang: Optional[str] = None
 
 
 # ── Send guard ─────────────────────────────────────────────────────────────────

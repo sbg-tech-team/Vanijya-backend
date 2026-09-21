@@ -100,6 +100,12 @@ jobs:
       - name: ORM and migrations agree on the schema
         run: python tests/test_schema_drift.py
 
+      - name: Translation unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Stored translations reach GET /messages
+        run: python tests/test_translation_readback.py
+
       - name: App imports and every router registers
         run: python -c "import main; print('boot ok')"
 

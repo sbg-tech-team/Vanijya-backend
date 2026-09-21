@@ -4,6 +4,7 @@
 """
 Patches noisy startup dependencies so tests don't need a live DB or scheduler.
 """
+import pathlib
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -21,3 +22,15 @@ def patch_startup():
         patch("app.core.scheduler.stop",   MagicMock()),
     ):
         yield
+
+
+# ponytail: most files in tests/ are standalone scripts that do their work at
+# import time (and sys.exit if SYNC_DATABASE_URL isn't local), which kills
+# pytest collection for the whole directory. CI runs those with
+# `python tests/<file>.py`; collect only the pytest-style ones here.
+collect_ignore = [
+    p.name
+    for p in pathlib.Path(__file__).parent.glob("test_*.py")
+    if 'if __name__ == "__main__"' in p.read_text()
+    or "def test_" not in p.read_text()
+]

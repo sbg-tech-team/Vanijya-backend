@@ -31,8 +31,12 @@ class GetMessagesUseCase:
             raise ConversationAccessDeniedError(
                 "The user is not a part of this conversation."
             )
+        # Serve stored translations inline when this reader has continuous mode
+        # on: without it, scroll-back, a thread reopen or a dropped socket all
+        # show the untranslated original again.
+        target = self.repo.reader_continuous_target(user_id, conv_id)
         # min() caps the page size at 100 messages
-        return self.repo.get_messages("dm", conv_id, before, min(limit, 100))
+        return self.repo.get_messages("dm", conv_id, before, min(limit, 100), translate_to=target)
 
 
 class GetGroupMessagesUseCase:

@@ -22,7 +22,20 @@ class IChatRepository(ABC):
         ...
 
     @abstractmethod
-    def get_messages(self, context_type: str, context_id: UUID, before: Optional[datetime], limit: int) -> list[MessageEntity]:
+    def reader_continuous_target(self, user_id: UUID, conv_id: UUID) -> Optional[str]:
+        """Language to serve stored translations in, or None if this reader has
+        continuous translation off for this conversation."""
+        ...
+
+    @abstractmethod
+    def get_messages(
+        self,
+        context_type: str,
+        context_id: UUID,
+        before: Optional[datetime],
+        limit: int,
+        translate_to: Optional[str] = None,
+    ) -> list[MessageEntity]:
         ...
 
     @abstractmethod

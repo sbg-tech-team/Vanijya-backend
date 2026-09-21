@@ -6,9 +6,13 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.modules.chat.data.models import Message
+from app.modules.chat.data.models import ConversationMember, Message
+from app.modules.groups.data.models import GroupMember
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from app.modules.translation.data.models import (
     ConversationTranslationContext,
+    MessageTranslation,
     ReaderConversationTranslationPref,
     ReaderTranslationDefault,
 )
@@ -48,6 +52,19 @@ class TranslationRepository(ITranslationRepository, IContextStore):
             body=row.body,
         )
 
+    def reader_is_member(self, reader_id: UUID, context_type: str, context_id: UUID) -> bool:
+        if context_type == "dm":
+            model, col = ConversationMember, ConversationMember.conversation_id
+        elif context_type == "group":
+            model, col = GroupMember, GroupMember.group_id
+        else:
+            return False
+        return (
+            self.db.query(model.user_id)
+            .filter(col == context_id, model.user_id == reader_id)
+            .first()
+        ) is not None
+
     def get_preceding_messages(
         self, context_type: str, context_id: UUID, before_message_id: UUID, limit: int
     ) -> list[ContextMessage]:
@@ -68,6 +85,20 @@ class TranslationRepository(ITranslationRepository, IContextStore):
         )
         rows.reverse()
         return [ContextMessage(id=r.id, body=r.body, sent_at=r.sent_at) for r in rows]
+
+    def save_translation(self, message_id: UUID, target_lang: str, translated_text: str) -> None:
+        """Idempotent: two readers asking for the same language race here, and
+        the second must not 409 on the primary key."""
+        self.db.execute(
+            pg_insert(MessageTranslation)
+            .values(message_id=message_id, target_lang=target_lang,
+                    translated_text=translated_text)
+            .on_conflict_do_update(
+                index_elements=["message_id", "target_lang"],
+                set_={"translated_text": translated_text},
+            )
+        )
+        self.db.commit()
 
     # ── rolling context (IContextStore) ───────────────────────────────────────
 

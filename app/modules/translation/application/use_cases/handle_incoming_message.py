@@ -40,4 +40,7 @@ class HandleIncomingMessageUseCase:
         response = self.pipeline.run(message, pref.target_lang, context)
 
         resolved_target = pref.target_lang or response.chosen_target_lang or "en"
+        # Persist before emitting: the socket event is fire-and-forget, so if
+        # the reader is offline or the socket drops this row is the only copy.
+        self.repository.save_translation(message.id, resolved_target, response.translated_text)
         return TranslationResult(translated_text=response.translated_text, target_lang=resolved_target, used_cache=False)

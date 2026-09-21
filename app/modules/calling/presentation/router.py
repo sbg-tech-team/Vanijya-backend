@@ -39,7 +39,6 @@ from app.modules.calling.domain.exceptions import (
     VideoNotAvailableError,
     VideoProviderError,
 )
-from app.modules.calling.domain.interfaces.push_sender import IPushSender
 from app.modules.calling.domain.interfaces.repository import ICallingRepository
 from app.modules.calling.domain.interfaces.video_provider import IVideoProvider
 from app.modules.calling.domain.value_objects import (
@@ -48,11 +47,12 @@ from app.modules.calling.domain.value_objects import (
 )
 from app.modules.calling.presentation.dependencies import (
     get_calling_repo,
-    get_push_sender,
     get_video_provider,
+    push_task,
 )
 from app.modules.calling.presentation.schemas import (
     CallCreate,
+    DeviceRegister,
     CallEndedOut,
     CallHistoryOut,
     CallOut,
@@ -91,7 +91,7 @@ def _translate(exc: CallingError) -> HTTPException:
     return HTTPException(status_code=status, detail=str(exc) or "Call error")
 
 
-def _dispatch(background: BackgroundTasks, result: CallDispatch, push: IPushSender, repo):
+def _dispatch(background: BackgroundTasks, result: CallDispatch):
     """Queue the socket emits and pushes a use case asked for."""
     from app.core.realtime import emit_to_group, emit_to_user
 
@@ -102,9 +102,7 @@ def _dispatch(background: BackgroundTasks, result: CallDispatch, push: IPushSend
             background.add_task(emit_to_user, ev.user_id, ev.event, ev.payload)
 
     for msg in result.pushes:
-        targets = repo.push_targets(msg.user_ids)
-        if targets:
-            background.add_task(push.send_data, targets, msg.data)
+        background.add_task(push_task, msg.user_ids, msg.data)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -116,7 +114,6 @@ def create_call(
     me: UUID = Depends(get_current_user_id),
     repo: ICallingRepository = Depends(get_calling_repo),
     provider: IVideoProvider = Depends(get_video_provider),
-    push: IPushSender = Depends(get_push_sender),
     r: redis_lib.Redis = Depends(get_redis),
 ):
     """Start a call. Any user may call any other user; the only gates are blocks,
@@ -151,7 +148,7 @@ def create_call(
 
     set_call_context(result.result.call_id, call_type=payload.call_type,
                      status=result.result.status, caller=str(me))
-    _dispatch(background_tasks, result, push, repo)
+    _dispatch(background_tasks, result)
     return ok(result.result.model_dump(mode="json"), "Call initiated")
 
 
@@ -162,7 +159,6 @@ def accept_call(
     me: UUID = Depends(get_current_user_id),
     repo: ICallingRepository = Depends(get_calling_repo),
     provider: IVideoProvider = Depends(get_video_provider),
-    push: IPushSender = Depends(get_push_sender),
 ):
     """Answer a ringing call. Returns the Stream token to join with."""
     try:
@@ -171,7 +167,7 @@ def accept_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result, push, repo)
+    _dispatch(background_tasks, result)
     return ok(result.result.model_dump(mode="json"), "Call accepted")
 
 
@@ -182,7 +178,6 @@ def reject_call(
     me: UUID = Depends(get_current_user_id),
     repo: ICallingRepository = Depends(get_calling_repo),
     provider: IVideoProvider = Depends(get_video_provider),
-    push: IPushSender = Depends(get_push_sender),
 ):
     """Decline a ringing call. 1:1 ends it; in a group only you drop out."""
     try:
@@ -191,7 +186,7 @@ def reject_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result, push, repo)
+    _dispatch(background_tasks, result)
     return ok(result.result.model_dump(mode="json"), "Call rejected")
 
 
@@ -202,7 +197,6 @@ def end_call(
     me: UUID = Depends(get_current_user_id),
     repo: ICallingRepository = Depends(get_calling_repo),
     provider: IVideoProvider = Depends(get_video_provider),
-    push: IPushSender = Depends(get_push_sender),
     r: redis_lib.Redis = Depends(get_redis),
 ):
     """Hang up. Duration is computed server-side from started_at — a
@@ -218,7 +212,7 @@ def end_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result, push, repo)
+    _dispatch(background_tasks, result)
     return ok(result.result.model_dump(mode="json"), "Call ended")
 
 
@@ -276,6 +270,27 @@ def call_usage(
     breach coming except by grepping logs.
     """
     return ok(current_usage(r, me), "Call usage fetched")
+
+
+@router.post("/devices", response_model=None, status_code=201)
+def register_device(
+    body: DeviceRegister,
+    me: UUID = Depends(get_current_user_id),
+    repo: ICallingRepository = Depends(get_calling_repo),
+):
+    """Register this device's FCM token so it rings.
+
+    Call on every sign-in and on every FCM token refresh. Registering a token
+    that already exists moves it to the calling user — a handset handed over
+    must not keep ringing the previous owner.
+
+    Registered BEFORE /{call_id} so "devices" is not parsed as a call id.
+    """
+    result = service.register_device(
+        repo, user_id=me, fcm_token=body.fcm_token, platform=body.platform,
+        token_type=body.token_type,
+    )
+    return ok(result.model_dump(mode="json"), "Device registered")
 
 
 @router.get("", response_model=None)

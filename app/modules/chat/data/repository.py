@@ -11,6 +11,10 @@ from sqlalchemy.orm import Session, aliased
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.interfaces.repository import IChatRepository
 from app.modules.chat.domain.value_objects import ConversationStatus
+from app.modules.translation.data.models import (
+    MessageTranslation,
+    ReaderConversationTranslationPref,
+)
 from app.modules.chat.domain.entities import (
     CallSnap, ChatAttachmentEntity, ChatListItem, ConvSendGuard, ConversationEntity,
     DMLastMessage, DealSnap, GroupConversationEntity, GroupLastMessage, MessageEntity,
@@ -232,6 +236,8 @@ def _build_message(
     delivered: Optional[bool] = None,
     read: Optional[bool] = None,
     attachments: Optional[list[ChatAttachment]] = None,
+    translated_text: Optional[str] = None,
+    target_lang: Optional[str] = None,
 ) -> MessageEntity:
     sender_profile = db.query(Profile).filter(Profile.users_id == msg.sender_id).first()
     sender_snap = (
@@ -270,6 +276,8 @@ def _build_message(
         attachments=[_attachment_snap(a) for a in attachments],
         delivered=delivered,
         read=read,
+        translated_text=translated_text,
+        target_lang=target_lang,
     )
 
 
@@ -363,7 +371,24 @@ class ChatRepository(IChatRepository):
         self.db.refresh(msg)
         return _build_message(self.db, msg)
 
-    def get_messages(self, context_type: str, context_id: UUID, before: Optional[datetime], limit: int) -> list[MessageEntity]:
+    def reader_continuous_target(self, user_id: UUID, conv_id: UUID) -> Optional[str]:
+        """The language to serve translations in, or None if this reader has
+        continuous mode off. Owned by the translation module; read here so the
+        message list can be served in one round trip instead of the client
+        making a second call per conversation."""
+        row = self.db.get(ReaderConversationTranslationPref, (user_id, conv_id))
+        if row is None or not row.continuous_enabled:
+            return None
+        return row.target_lang
+
+    def get_messages(
+        self,
+        context_type: str,
+        context_id: UUID,
+        before: Optional[datetime],
+        limit: int,
+        translate_to: Optional[str] = None,
+    ) -> list[MessageEntity]:
         q = self.db.query(Message).filter(
             Message.context_type == context_type,
             Message.context_id == context_id,
@@ -380,9 +405,27 @@ class ChatRepository(IChatRepository):
             for a in self.db.query(ChatAttachment).filter(ChatAttachment.message_id.in_(message_ids)).all():
                 attach_map.setdefault(a.message_id, []).append(a)
 
+        # One query for the whole page, same reason as attachments above.
+        trans_map: dict[UUID, str] = {}
+        if translate_to and message_ids:
+            trans_map = {
+                t.message_id: t.translated_text
+                for t in self.db.query(MessageTranslation).filter(
+                    MessageTranslation.message_id.in_(message_ids),
+                    MessageTranslation.target_lang == translate_to,
+                ).all()
+            }
+
+        def _tr(m):
+            return {"translated_text": trans_map.get(m.id),
+                    "target_lang": translate_to if trans_map.get(m.id) else None}
+
         if context_type != "dm":
             # Group receipts aren't tracked yet (no per-member cursors on group_members).
-            return [_build_message(self.db, m, attachments=attach_map.get(m.id, [])) for m in rows]
+            return [
+                _build_message(self.db, m, attachments=attach_map.get(m.id, []), **_tr(m))
+                for m in rows
+            ]
 
         # DM: derive each message's delivered/read tick from the *peer's* cursors.
         # peer = the member who did not send the message (exactly one in a DM).
@@ -399,7 +442,10 @@ class ChatRepository(IChatRepository):
             last_delivered_at, last_read_at = peer
             delivered = last_delivered_at is not None and last_delivered_at >= m.sent_at
             read = last_read_at is not None and last_read_at >= m.sent_at
-            out.append(_build_message(self.db, m, delivered=delivered, read=read, attachments=attach_map.get(m.id, [])))
+            out.append(_build_message(
+                self.db, m, delivered=delivered, read=read,
+                attachments=attach_map.get(m.id, []), **_tr(m),
+            ))
         return out
 
     def mark_read(self, conv_id: UUID, user_id: UUID) -> None:

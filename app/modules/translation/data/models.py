@@ -64,3 +64,29 @@ class ReaderTranslationDefault(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     target_lang: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
+class MessageTranslation(Base):
+    """A finished translation, durable and shared.
+
+    Without this, a translation only ever existed as a live socket event and a
+    per-process in-memory cache: scrolling back, reopening a thread or
+    reconnecting after a dropped socket all showed the original text again, and
+    messages that arrived while the reader was offline were never translated at
+    all.
+
+    Keyed by (message_id, target_lang), NOT by reader: the same message in the
+    same language is the same string for everyone, so two readers of a group
+    sharing a language cost one Gemini call, not two.
+    """
+
+    __tablename__ = "message_translations"
+
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    target_lang: Mapped[str] = mapped_column(String(10), primary_key=True)
+    translated_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )

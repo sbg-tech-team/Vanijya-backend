@@ -14,6 +14,9 @@ from app.modules.calling.application.use_cases.heartbeat import heartbeat  # noq
 from app.modules.calling.application.use_cases.initiate_call import (  # noqa: F401
     initiate_call,
 )
+from app.modules.calling.application.use_cases.register_device import (  # noqa: F401
+    register_device,
+)
 from app.modules.calling.application.use_cases.respond_to_call import (  # noqa: F401
     accept_call,
     reject_call,
@@ -28,4 +31,5 @@ __all__ = [
     "get_call",
     "list_calls",
     "refresh_token",
+    "register_device",
 ]

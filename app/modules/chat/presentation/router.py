@@ -40,7 +40,21 @@ from app.modules.groups.presentation.dependencies import get_groups_repo
 from app.modules.groups.presentation.schemas import GroupDealCreate
 from app.modules.groups.application.use_cases.service import GroupPermissionError, create_group_deal
 from app.core.database.session import SessionLocal
-from app.modules.translation.domain.exceptions import ContinuousNotAllowedError, TranslationEngineUnavailableError
+import logging
+
+import redis as redis_lib
+
+from app.core import rate_limiter
+from app.core.redis_client import get_redis
+from app.modules.translation.domain.value_objects import (
+    TRANSLATE_RATE_LIMIT,
+    TRANSLATE_RATE_WINDOW_SECONDS,
+)
+from app.modules.translation.domain.exceptions import (
+    ContinuousNotAllowedError,
+    NotAConversationMemberError,
+    TranslationEngineUnavailableError,
+)
 from app.modules.translation.domain.exceptions import MessageNotFoundError as TranslationMessageNotFoundError
 from app.modules.translation.presentation.dependencies import (
     get_handle_incoming_message_uc,
@@ -65,6 +79,8 @@ from app.modules.chat.domain.exceptions import (
     MessageNotFoundError,
     PersonalDealNotFoundError,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -246,16 +262,42 @@ def translate_message(
     body: TranslateMessageRequest,
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_translate_message_uc),
+    r: redis_lib.Redis = Depends(get_redis),
 ):
     """Single-tap — translates one message the caller received. Never call
     this for the caller's own sent messages; there's nothing to disambiguate
     there and the resolution chain is reader-specific."""
     try:
+        rate_limiter.check(
+            r, f"translate:{user_id}",
+            limit=TRANSLATE_RATE_LIMIT, window=TRANSLATE_RATE_WINDOW_SECONDS,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        # Redis down must not block translating; the limiter is a cost guard,
+        # not a gate. Logged so a silent outage doesn't hide unbounded spend.
+        log.warning("translation rate limiting unavailable for %s", user_id)
+
+    try:
         return uc.execute(reader_id=user_id, message_id=message_id, explicit_target_lang=body.target_lang)
     except TranslationMessageNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except NotAConversationMemberError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except TranslationEngineUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)
+def get_continuous_translation(
+    conv_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    uc=Depends(get_toggle_continuous_uc),
+):
+    """Whether continuous translation is on for this reader in this DM.
+    Returns `continuous_enabled: false` when it has never been set."""
+    return uc.get_state(user_id=user_id, conversation_id=conv_id)
 
 
 @router.post("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)

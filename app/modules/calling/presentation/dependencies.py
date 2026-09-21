@@ -49,6 +49,29 @@ def drop_calls_between_task(user_a: UUID, user_b: UUID) -> int:
         db.close()
 
 
+def push_task(user_ids: list[UUID], data: dict) -> int:
+    """Background entry point for one push fan-out.
+
+    Owns its session because the request's is already closed by the time a
+    BackgroundTask runs. Tokens FCM reports as dead are deleted here — without
+    that, an uninstalled app's token is retried on every single call forever.
+    """
+    db = SessionLocal()
+    try:
+        repo = CallingRepository(db)
+        targets = repo.push_targets(user_ids)
+        if not targets:
+            return 0
+        dead: list[str] = []
+        delivered = _push_sender.send_data(targets, data, on_dead=dead.append)
+        if dead:
+            repo.delete_devices(dead)
+            repo.commit()
+        return delivered
+    finally:
+        db.close()
+
+
 def _optional_redis():
     """Presence/budget counters are best-effort; a Redis outage must not block."""
     try:

@@ -128,3 +128,9 @@ class CallHistoryItemOut(BaseModel):
 class CallHistoryOut(BaseModel):
     calls: list[CallHistoryItemOut] = Field(default_factory=list)
     next_cursor: Optional[str] = None
+
+
+class DeviceRegisteredOut(BaseModel):
+    registered: bool
+    # False while a stored token has no transport that can reach it.
+    deliverable: bool = True

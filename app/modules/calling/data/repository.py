@@ -472,14 +472,14 @@ class CallingRepository(ICallingRepository):
         seen: set[str] = set()
         out: list[PushTarget] = []
 
-        for uid, token in (
-            self.db.query(UserDevice.user_id, UserDevice.fcm_token)
+        for uid, token, ttype in (
+            self.db.query(UserDevice.user_id, UserDevice.fcm_token, UserDevice.token_type)
             .filter(UserDevice.user_id.in_(user_ids))
             .all()
         ):
             if token and token not in seen:
                 seen.add(token)
-                out.append(PushTarget(user_id=uid, fcm_token=token))
+                out.append(PushTarget(user_id=uid, fcm_token=token, token_type=ttype or "fcm"))
 
         for uid, token in (
             self.db.query(User.id, User.fcm_token)
@@ -493,7 +493,8 @@ class CallingRepository(ICallingRepository):
         return out
 
     def register_device(
-        self, user_id: UUID, fcm_token: str, platform: str | None, now: datetime
+        self, user_id: UUID, fcm_token: str, platform: str | None, now: datetime,
+        token_type: str = "fcm",
     ) -> None:
         """Upsert on the token, not on (user, token): a handset handed to another
         account must ring the new owner, never the old one."""
@@ -501,14 +502,36 @@ class CallingRepository(ICallingRepository):
             pg_insert(UserDevice)
             .values(
                 id=uuid4(), user_id=user_id, fcm_token=fcm_token,
-                platform=platform, last_seen_at=now, created_at=now,
+                platform=platform, token_type=token_type,
+                last_seen_at=now, created_at=now,
             )
             .on_conflict_do_update(
                 index_elements=["fcm_token"],
-                set_={"user_id": user_id, "platform": platform, "last_seen_at": now},
+                set_={"user_id": user_id, "platform": platform,
+                      "token_type": token_type, "last_seen_at": now},
             )
         )
         self.db.execute(stmt)
+
+    def delete_devices(self, fcm_tokens: list[str]) -> int:
+        """Drop tokens FCM told us are dead (app uninstalled, token rotated).
+
+        Also clears the legacy users.fcm_token copy, otherwise push_targets
+        keeps resurrecting the same dead token from the fallback branch.
+        """
+        if not fcm_tokens:
+            return 0
+        n = (
+            self.db.query(UserDevice)
+            .filter(UserDevice.fcm_token.in_(fcm_tokens))
+            .delete(synchronize_session=False)
+        )
+        (
+            self.db.query(User)
+            .filter(User.fcm_token.in_(fcm_tokens))
+            .update({"fcm_token": None}, synchronize_session=False)
+        )
+        return n
 
     # ── Jobs ──────────────────────────────────────────────────────────────────
 

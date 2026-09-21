@@ -1040,6 +1040,40 @@ def test_cursor_roundtrip():
     assert _decode_cursor("not-a-cursor") is None   # stale cursor must not 500
 
 
+def test_fcm_sender_skips_voip_tokens():
+    """A PushKit token is a raw APNs device token. Sending it through FCM is a
+    guaranteed InvalidArgument that looks exactly like a dead device, so the
+    FCM adapter must not even reach for Firebase when every target is VoIP."""
+    from unittest.mock import MagicMock, patch
+
+    from app.modules.calling.data.adapters.fcm import FcmPushSender
+    from app.modules.calling.domain.entities import PushTarget
+
+    voip = PushTarget(user_id=uuid4(), fcm_token="voip-token", token_type="voip")
+    fcm = PushTarget(user_id=uuid4(), fcm_token="fcm-token", token_type="fcm")
+
+    target = "app.modules.onboarding.data.adapters.firebase._get_firebase_app"
+
+    # VoIP-only: short-circuits before Firebase is touched at all.
+    with patch(target, MagicMock()) as get_app:
+        assert FcmPushSender().send_data([voip], {"type": "incoming_call"}) == 0
+        assert get_app.call_count == 0, "VoIP target reached the FCM transport"
+
+    # Mixed: the FCM half still goes out, so one iPhone's VoIP token does not
+    # stop the same user's Android phone ringing.
+    with patch(target, MagicMock()) as get_app, \
+         patch("firebase_admin.messaging.send", MagicMock()) as send:
+        FcmPushSender().send_data([voip, fcm], {"type": "incoming_call"})
+        assert get_app.call_count == 1
+        assert [c.args[0].token for c in send.call_args_list] == ["fcm-token"]
+
+
+def test_push_target_defaults_to_fcm():
+    """Existing rows and callers that predate token_type must keep working."""
+    from app.modules.calling.domain.entities import PushTarget
+    assert PushTarget(user_id=uuid4(), fcm_token="t").token_type == "fcm"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -137,6 +137,11 @@ class UserDevice(Base):
     # rather than ringing the previous owner's phone.
     fcm_token: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
     platform: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # ios | android | web
+    # fcm  – an FCM registration token, deliverable via firebase_admin.
+    # voip – an iOS PushKit token: a raw APNs device token that FCM cannot
+    #        send to. Stored so it is ready for the direct-APNs path, and
+    #        skipped by the FCM fan-out until that exists.
+    token_type: Mapped[str] = mapped_column(String(10), nullable=False, default="fcm")
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

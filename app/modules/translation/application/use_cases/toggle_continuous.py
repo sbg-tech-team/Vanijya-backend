@@ -23,6 +23,20 @@ class ToggleContinuousTranslationUseCase:
         self.repository = repository
         self.resolve_target_language = resolve_target_language
 
+    def get_state(self, user_id: UUID, conversation_id: UUID) -> ReaderConversationPrefs:
+        """Current setting, so a client that restarted does not show "off"
+        while the server is still translating. Keyed by user_id, so this can
+        only ever read the caller's own preference."""
+        pref = self.repository.get_conversation_pref(user_id, conversation_id)
+        if pref is None:
+            return ReaderConversationPrefs(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                target_lang=None,
+                continuous_enabled=False,
+            )
+        return pref
+
     def execute(
         self,
         user_id: UUID,
