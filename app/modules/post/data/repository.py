@@ -405,6 +405,40 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             for r in rows
         ]
 
+    def latest_post_candidates(
+        self, limit: int, exclude_ids: set
+    ) -> list[dict]:
+        """Newest visible posts, ignoring embeddings and ignoring age.
+
+        Returns category_id, not a category name: the id→slug map belongs to
+        the recommendation layer, not here.
+
+        The last resort behind every other candidate source. Those all require
+        an active embedding, and embeddings expire — so when a deployment has
+        no recent content, every one of them returns nothing and the feed goes
+        blank even though thousands of posts exist. An empty feed is worse than
+        an imperfectly ranked one.
+
+        Deliberately has no recency cutoff: this only runs when nothing recent
+        exists, so a cutoff would make it empty too, which is the bug.
+        """
+        exclude_clause = (
+            f"AND p.id NOT IN ({','.join(str(int(i)) for i in exclude_ids)})"
+            if exclude_ids else ""
+        )
+        rows = self.db.execute(
+            text(f"""
+                SELECT p.id AS post_id, p.category_id, p.target_roles
+                FROM posts p
+                WHERE p.is_public = true
+                  {exclude_clause}
+                ORDER BY p.created_at DESC
+                LIMIT :limit
+            """),
+            {"limit": limit},
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
     def fresh_post_candidates(
         self, cutoff, limit: int, commodity_idxs: set, exclude_ids: set
     ) -> list[dict]:

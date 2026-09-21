@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.modules.chat.data.models import ConversationMember, Message
@@ -99,6 +100,42 @@ class TranslationRepository(ITranslationRepository, IContextStore):
             )
         )
         self.db.commit()
+
+    def untranslated_for_continuous_readers(
+        self, since: datetime, limit: int
+    ) -> list[tuple[UUID, UUID]]:
+        """(receiver_id, message_id) pairs a continuous reader is still owed.
+
+        The live translation runs in a BackgroundTask, which dies with the
+        process: a deploy, an OOM or a crash mid-flight loses it silently and
+        nothing ever retries. Persisting translations made the gap queryable —
+        a message with no row for its reader's language is exactly a miss.
+
+        Only messages the reader did not send, only DMs, only conversations
+        where continuous is on, newest first.
+        """
+        rows = self.db.execute(
+            text("""
+                SELECT p.user_id, m.id
+                FROM messages m
+                JOIN reader_conversation_translation_prefs p
+                  ON p.conversation_id = m.context_id
+                 AND p.continuous_enabled = true
+                 AND p.user_id <> m.sender_id
+                LEFT JOIN message_translations t
+                  ON t.message_id = m.id
+                 AND t.target_lang IS NOT DISTINCT FROM p.target_lang
+                WHERE m.context_type = 'dm'
+                  AND m.is_deleted = false
+                  AND m.body IS NOT NULL
+                  AND m.sent_at >= :since
+                  AND t.message_id IS NULL
+                ORDER BY m.sent_at DESC
+                LIMIT :limit
+            """),
+            {"since": since, "limit": limit},
+        ).all()
+        return [(r[0], r[1]) for r in rows]
 
     # ── rolling context (IContextStore) ───────────────────────────────────────
 

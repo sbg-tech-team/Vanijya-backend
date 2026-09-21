@@ -66,3 +66,28 @@ def get_toggle_continuous_uc(
     resolve: ResolveTargetLanguageUseCase = Depends(get_resolve_target_language_uc),
 ) -> ToggleContinuousTranslationUseCase:
     return ToggleContinuousTranslationUseCase(repository=repo, resolve_target_language=resolve)
+
+
+# ── Scheduled-job composition ────────────────────────────────────────────────
+# A scheduled job runs with no request, so it owns its session — the same
+# pattern calling/presentation/dependencies.py uses for its sweeps.
+
+def run_translation_retry_job() -> dict:
+    """Re-translate messages whose live BackgroundTask never completed."""
+    from app.core.database.session import SessionLocal
+    from app.modules.translation.application.jobs import run_translation_retry
+
+    db = SessionLocal()
+    try:
+        repo = TranslationRepository(
+            db,
+            refresh_every_n_messages=settings.TRANSLATION_SUMMARY_REFRESH_EVERY_N_MESSAGES,
+            refresh_ttl=timedelta(hours=settings.TRANSLATION_SUMMARY_REFRESH_TTL_HOURS),
+        )
+        uc = HandleIncomingMessageUseCase(
+            repository=repo, context_store=repo,
+            pipeline=TranslationPipeline(repository=repo, context_store=repo, engine=_engine),
+        )
+        return run_translation_retry(repo, uc.execute)
+    finally:
+        db.close()

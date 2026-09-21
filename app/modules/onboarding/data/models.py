@@ -30,4 +30,4 @@ class UserSession(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="sessions")  # type: ignore[name-defined]
+    user: Mapped["User"] = relationship("User", back_populates="sessions")  # type: ignore[name-defined]  # noqa: F821 - resolved by SQLAlchemy at mapper config

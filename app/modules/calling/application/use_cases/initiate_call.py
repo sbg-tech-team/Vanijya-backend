@@ -30,7 +30,6 @@ from app.modules.calling.domain.exceptions import (
     VideoNotAvailableError,
     VideoProviderError,
 )
-from app.modules.calling.domain.interfaces.push_sender import IPushSender
 from app.modules.calling.domain.interfaces.repository import ICallingRepository
 from app.modules.calling.domain.interfaces.video_provider import IVideoProvider
 from app.modules.calling.domain.value_objects import (
@@ -47,7 +46,6 @@ log = logging.getLogger(__name__)
 def initiate_call(
     repo: ICallingRepository,
     provider: IVideoProvider,
-    push: IPushSender,
     *,
     caller_id: UUID,
     call_type: str,

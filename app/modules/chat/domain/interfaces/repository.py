@@ -5,6 +5,18 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotations only — no runtime import, no cycle
+    from app.modules.chat.domain.entities import (
+        ChatListItem,
+        ConvSendGuard,
+        ConversationEntity,
+        GroupConversationEntity,
+        MessageEntity,
+        ShareRecipientsResult,
+    )
+
 
 class IChatRepository(ABC):
     """Every database access in the chat module goes through this interface."""

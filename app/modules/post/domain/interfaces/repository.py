@@ -5,6 +5,16 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotations only — no runtime import, no cycle
+    from app.modules.post.domain.entities import (
+        Post,
+        PostComment,
+        PostLike,
+        PostSave,
+    )
+
 
 class IPostRepository(ABC):
     """Every database access in the post module goes through this interface."""
@@ -39,19 +49,19 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
-    def get_profile(self, profile_id: int) -> Optional[Profile]:
+    def get_profile(self, profile_id: int) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod
-    def get_profile_by_user(self, user_id: UUID) -> Optional[Profile]:
+    def get_profile_by_user(self, user_id: UUID) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod
-    def get_profile_with_business(self, profile_id: int) -> Optional[Profile]:
+    def get_profile_with_business(self, profile_id: int) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod
-    def get_profile_with_commodities(self, profile_id: int) -> Optional[Profile]:
+    def get_profile_with_commodities(self, profile_id: int) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod
@@ -224,6 +234,12 @@ class IPostRepository(ABC):
         literal. Hand-written SQL: the <=> operator has no ORM expression and
         the index is only used when ORDER BY is written this way.
         """
+        ...
+
+    @abstractmethod
+    def latest_post_candidates(self, limit: int, exclude_ids: set) -> list[dict]:
+        """Newest visible posts regardless of age or embedding — the last
+        resort when every ranked source returns nothing."""
         ...
 
     @abstractmethod

@@ -515,3 +515,80 @@ def test_toggle_continuous_endpoint_forces_dm_context_type(http_client):
     resp = http_client.post(f"/chat/conversations/{conv_id}/continuous-translation", json={"enabled": True, "target_lang": "hi"})
     assert resp.status_code == 200
     assert resp.json()["continuous_enabled"] is True
+
+
+# ── retry sweep ──────────────────────────────────────────────────────────────
+# The live translation runs in a BackgroundTask, which dies with the process.
+# Persisting translations made the gap detectable; this drains it.
+
+class _RetryRepo:
+    def __init__(self, pending):
+        self._pending = pending
+        self.asked = None
+
+    def untranslated_for_continuous_readers(self, since, limit):
+        self.asked = (since, limit)
+        return self._pending[:limit]
+
+
+def test_retry_translates_each_pending_message():
+    from app.modules.translation.application import jobs
+
+    repo = _RetryRepo([(uuid4(), uuid4()), (uuid4(), uuid4())])
+    done = []
+    result = jobs.run_translation_retry(
+        repo, lambda receiver_id, message_id: done.append(message_id) or True)
+
+    assert result == {"pending": 2, "translated": 2, "failed": 0}, result
+    assert len(done) == 2
+
+
+def test_retry_is_a_noop_when_nothing_is_missing():
+    """A healthy process translates on arrival, so the sweep must cost nothing
+    and above all must not re-translate what already succeeded."""
+    from app.modules.translation.application import jobs
+
+    def _boom(**_):
+        raise AssertionError("engine called with no pending work")
+
+    assert jobs.run_translation_retry(_RetryRepo([]), _boom) == {
+        "pending": 0, "translated": 0, "failed": 0}
+
+
+def test_retry_survives_one_bad_message():
+    """One failure must not abandon the rest of the backlog."""
+    from app.modules.translation.application import jobs
+
+    good, bad = uuid4(), uuid4()
+    seen = []
+
+    def _handle(receiver_id, message_id):
+        if message_id == bad:
+            raise RuntimeError("engine exploded")
+        seen.append(message_id)
+        return True
+
+    result = jobs.run_translation_retry(
+        _RetryRepo([(uuid4(), bad), (uuid4(), good)]), _handle)
+    assert result == {"pending": 2, "translated": 1, "failed": 1}, result
+    assert seen == [good]
+
+
+def test_retry_skips_a_reader_who_turned_continuous_off():
+    """handle_incoming re-checks the preference and returns None; that is not
+    a translation and must not be counted as one."""
+    from app.modules.translation.application import jobs
+
+    result = jobs.run_translation_retry(
+        _RetryRepo([(uuid4(), uuid4())]), lambda **_: None)
+    assert result == {"pending": 1, "translated": 0, "failed": 0}, result
+
+
+def test_retry_caps_each_run():
+    """A backlog drains over several runs instead of one burst of paid calls."""
+    from app.modules.translation.application import jobs
+
+    repo = _RetryRepo([(uuid4(), uuid4()) for _ in range(500)])
+    result = jobs.run_translation_retry(repo, lambda **_: True)
+    assert repo.asked[1] == jobs.MAX_PER_RUN
+    assert result["translated"] == jobs.MAX_PER_RUN

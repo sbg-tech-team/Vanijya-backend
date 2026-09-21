@@ -5,6 +5,17 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotations only — no runtime import, no cycle
+    from app.modules.groups.domain.entities import (
+        Group,
+        GroupDeal,
+        GroupJoinRequest,
+        GroupMedia,
+        GroupMember,
+    )
+
 
 class IGroupsRepository(ABC):
     """Every database access in the groups module goes through this interface."""
@@ -35,11 +46,11 @@ class IGroupsRepository(ABC):
         ...
 
     @abstractmethod
-    def get_profile_by_user(self, user_id: UUID) -> Optional[Profile]:
+    def get_profile_by_user(self, user_id: UUID) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod
-    def get_profile_by_id(self, profile_id: int) -> Optional[Profile]:
+    def get_profile_by_id(self, profile_id: int) -> Optional[Profile]:  # noqa: F821 - ORM Profile; domain must not import the data layer
         ...
 
     @abstractmethod

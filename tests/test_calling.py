@@ -374,7 +374,7 @@ class FakeRepo:
 def _start(repo, caller=ALICE, target=BOB, call_type="dm", group_id=None,
            provider=None, rc=None):
     return initiate_call(
-        repo, provider or FakeProvider(), FakePush(),
+        repo, provider or FakeProvider(),
         caller_id=caller, call_type=call_type,
         target_user_id=target if call_type == "dm" else None,
         group_id=group_id, media="audio", rc=rc,
@@ -414,7 +414,7 @@ def test_self_call_and_video_rejected():
     except SelfCallError:
         pass
     try:
-        initiate_call(repo, FakeProvider(), FakePush(), caller_id=ALICE,
+        initiate_call(repo, FakeProvider(), caller_id=ALICE,
                       call_type="dm", target_user_id=BOB, group_id=None, media="video")
         raise AssertionError("video allowed before it ships")
     except VideoNotAvailableError:

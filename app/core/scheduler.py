@@ -8,6 +8,7 @@ from app.core.database.session import SessionLocal
 from app.core.redis_client import get_redis
 from app.modules.calling.presentation import dependencies as calling_di
 from app.modules.news.presentation import dependencies as news_di
+from app.modules.translation.presentation import dependencies as translation_di
 from app.modules.post.data.repository import PostRepository
 from app.modules.post.data.taste_repository import TasteRepository
 from app.modules.post.recommendation import jobs as post_rec_jobs
@@ -147,6 +148,13 @@ def start():
                       max_instances=1, coalesce=True)
     scheduler.add_job(calling_di.run_stale_reaper_job,  "interval", minutes=2, id="calls.stale_reaper",
                       max_instances=1, coalesce=True)
+
+    # Safety net for continuous translation: the live path is a
+    # BackgroundTask, so a deploy or crash mid-flight loses it with no retry.
+    scheduler.add_job(
+        translation_di.run_translation_retry_job, "interval", minutes=5,
+        id="translation.retry", max_instances=1, coalesce=True,
+    )
 
     scheduler.add_job(_keep_alive,      "interval", minutes=10,  id="server.keepalive")
 

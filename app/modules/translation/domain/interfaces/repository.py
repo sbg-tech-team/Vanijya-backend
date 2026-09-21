@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -36,6 +37,13 @@ class ITranslationRepository(ABC):
     def save_translation(self, message_id: UUID, target_lang: str, translated_text: str) -> None:
         """Persist a finished translation so it survives scroll-back, thread
         reopen, socket reconnect and process restart."""
+        ...
+
+    @abstractmethod
+    def untranslated_for_continuous_readers(
+        self, since: datetime, limit: int
+    ) -> list[tuple[UUID, UUID]]:
+        """(receiver_id, message_id) pairs whose live translation never landed."""
         ...
 
     # ── reader preferences ────────────────────────────────────────────────────

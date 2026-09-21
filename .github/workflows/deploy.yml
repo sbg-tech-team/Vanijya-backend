@@ -70,6 +70,13 @@ jobs:
         env:
           PGPASSWORD: postgres
 
+      # Catches a name a refactor left dangling. A router that references a
+      # dependency it no longer takes raises NameError only when that endpoint
+      # is called, which no unit test does — POST /calls 500'd in production
+      # with all 51 calling tests green.
+      - name: No undefined names
+        run: python -m ruff check --select F821 app/ main.py
+
       - name: Architecture gate
         run: python _migration/test_architecture.py
 

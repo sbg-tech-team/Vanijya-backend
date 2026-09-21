@@ -12,68 +12,94 @@ Each query yields up to 10 articles (GNews free-tier max).
 
 Rotation: select_queries_for_run() in gnews.py slices 2 queries per run
 by time-slot so all 12 are covered evenly over the day.
+
+────────────────────────────────────────────────────────────────────────────
+QUERY SYNTAX — read this before editing.
+
+GNews ANDs every bare term, and `in=title,description` means all of them must
+appear in the title or the description. Adding a word does not broaden a
+query, it narrows it, and the narrowing is brutal:
+
+    India commodity                          1034 results
+    India commodity export                     41
+    India commodity export price                4
+    India commodity export import ban tariff duty regulation    0
+
+The original pool was written as 6–9 bare keywords per entry, in the belief
+that more terms meant wider coverage. Every one of the twelve returned zero,
+so ingestion produced nothing, nothing new arrived for the 30-day archive job
+to spare, and all three news feeds went blank while 2866 rows sat in the
+table. It failed silently: no error, no quota warning, just `saved=0`.
+
+So: ONE required anchor, then alternatives OR'd inside parentheses. Keep the
+anchor to a single word. After changing anything here, run
+
+    python _migration/check_news_queries.py
+
+which fails if any query returns zero.
+────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
 QUERY_POOL: list[dict] = [
     # policy_regulation — domestic
     {
-        "q": "India commodity export import ban tariff duty regulation",
+        "q": "India AND (tariff OR duty OR \"export ban\" OR \"import ban\")",
         "country": "in",
     },
     # supply_disruptions — domestic
     {
-        "q": "India crop harvest monsoon yield production shortage",
+        "q": "India AND (crop OR harvest OR monsoon OR yield OR shortage)",
         "country": "in",
     },
     # price_volatility — domestic
     {
-        "q": "India commodity price mandi market futures",
+        "q": "India AND (mandi OR \"commodity price\" OR futures)",
         "country": "in",
     },
     # deal_flow — domestic
     {
-        "q": "India commodity export tender contract shipment volume",
+        "q": "India AND (tender OR shipment OR contract OR consignment)",
         "country": "in",
     },
     # local_operational
     {
-        "q": "India agriculture mandi APMC grain oilseed arrival market",
+        "q": "India AND (APMC OR mandi OR grain OR oilseed)",
         "country": "in",
     },
     # financial_mechanics — domestic
     {
-        "q": "India commodity futures exchange margin credit financing",
+        "q": "India AND (MCX OR NCDEX OR \"commodity exchange\" OR margin)",
         "country": "in",
     },
     # specific commodities — domestic
     {
-        "q": "rice wheat sugar cotton soybean oil export import India",
+        "q": "India AND (rice OR wheat OR sugar OR cotton OR soybean)",
         "country": "in",
     },
     # structural / long-term demand — domestic
     {
-        "q": "India food agriculture industry demand consumption policy trend",
+        "q": "India AND (agriculture OR \"food processing\" OR \"farm sector\")",
         "country": "in",
     },
     # geopolitical_macro — global
     {
-        "q": "geopolitical commodity trade war sanction currency inflation global",
+        "q": "commodity AND (sanction OR \"trade war\" OR tariff OR inflation)",
         "country": None,
     },
     # supply_disruptions — global
     {
-        "q": "global commodity supply chain logistics port disruption freight",
+        "q": "commodity AND (\"supply chain\" OR freight OR port OR logistics)",
         "country": None,
     },
     # policy_regulation — global (affects Indian exporters)
     {
-        "q": "global commodity trade restriction export ban regulation policy",
+        "q": "commodity AND (\"export ban\" OR restriction OR quota OR regulation)",
         "country": None,
     },
     # price signals — global
     {
-        "q": "commodity price crude oil metal grain soybean global trade market",
+        "q": "commodity AND (\"crude oil\" OR wheat OR copper OR soybean)",
         "country": None,
     },
 ]

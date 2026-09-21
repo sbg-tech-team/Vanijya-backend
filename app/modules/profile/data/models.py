@@ -31,7 +31,7 @@ class User(Base):
     )
 
     profile: Mapped[Optional["Profile"]] = relationship("Profile", back_populates="user", passive_deletes=True)
-    sessions: Mapped[list["UserSession"]] = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")  # type: ignore[name-defined]
+    sessions: Mapped[list["UserSession"]] = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")  # type: ignore[name-defined]  # noqa: F821 - resolved by SQLAlchemy at mapper config
 
 
 # ---------------------------------------------------------------------------

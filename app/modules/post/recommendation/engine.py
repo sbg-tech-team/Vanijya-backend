@@ -518,6 +518,25 @@ def get_recommended_posts(
     )
     pool.extend(fresh)
 
+    # Last resort. Every source above needs an active embedding, and embeddings
+    # expire — so a deployment whose newest post is older than the expiry
+    # window serves a blank feed while thousands of posts sit in the table.
+    # Rank these by recency alone (vec_score 0.0); they still go through
+    # _rerank and _apply_diversity, so taste weights and the per-category and
+    # per-author caps all still apply.
+    if not pool:
+        log.info("feed pool empty for profile %s; falling back to latest posts", profile_id)
+        for r in repo.latest_post_candidates(limit * 4, pool_exclude):
+            target = r["target_roles"]
+            if target and profile.role_id not in target:
+                continue
+            category = CATEGORY_NAMES.get(r["category_id"])
+            if category is None:
+                continue
+            pool.append({"post_id": r["post_id"], "category": category,
+                         "vec_score": 0.0})
+            pool_exclude.add(r["post_id"])
+
     scored, posts, authors = _rerank(
         repo, pool, cat_weights, commodity_weights, author_weights,
         city_weights, state_weights, followed_user_ids,

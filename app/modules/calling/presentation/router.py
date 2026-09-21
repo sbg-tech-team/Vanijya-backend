@@ -135,7 +135,7 @@ def create_call(
 
     try:
         result = service.initiate_call(
-            repo, provider, push,
+            repo, provider,
             caller_id=me,
             call_type=payload.call_type,
             target_user_id=payload.target_user_id,

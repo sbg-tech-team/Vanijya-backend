@@ -28,8 +28,14 @@ log = logging.getLogger(__name__)
 # ── Enricher constants ────────────────────────────────────────────────────────
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-_MODEL = "llama-3.1-8b-instant"
-_FALLBACK_MODEL = "openai/gpt-oss-20b"
+# Groq retires models without notice and the endpoint answers 404, which this
+# adapter treats as a normal retryable failure — so a decommissioned primary
+# does not fail loudly, it just burns all five retries and the backoff on
+# every single article before reaching the fallback. That is what happened to
+# llama-3.1-8b-instant. Both of these must exist in
+# GET https://api.groq.com/openai/v1/models; check_news_queries.py asserts it.
+_MODEL = "openai/gpt-oss-20b"
+_FALLBACK_MODEL = "openai/gpt-oss-120b"
 _TEMPERATURE = 0.2
 _TIMEOUT_S = 60
 _MAX_RETRIES = 5
@@ -103,12 +109,15 @@ class GroqEnricher(INewsEnricher):
 
     def enrich(self, raw_article: RawArticle) -> EnrichedArticle:
         text = _build_text(raw_article)
-        llm_output = self._call_with_retry(text)
-        return _build_enriched_article(raw_article, llm_output)
+        llm_output, model_used = self._call_with_retry(text)
+        return _build_enriched_article(raw_article, llm_output, model_used)
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    def _call_with_retry(self, text: str) -> dict:
+    def _call_with_retry(self, text: str) -> tuple[dict, str]:
+        """Returns (parsed_output, model_that_produced_it). The model is
+        returned rather than assumed: on a fallback the constant is no longer
+        what answered, and model_version is meant to record what did."""
         model = _MODEL
         last_exc: Exception | None = None
 
@@ -117,7 +126,7 @@ class GroqEnricher(INewsEnricher):
                 raw = self._call_groq(text, model)
                 parsed = _parse_json(raw)
                 _validate(parsed)
-                return parsed
+                return parsed, model
             except (EnrichmentError, ValueError, KeyError) as exc:
                 last_exc = exc
                 wait = 2 ** attempt
@@ -203,7 +212,9 @@ def _validate(data: dict) -> None:
         raise ValueError(f"impact.direction {impact.get('direction')!r} invalid")
 
 
-def _build_enriched_article(raw: RawArticle, data: dict) -> EnrichedArticle:
+def _build_enriched_article(
+    raw: RawArticle, data: dict, model_used: str = _MODEL
+) -> EnrichedArticle:
     factor = data["primary_factor"]
     role_weights = RELEVANCY_MATRIX.get(factor, {"trader": 4.5, "broker": 5.5, "exporter": 5.8})
     impact = data.get("impact", {})
@@ -226,7 +237,7 @@ def _build_enriched_article(raw: RawArticle, data: dict) -> EnrichedArticle:
         role_trader=role_weights["trader"],
         role_broker=role_weights["broker"],
         role_exporter=role_weights["exporter"],
-        model_version=_MODEL,
+        model_version=model_used,
         generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         created_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )

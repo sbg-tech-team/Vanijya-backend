@@ -186,7 +186,7 @@ def send_post(
     deliver_uc,
     post_id: int,
     profile_id: int,
-    user_id: "UUID",
+    user_id: "UUID",  # noqa: F821 - string annotation, never evaluated
     payload: PostSendRequest,
 ) -> dict:
     """
