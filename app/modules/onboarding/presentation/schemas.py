@@ -40,3 +40,8 @@ class LogoutRequest(BaseModel):
     # Client can optionally pass the refresh token to explicitly revoke this session.
     # If omitted the server will revoke the session identified by the access token's jti.
     refresh_token: Optional[str] = None
+    # This device's FCM token. Send it, or the phone stays enrolled for push
+    # and keeps ringing for the account that just signed out of it. The server
+    # cannot infer it: a user may be signed in on several devices and the
+    # session carries no link to a push token.
+    fcm_token: Optional[str] = None

@@ -185,6 +185,11 @@ class ICallingRepository(ABC):
         ...
 
     @abstractmethod
+    def delete_device_for_user(self, user_id: UUID, fcm_token: str) -> int:
+        """Forget one device on sign-out. Scoped to the owner."""
+        ...
+
+    @abstractmethod
     def delete_devices(self, fcm_tokens: list[str]) -> int:
         """Forget push tokens FCM reported as unregistered."""
         ...

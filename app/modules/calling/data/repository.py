@@ -569,6 +569,27 @@ class CallingRepository(ICallingRepository):
         )
         return n
 
+    def delete_device_for_user(self, user_id: UUID, fcm_token: str) -> int:
+        """Forget one device, but only if it belongs to this user.
+
+        The user_id is in the WHERE clause deliberately: an unscoped
+        delete-by-token would let anyone silence a phone whose token they had
+        obtained.
+        """
+        n = (
+            self.db.query(UserDevice)
+            .filter(UserDevice.user_id == user_id, UserDevice.fcm_token == fcm_token)
+            .delete(synchronize_session=False)
+        )
+        # The legacy single-token column would otherwise resurrect it via the
+        # fallback branch of push_targets.
+        (
+            self.db.query(User)
+            .filter(User.id == user_id, User.fcm_token == fcm_token)
+            .update({"fcm_token": None}, synchronize_session=False)
+        )
+        return n
+
     # ── Jobs ──────────────────────────────────────────────────────────────────
 
     def expired_ringing_call_ids(self, cutoff: datetime) -> list[UUID]:

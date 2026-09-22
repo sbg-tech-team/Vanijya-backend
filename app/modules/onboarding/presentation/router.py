@@ -15,6 +15,9 @@ from app.core.security.jwt_handler import (
     create_onboarding_token,
     decode_access_token,
 )
+from app.modules.calling.application.use_cases import service as calling_service
+from app.modules.calling.domain.interfaces.repository import ICallingRepository
+from app.modules.calling.presentation.dependencies import get_calling_repo
 from app.modules.onboarding.application.use_cases.service import (
     create_session,
     issue_onboarding_token,
@@ -188,11 +191,16 @@ def refresh_tokens(
 def logout(
     payload: LogoutRequest,
     repo: IOnboardingRepository = Depends(get_onboarding_repo),
+    calling_repo: ICallingRepository = Depends(get_calling_repo),
     token: str = Depends(_bearer),
 ):
     """
-    Revoke the current session.
-    The client must send its access token in the Authorization header.
+    Revoke the current session, and unregister this device from push if the
+    client sent its `fcm_token`.
+
+    Both here rather than in a separate endpoint: logout is one thing a client
+    already does, and a second call it could forget or fail to make is how a
+    signed-out phone keeps ringing for the previous account.
     """
     try:
         claims = decode_access_token(token)
@@ -202,4 +210,16 @@ def logout(
         return ok(None, "Logged out.")
 
     revoke_session_by_jti(repo, session_id)
+
+    if payload.fcm_token:
+        # Best-effort: a push row that outlives the session is a privacy
+        # problem, but failing to remove it must not fail the logout itself —
+        # the client has already been told the session is gone.
+        try:
+            calling_service.unregister_device(
+                calling_repo, user_id=claims.user_id, fcm_token=payload.fcm_token,
+            )
+        except Exception:
+            log.warning("logout: could not unregister device for %s", claims.user_id)
+
     return ok(None, "Logged out successfully.")

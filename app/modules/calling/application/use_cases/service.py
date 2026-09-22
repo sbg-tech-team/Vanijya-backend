@@ -17,6 +17,9 @@ from app.modules.calling.application.use_cases.initiate_call import (  # noqa: F
 from app.modules.calling.application.use_cases.register_device import (  # noqa: F401
     register_device,
 )
+from app.modules.calling.application.use_cases.unregister_device import (  # noqa: F401
+    unregister_device,
+)
 from app.modules.calling.application.use_cases.respond_to_call import (  # noqa: F401
     accept_call,
     reject_call,
@@ -32,4 +35,5 @@ __all__ = [
     "list_calls",
     "refresh_token",
     "register_device",
+    "unregister_device",
 ]

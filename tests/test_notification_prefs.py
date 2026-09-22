@@ -1,4 +1,4 @@
-"""Notification switches must be enforced by the server, not the client.
+"""Notification switches, and sign-out, must be handled by the server.
 
 The Settings toggles wrote to SharedPreferences and nothing read them, so
 turning one off changed nothing. The client-side alternative on the table was
@@ -23,6 +23,7 @@ if not any(h in _url for h in ("localhost", "127.0.0.1")):
 
 import main  # noqa: F401,E402 — registers every model on the metadata
 from app.core.database.session import SessionLocal  # noqa: E402
+from app.modules.calling.data.models import UserDevice  # noqa: E402
 from app.modules.calling.data.repository import CallingRepository  # noqa: E402
 from app.modules.profile.data.models import NotificationPreferences, User  # noqa: E402
 from app.modules.profile.data.repository import ProfileRepository  # noqa: E402
@@ -80,9 +81,34 @@ try:
     check("partial: market_alerts now off", p.market_alerts_enabled, False)
     check("market_alerts off: blocked", n("market_alerts"), 0)
     check("market_alerts off: calls still ring", n(), 1)
+    # ── sign-out must unregister the device ─────────────────────────────────
+    # Logout cleared tokens on the phone but left the row here, so the device
+    # kept ringing for the account that signed out of it.
+    other = uuid.uuid4()
+    db.add(User(id=other, country_code="+91",
+                phone_number=f"{uuid.uuid4().int % 10**10:010d}"))
+    db.commit()
+    calls.register_device(other, f"tok-other-{other}", "ios", now)
+    db.commit()
+
+    # another user cannot silence a phone whose token they happen to hold
+    calls.delete_device_for_user(other, f"tok-{uid}")
+    db.commit()
+    check("delete is scoped to the owner", n(), 1)
+
+    # the owner can
+    calls.delete_device_for_user(uid, f"tok-{uid}")
+    db.commit()
+    check("owner's sign-out unregisters the device", n(), 0)
+    check("the other user's device is untouched",
+          len(calls.push_targets([other])), 1)
+
+    db.query(UserDevice).filter_by(user_id=other).delete()
+    db.query(User).filter_by(id=other).delete()
+    db.commit()
+
 finally:
     db.query(NotificationPreferences).filter_by(user_id=uid).delete()
-    from app.modules.calling.data.models import UserDevice
     db.query(UserDevice).filter_by(user_id=uid).delete()
     db.query(User).filter_by(id=uid).delete()
     db.commit()
