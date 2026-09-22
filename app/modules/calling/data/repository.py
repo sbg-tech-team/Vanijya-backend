@@ -36,7 +36,7 @@ from app.modules.calling.domain.value_objects import (
 from app.modules.chat.data.models import Conversation, ConversationMember
 from app.modules.chat.domain.value_objects import ConversationStatus
 from app.modules.groups.data.models import Group, GroupMember
-from app.modules.profile.data.models import Profile, User
+from app.modules.profile.data.models import NotificationPreferences, Profile, User
 from app.modules.safety.data.models import UserBlock
 
 log = logging.getLogger(__name__)
@@ -458,14 +458,30 @@ class CallingRepository(ICallingRepository):
 
     # ── Push ──────────────────────────────────────────────────────────────────
 
-    def push_targets(self, user_ids: list[UUID]) -> list[PushTarget]:
-        """Every device belonging to these users.
+    def push_targets(
+        self, user_ids: list[UUID], category: str = "push"
+    ) -> list[PushTarget]:
+        """Every device belonging to these users, minus those who switched this
+        category off.
+
+        The preference check lives here because both push call sites route
+        through this method — the request path and the sweep jobs. Putting it
+        in either caller would leave the other sending regardless.
+
+        `category` is "push" (master only), "group", or "market_alerts". The
+        master switch gates everything: off means no push of any kind, calls
+        included, which is what a person means by turning push notifications
+        off.
 
         Reads user_devices first, then falls back to the legacy
         users.fcm_token for anyone who has not re-registered since the switch.
         Deduped by token: a device present in both sources must not be rung
         twice.
         """
+        if not user_ids:
+            return []
+
+        user_ids = self._push_allowed(user_ids, category)
         if not user_ids:
             return []
 
@@ -491,6 +507,26 @@ class CallingRepository(ICallingRepository):
                 out.append(PushTarget(user_id=uid, fcm_token=token))
 
         return out
+
+    def _push_allowed(self, user_ids: list[UUID], category: str) -> list[UUID]:
+        """Drop users who switched this category off. A user with no row has
+        never opened Settings and keeps the previous all-on behaviour."""
+        column = {
+            "group": NotificationPreferences.group_enabled,
+            "market_alerts": NotificationPreferences.market_alerts_enabled,
+        }.get(category)
+
+        q = self.db.query(NotificationPreferences.user_id).filter(
+            NotificationPreferences.user_id.in_(user_ids)
+        )
+        blocked = {
+            r[0] for r in q.filter(
+                NotificationPreferences.push_enabled.is_(False)
+                if column is None
+                else (NotificationPreferences.push_enabled.is_(False)) | (column.is_(False))
+            ).all()
+        }
+        return [u for u in user_ids if u not in blocked]
 
     def register_device(
         self, user_id: UUID, fcm_token: str, platform: str | None, now: datetime,

@@ -145,3 +145,18 @@ class ProfileUpdate(BaseModel):
     state: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+
+
+
+class NotificationPrefsUpdate(BaseModel):
+    """Every field optional: send only the switch the user touched. An empty
+    body is a no-op that returns the current state."""
+    push_enabled: Optional[bool] = None
+    market_alerts_enabled: Optional[bool] = None
+    group_enabled: Optional[bool] = None
+
+
+class NotificationPrefsOut(BaseModel):
+    push_enabled: bool
+    market_alerts_enabled: bool
+    group_enabled: bool

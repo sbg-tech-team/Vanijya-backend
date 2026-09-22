@@ -4,6 +4,10 @@
 from app.modules.profile.application.use_cases.rebuild_embedding import (
     _upsert_user_embedding,
 )
+from app.modules.profile.application.use_cases.notification_prefs import (  # noqa: F401
+    get_notification_prefs,
+    update_notification_prefs,
+)
 from app.modules.profile.application.use_cases.create_profile import (
     _uniq,
     _validate_role,
@@ -56,6 +60,8 @@ __all__ = [
     "store_access_token",
     "get_access_token",
     "update_fcm_token",
+    "get_notification_prefs",
+    "update_notification_prefs",
     "get_profile_id_for_user",
     "delete_user",
     # profile CRUD

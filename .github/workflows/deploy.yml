@@ -113,6 +113,9 @@ jobs:
       - name: Translation unit tests
         run: python -m pytest tests/ -q
 
+      - name: Notification preferences are enforced at the send site
+        run: python tests/test_notification_prefs.py
+
       - name: Stored translations reach GET /messages
         run: python tests/test_translation_readback.py
 

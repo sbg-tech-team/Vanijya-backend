@@ -49,7 +49,7 @@ def drop_calls_between_task(user_a: UUID, user_b: UUID) -> int:
         db.close()
 
 
-def push_task(user_ids: list[UUID], data: dict) -> int:
+def push_task(user_ids: list[UUID], data: dict, category: str = "push") -> int:
     """Background entry point for one push fan-out.
 
     Owns its session because the request's is already closed by the time a
@@ -59,7 +59,7 @@ def push_task(user_ids: list[UUID], data: dict) -> int:
     db = SessionLocal()
     try:
         repo = CallingRepository(db)
-        targets = repo.push_targets(user_ids)
+        targets = repo.push_targets(user_ids, category)
         if not targets:
             return 0
         dead: list[str] = []

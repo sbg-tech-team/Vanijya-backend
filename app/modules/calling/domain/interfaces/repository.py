@@ -168,8 +168,12 @@ class ICallingRepository(ABC):
     # -- push ------------------------------------------------------------------
 
     @abstractmethod
-    def push_targets(self, user_ids: list[UUID]) -> list[PushTarget]:
-        """Every device for these users, deduped by token."""
+    def push_targets(
+        self, user_ids: list[UUID], category: str = "push"
+    ) -> list[PushTarget]:
+        """Every device for these users, deduped by token, minus anyone who
+        switched this notification category off. `category` is "push",
+        "group" or "market_alerts"."""
         ...
 
     @abstractmethod

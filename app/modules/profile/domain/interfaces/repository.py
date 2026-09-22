@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from uuid import UUID
 
-from app.modules.profile.domain.entities import ProfileEntity, UserEntity
+from app.modules.profile.domain.entities import NotificationPrefs, ProfileEntity, UserEntity
 
 
 class IProfileRepository(ABC):
@@ -150,4 +150,21 @@ class IProfileRepository(ABC):
         """Returns (posts, next_cursor, page_count). page_count is the number of
         posts in this page, not the user's total. Rendering them as feed cards
         is the use case's job — see get_profile."""
+        ...
+
+    @abstractmethod
+    def get_notification_prefs(self, user_id: UUID) -> "NotificationPrefs":
+        """All-on for a user with no row — nobody is created one until they
+        change a switch."""
+        ...
+
+    @abstractmethod
+    def set_notification_prefs(
+        self,
+        user_id: UUID,
+        push_enabled: bool | None = None,
+        market_alerts_enabled: bool | None = None,
+        group_enabled: bool | None = None,
+    ) -> "NotificationPrefs":
+        """Partial: None leaves that switch untouched."""
         ...

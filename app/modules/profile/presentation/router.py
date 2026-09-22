@@ -20,6 +20,10 @@ from app.modules.profile.presentation.schemas import (
     UserCreate,
     FcmTokenUpdate,
 )
+from app.modules.profile.application.schemas import (
+    NotificationPrefsUpdate,
+    NotificationPrefsOut,
+)
 from app.modules.profile.application.use_cases.service import (
     create_user,
     create_profile,
@@ -32,6 +36,8 @@ from app.modules.profile.application.use_cases.service import (
     get_avatar_upload_url,
     save_avatar_url,
     update_fcm_token,
+    get_notification_prefs,
+    update_notification_prefs,
     ProfileConflictError,
     ProfileNotFoundError,
     ProfileStorageUnavailableError,
@@ -228,6 +234,42 @@ def delete_user_api(
 # Public profile view — JWT protected, profile_id in path
 # Self-view redirects to /profile/me
 # ---------------------------------------------------------------------------
+
+@router.get("/notification-preferences", response_model=NotificationPrefsOut)
+def get_notification_preferences_api(
+    cu: CurrentUser = Depends(get_current_user),
+    repo: IProfileRepository = Depends(_get_repo),
+):
+    """The caller's own notification switches.
+
+    Returns all-true for a user who has never changed one — there is no row
+    until they do. Registered BEFORE /{profile_id} so the path is not parsed
+    as a profile id.
+    """
+    return get_notification_prefs(repo, cu.user_id)
+
+
+@router.patch("/notification-preferences", response_model=NotificationPrefsOut)
+def update_notification_preferences_api(
+    payload: NotificationPrefsUpdate,
+    cu: CurrentUser = Depends(get_current_user),
+    repo: IProfileRepository = Depends(_get_repo),
+):
+    """Partial update — send only the switch the user touched. Returns the
+    full resulting state so the client never has to guess.
+
+    `push_enabled: false` silences every push including incoming calls; that
+    is what a master switch means, and it is the reason this lives here rather
+    than in the client deleting its FCM token (which would also deregister the
+    device for calls as a side effect of an unrelated toggle).
+    """
+    return update_notification_prefs(
+        repo, cu.user_id,
+        push_enabled=payload.push_enabled,
+        market_alerts_enabled=payload.market_alerts_enabled,
+        group_enabled=payload.group_enabled,
+    )
+
 
 @router.get("/{profile_id}")
 def get_profile_api(

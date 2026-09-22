@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.modules.profile.data.models import (
+    NotificationPreferences,
     Business,
     Commodity,
     Interest,
@@ -20,6 +21,7 @@ from app.modules.profile.data.models import (
     UserEmbedding,
 )
 from app.modules.profile.domain.entities import (
+    NotificationPrefs,
     BusinessEntity,
     CommodityEntity,
     InterestEntity,
@@ -423,3 +425,42 @@ class ProfileRepository(IProfileRepository):
         posts = post_query.order_by(Post.id.desc()).limit(limit).all()
         next_cursor = posts[-1].id if len(posts) == limit else None
         return posts, next_cursor, len(posts)
+
+
+    # ── Notification preferences ─────────────────────────────────────────────
+
+    def get_notification_prefs(self, user_id: UUID) -> NotificationPrefs:
+        row = self._db.get(NotificationPreferences, user_id)
+        if row is None:
+            return NotificationPrefs()  # never opened Settings: everything on
+        return NotificationPrefs(
+            push_enabled=row.push_enabled,
+            market_alerts_enabled=row.market_alerts_enabled,
+            group_enabled=row.group_enabled,
+        )
+
+    def set_notification_prefs(
+        self,
+        user_id: UUID,
+        push_enabled: bool | None = None,
+        market_alerts_enabled: bool | None = None,
+        group_enabled: bool | None = None,
+    ) -> NotificationPrefs:
+        """Partial update: None means "leave this one alone", so a client can
+        send only the switch the user actually touched."""
+        row = self._db.get(NotificationPreferences, user_id)
+        if row is None:
+            row = NotificationPreferences(user_id=user_id)
+            self._db.add(row)
+        if push_enabled is not None:
+            row.push_enabled = push_enabled
+        if market_alerts_enabled is not None:
+            row.market_alerts_enabled = market_alerts_enabled
+        if group_enabled is not None:
+            row.group_enabled = group_enabled
+        self._db.commit()
+        return NotificationPrefs(
+            push_enabled=row.push_enabled,
+            market_alerts_enabled=row.market_alerts_enabled,
+            group_enabled=row.group_enabled,
+        )

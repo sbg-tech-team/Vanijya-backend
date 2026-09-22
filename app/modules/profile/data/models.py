@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
@@ -171,4 +171,33 @@ class UserEmbedding(Base):
     
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class NotificationPreferences(Base):
+    """Per-user notification switches.
+
+    Absent row means everything is on, so no backfill is needed and a user who
+    has never opened Settings behaves exactly as before.
+
+    Enforced server-side in CallingRepository.push_targets, not on the client:
+    the client-side alternative was deleting the FCM token, which also
+    deregisters the device for calls — a "market alerts off" switch that
+    silently stops the phone ringing.
+    """
+
+    __tablename__ = "notification_preferences"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Master switch. Off means no push of any kind reaches this user, calls
+    # included — that is what "Push notifications: off" means to a person.
+    push_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    market_alerts_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    group_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )

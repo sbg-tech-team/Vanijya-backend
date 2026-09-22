@@ -126,3 +126,13 @@ class UserEmbeddingEntity:
     is_vector: Optional[List[float]] = None
     # 10-dim post feed vector
     post_feed_vector: Optional[List[float]] = None
+
+
+@dataclass
+class NotificationPrefs:
+    """What a user has switched on. All True is the default for anyone who has
+    never opened Settings — there is no row for them and none is created until
+    they change something."""
+    push_enabled: bool = True
+    market_alerts_enabled: bool = True
+    group_enabled: bool = True

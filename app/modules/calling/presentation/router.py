@@ -102,7 +102,10 @@ def _dispatch(background: BackgroundTasks, result: CallDispatch):
             background.add_task(emit_to_user, ev.user_id, ev.event, ev.payload)
 
     for msg in result.pushes:
-        background.add_task(push_task, msg.user_ids, msg.data)
+        # A group call's push is a group notification; everything else rides
+        # the master switch only.
+        category = "group" if msg.data.get("call_type") == "group" else "push"
+        background.add_task(push_task, msg.user_ids, msg.data, category)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
