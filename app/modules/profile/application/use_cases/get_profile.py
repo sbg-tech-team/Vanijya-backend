@@ -29,7 +29,7 @@ def _render_posts(
 
 
 def get_my_profile(repo: IProfileRepository, user_id: UUID) -> ProfileResponse:
-    profile = repo.get_profile_for_user(user_id, with_follow_counts=True)
+    profile = repo.get_profile_for_user(user_id)
     if not profile:
         raise ProfileNotFoundError("Profile not found")
     posts_count = repo.count_posts_for_profile(profile.id)
@@ -49,10 +49,7 @@ def get_profile_by_id(
     posts_cursor: int | None = None,
     posts_limit: int = 20,
 ) -> ProfilePublicResponse:
-    # The only two call sites that render the follower/following numbers.
-    # Everything else looking a profile up (news feed context, avatar
-    # upload, group posts) would otherwise pay two counts it never reads.
-    profile = repo.get_profile_by_id(profile_id, with_follow_counts=True)
+    profile = repo.get_profile_by_id(profile_id)
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 
@@ -100,7 +97,7 @@ def get_profile_by_user_id(
     posts_cursor: int | None = None,
     posts_limit: int = 20,
 ) -> ProfilePublicResponse:
-    profile = repo.get_profile_by_user_id(user_id, with_follow_counts=True)
+    profile = repo.get_profile_by_user_id(user_id)
     if not profile:
         raise ProfileNotFoundError("Profile not found")
 

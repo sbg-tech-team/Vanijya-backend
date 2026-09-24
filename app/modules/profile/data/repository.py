@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -53,9 +53,7 @@ def _to_user_entity(user: User) -> UserEntity:
     )
 
 
-def _to_profile_entity(
-    profile: Profile, followers_count: int = 0, following_count: int = 0
-) -> ProfileEntity:
+def _to_profile_entity(profile: Profile) -> ProfileEntity:
     business = None
     if profile.business:
         business = BusinessEntity(
@@ -103,8 +101,8 @@ def _to_profile_entity(
         quantity_max=profile.quantity_max,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
-        followers_count=followers_count,
-        following_count=following_count,
+        followers_count=profile.followers_count,
+        following_count=profile.following_count,
         avatar_url=profile.avatar_url,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
@@ -196,9 +194,7 @@ class ProfileRepository(IProfileRepository):
 
     # ---- Profile — lookups --------------------------------------------------
 
-    def get_profile_for_user(
-        self, user_id: UUID, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_for_user(self, user_id: UUID) -> ProfileEntity | None:
         profile = (
             self._db.query(Profile)
             .options(
@@ -210,13 +206,9 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.users_id == user_id)
             .first()
         )
-        if profile is None:
-            return None
-        return self._with_follow_counts(profile) if with_follow_counts else _to_profile_entity(profile)
+        return _to_profile_entity(profile) if profile else None
 
-    def get_profile_by_id(
-        self, profile_id: int, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_by_id(self, profile_id: int) -> ProfileEntity | None:
         profile = (
             self._db.query(Profile)
             .options(
@@ -226,13 +218,9 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.id == profile_id)
             .first()
         )
-        if profile is None:
-            return None
-        return self._with_follow_counts(profile) if with_follow_counts else _to_profile_entity(profile)
+        return _to_profile_entity(profile) if profile else None
 
-    def get_profile_by_user_id(
-        self, user_id: UUID, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_by_user_id(self, user_id: UUID) -> ProfileEntity | None:
         profile = (
             self._db.query(Profile)
             .options(
@@ -242,9 +230,7 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.users_id == user_id)
             .first()
         )
-        if profile is None:
-            return None
-        return self._with_follow_counts(profile) if with_follow_counts else _to_profile_entity(profile)
+        return _to_profile_entity(profile) if profile else None
 
     def get_profile_id_for_user(self, user_id: UUID) -> int | None:
         row = self._db.query(Profile.id).filter(Profile.users_id == user_id).first()
@@ -367,33 +353,6 @@ class ProfileRepository(IProfileRepository):
         self._db.commit()
 
     # ---- Lookup-table validation --------------------------------------------
-
-    def _with_follow_counts(self, profile: Profile) -> ProfileEntity:
-        """Counts come from the follow rows, never from a stored column.
-
-        They used to be integer columns on `profile` kept in step by hand in
-        ConnectionsRepository.add_follow / remove_follow. That is correct only
-        while every write goes through those two methods — seeding and
-        load-test cleanup wrote user_connections directly, and the counters
-        drifted: 15 of 91 profiles disagreed with the rows, one by 762,373. A
-        profile header said 3 followers while /followers returned 2.
-
-        One query, not two: both directions are counted in a single pass, and
-        both columns are indexed so the OR resolves as a bitmap of the two.
-        Callers opt in — only the two endpoints that render these numbers ask
-        for them, because a profile lookup happens on nearly every news and
-        group request that never reads them.
-        """
-        row = self._db.execute(
-            text("""
-                SELECT count(*) FILTER (WHERE following_id = :u) AS followers,
-                       count(*) FILTER (WHERE follower_id  = :u) AS following
-                FROM user_connections
-                WHERE follower_id = :u OR following_id = :u
-            """),
-            {"u": profile.users_id},
-        ).one()
-        return _to_profile_entity(profile, row.followers or 0, row.following or 0)
 
     def role_exists(self, role_id: int) -> bool:
         return self._db.query(Role.id).filter(Role.id == role_id).first() is not None

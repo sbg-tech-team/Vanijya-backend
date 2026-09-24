@@ -13,11 +13,7 @@ def fmt_profile(profile, *, msg_req_status: str | None = None,
         "user_id":              str(profile.users_id),
         "name":                 profile.name,
         "avatar_url":           profile.avatar_url,
-        # Stored casing, not lowercased. The roles table holds "Trader" and
-        # every other module serves it that way, so lowercasing here meant the
-        # same field came back "trader" in a followers list and "Trader" in the
-        # profile header. Search is unaffected: find_role_by_name uses ILIKE.
-        "role":                 profile.role.name if profile.role else None,
+        "role":                 profile.role.name.lower() if profile.role else None,
         "commodity":            [pc.commodity.name.lower() for pc in profile.commodities],
         "is_user_verified":     profile.is_user_verified,
         "is_business_verified": profile.is_business_verified,

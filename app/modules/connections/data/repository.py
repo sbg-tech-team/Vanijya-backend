@@ -84,11 +84,13 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
         ).first()
 
     def add_follow(self, follower_id: UUID, following_id: UUID) -> None:
-        # No counter to bump: follower/following counts are derived from these
-        # rows when a profile is read. Maintaining an integer alongside was
-        # correct only while every write went through here, and seeding and
-        # load-test cleanup did not.
         self.db.add(UserConnection(follower_id=follower_id, following_id=following_id))
+        self.db.query(Profile).filter(Profile.users_id == follower_id).update(
+            {"following_count": Profile.following_count + 1}
+        )
+        self.db.query(Profile).filter(Profile.users_id == following_id).update(
+            {"followers_count": Profile.followers_count + 1}
+        )
         self.db.commit()
 
     def remove_follow(self, follower_id: UUID, following_id: UUID) -> bool:
@@ -96,6 +98,14 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
         if not conn:
             return False
         self.db.delete(conn)
+        # decrement following_count on the follower's profile (floor at 0)
+        self.db.query(Profile).filter(
+            Profile.users_id == follower_id, Profile.following_count > 0
+        ).update({"following_count": Profile.following_count - 1})
+        # decrement followers_count on the target's profile (floor at 0)
+        self.db.query(Profile).filter(
+            Profile.users_id == following_id, Profile.followers_count > 0
+        ).update({"followers_count": Profile.followers_count - 1})
         # void only the caller's own outgoing message request to this user
         self.db.query(MessageRequest).filter(
             MessageRequest.sender_id == follower_id,

@@ -39,23 +39,17 @@ class IProfileRepository(ABC):
     # -------------------------------------------------------------------------
 
     @abstractmethod
-    def get_profile_for_user(
-        self, user_id: UUID, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_for_user(self, user_id: UUID) -> ProfileEntity | None:
         """Full load: user + business + commodities (with names) + interests (with names)."""
         ...
 
     @abstractmethod
-    def get_profile_by_id(
-        self, profile_id: int, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_by_id(self, profile_id: int) -> ProfileEntity | None:
         """Public load: business + commodities (with names). No user row."""
         ...
 
     @abstractmethod
-    def get_profile_by_user_id(
-        self, user_id: UUID, with_follow_counts: bool = False
-    ) -> ProfileEntity | None:
+    def get_profile_by_user_id(self, user_id: UUID) -> ProfileEntity | None:
         """Public load: business + commodities (with names). No user row."""
         ...
 
