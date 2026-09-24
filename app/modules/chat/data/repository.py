@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select
+from collections import defaultdict
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
@@ -137,6 +139,140 @@ def _build_conversation(db: Session, conv: Conversation, requesting_user_id: UUI
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )
+
+
+def _build_conversations_batch(
+    db: Session, convs: list[Conversation], requesting_user_id: UUID
+) -> dict[UUID, ConversationEntity]:
+    """Batched form of _build_conversation for a whole page of conversations —
+    5 queries total instead of 5 per conversation (members, other-profiles,
+    last messages, unread counts, in one round-trip each)."""
+    if not convs:
+        return {}
+    conv_ids = [c.id for c in convs]
+
+    members = (
+        db.query(ConversationMember)
+        .filter(ConversationMember.conversation_id.in_(conv_ids))
+        .all()
+    )
+    members_by_conv: dict[UUID, list[ConversationMember]] = defaultdict(list)
+    for m in members:
+        members_by_conv[m.conversation_id].append(m)
+
+    other_member_by_conv: dict[UUID, ConversationMember] = {}
+    my_member_by_conv: dict[UUID, ConversationMember] = {}
+    other_user_ids: set[UUID] = set()
+    for conv_id, mlist in members_by_conv.items():
+        other = next((m for m in mlist if m.user_id != requesting_user_id), None)
+        mine = next((m for m in mlist if m.user_id == requesting_user_id), None)
+        if other is None or mine is None:
+            continue
+        other_member_by_conv[conv_id] = other
+        my_member_by_conv[conv_id] = mine
+        other_user_ids.add(other.user_id)
+
+    profiles = db.query(Profile).filter(Profile.users_id.in_(other_user_ids)).all()
+    profile_by_user = {p.users_id: p for p in profiles}
+
+    last_msg_rows = (
+        db.query(Message)
+        .distinct(Message.context_id)
+        .filter(
+            Message.context_type == "dm",
+            Message.context_id.in_(conv_ids),
+            Message.is_deleted.is_(False),
+        )
+        .order_by(Message.context_id, Message.sent_at.desc())
+        .all()
+    )
+    last_msg_by_conv = {
+        row.context_id: DMLastMessage(
+            id=row.id, body=row.body, message_type=row.message_type,
+            sender_id=row.sender_id, sent_at=row.sent_at,
+        )
+        for row in last_msg_rows
+    }
+
+    unread_rows = (
+        db.query(Message.context_id, func.count(Message.id))
+        .join(
+            ConversationMember,
+            and_(
+                ConversationMember.conversation_id == Message.context_id,
+                ConversationMember.user_id == requesting_user_id,
+            ),
+        )
+        .filter(
+            Message.context_type == "dm",
+            Message.context_id.in_(conv_ids),
+            Message.is_deleted.is_(False),
+            Message.sender_id != requesting_user_id,
+            or_(
+                ConversationMember.last_read_at.is_(None),
+                Message.sent_at > ConversationMember.last_read_at,
+            ),
+        )
+        .group_by(Message.context_id)
+        .all()
+    )
+    unread_by_conv = {cid: cnt for cid, cnt in unread_rows}
+
+    result: dict[UUID, ConversationEntity] = {}
+    for conv in convs:
+        other_member = other_member_by_conv.get(conv.id)
+        my_member = my_member_by_conv.get(conv.id)
+        if other_member is None or my_member is None:
+            continue
+        other_profile = profile_by_user.get(other_member.user_id)
+        if other_profile is None:
+            continue
+        result[conv.id] = ConversationEntity(
+            id=conv.id,
+            status=conv.status,
+            initiator_id=conv.initiator_id,
+            participant=_profile_snap(other_profile),
+            last_message=last_msg_by_conv.get(conv.id),
+            unread_count=unread_by_conv.get(conv.id, 0),
+            is_muted=my_member.is_muted,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        )
+    return result
+
+
+def _group_last_messages_batch(db: Session, group_ids: list[UUID]) -> dict[UUID, GroupLastMessage]:
+    """Batched form of _group_last_message for a whole page of groups — 2
+    queries total instead of up to 2 per group."""
+    if not group_ids:
+        return {}
+    rows = (
+        db.query(Message)
+        .distinct(Message.context_id)
+        .filter(
+            Message.context_type == "group",
+            Message.context_id.in_(group_ids),
+            Message.is_deleted.is_(False),
+        )
+        .order_by(Message.context_id, Message.sent_at.desc())
+        .all()
+    )
+    sender_ids = {row.sender_id for row in rows}
+    sender_names = {
+        p.users_id: p.name
+        for p in db.query(Profile.users_id, Profile.name).filter(Profile.users_id.in_(sender_ids))
+    }
+    return {
+        row.context_id: GroupLastMessage(
+            id=row.id,
+            sender_id=row.sender_id,
+            sender_name=sender_names.get(row.sender_id, "Unknown"),
+            body=row.body,
+            message_type=row.message_type,
+            sent_at=row.sent_at,
+        )
+        for row in rows
+    }
 
 
 def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
@@ -307,7 +443,8 @@ class ChatRepository(IChatRepository):
             .limit(per_page)
             .all()
         )
-        return [e for conv in convs if (e := _build_conversation(self.db, conv, user_id))]
+        by_conv = _build_conversations_batch(self.db, convs, user_id)
+        return [by_conv[conv.id] for conv in convs if conv.id in by_conv]
 
     # ── Messages ───────────────────────────────────────────────────────────────
 
@@ -739,9 +876,10 @@ class ChatRepository(IChatRepository):
             .join(GroupMember, and_(GroupMember.group_id == Group.id, GroupMember.user_id == user_id))
             .all()
         )
+        last_by_group = _group_last_messages_batch(self.db, [group.id for group, _ in rows])
         result = []
         for group, is_muted in rows:
-            last = _group_last_message(self.db, group.id)
+            last = last_by_group.get(group.id)
             result.append(GroupConversationEntity(
                 id=group.id,
                 group_name=group.name,
@@ -765,10 +903,11 @@ class ChatRepository(IChatRepository):
         paginates in memory (bounded per user — fine for a chat list)."""
         conv_ids = select(ConversationMember.conversation_id).where(ConversationMember.user_id == user_id)
         convs = self.db.query(Conversation).filter(Conversation.id.in_(conv_ids)).all()
+        dms_by_conv = _build_conversations_batch(self.db, convs, user_id)
 
         items: list[ChatListItem] = []
         for conv in convs:
-            dm = _build_conversation(self.db, conv, user_id)
+            dm = dms_by_conv.get(conv.id)
             if dm is None:
                 continue
             last_activity = dm.last_message.sent_at if dm.last_message else dm.updated_at

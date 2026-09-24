@@ -95,13 +95,7 @@ class GetFeedUseCase:
             else None
         )
 
-        # Assemble cards
-        cards: list[NewsCard] = []
-        for article_id in page_ids:
-            card = self._assemble_card(profile_id, article_id)
-            if card is not None:
-                cards.append(card)
-
+        cards = self._assemble_cards(profile_id, page_ids)
         return NewsFeedPage(articles=cards, next_cursor=next_cursor)
 
     # -- Ranking --------------------------------------------------------------
@@ -144,35 +138,46 @@ class GetFeedUseCase:
         return ranked_ids
 
     # -- Card assembly ----------------------------------------------------------
+    # One batched query per field across the whole page rather than five
+    # per-article round-trips (was O(5*page_size) DB calls — see PERF notes).
 
-    def _assemble_card(self, profile_id: int, article_id: UUID) -> NewsCard | None:
-        raw = self._repo.get_raw_article(article_id)
-        if raw is None:
-            return None
+    def _assemble_cards(self, profile_id: int, article_ids: list[UUID]) -> list[NewsCard]:
+        raw_by_id = self._repo.get_raw_articles(article_ids)
+        enriched_by_id = self._repo.get_enriched_articles(article_ids)
+        stats_by_id = self._repo.get_article_stats_batch(article_ids)
+        liked_ids = self._repo.get_like_states(profile_id, article_ids)
+        saved_ids = self._repo.get_save_states(profile_id, article_ids)
 
-        enriched = self._repo.get_enriched_article(article_id)
-        stats = self._repo.get_article_stats(article_id)
-        is_liked = self._repo.get_like_state(profile_id, article_id)
-        is_saved = self._repo.get_save_state(profile_id, article_id)
+        cards: list[NewsCard] = []
+        for article_id in article_ids:
+            raw = raw_by_id.get(article_id)
+            if raw is None:
+                continue
 
-        return NewsCard(
-            article_id=raw.id,
-            title=raw.title,
-            platform_arrived_at=raw.platform_arrived_at,
-            time_on_platform=_compute_time_on_platform(raw.platform_arrived_at),
-            image_url=raw.image_url,
-            source_name=raw.source_name,
-            summary_bullets=enriched.summary_bullets if enriched else None,
-            primary_factor=enriched.primary_factor if enriched else None,
-            geo_category=enriched.geo_category if enriched else None,
-            is_government=enriched.is_government if enriched else False,
-            impact_direction=enriched.impact_direction if enriched else None,
-            impact_score=enriched.impact_score if enriched else None,
-            like_count=stats.like_count if stats else 0,
-            share_count=stats.share_count if stats else 0,
-            is_liked=is_liked,
-            is_saved=is_saved,
-        )
+            enriched = enriched_by_id.get(article_id)
+            stats = stats_by_id.get(article_id)
+
+            cards.append(
+                NewsCard(
+                    article_id=raw.id,
+                    title=raw.title,
+                    platform_arrived_at=raw.platform_arrived_at,
+                    time_on_platform=_compute_time_on_platform(raw.platform_arrived_at),
+                    image_url=raw.image_url,
+                    source_name=raw.source_name,
+                    summary_bullets=enriched.summary_bullets if enriched else None,
+                    primary_factor=enriched.primary_factor if enriched else None,
+                    geo_category=enriched.geo_category if enriched else None,
+                    is_government=enriched.is_government if enriched else False,
+                    impact_direction=enriched.impact_direction if enriched else None,
+                    impact_score=enriched.impact_score if enriched else None,
+                    like_count=stats.like_count if stats else 0,
+                    share_count=stats.share_count if stats else 0,
+                    is_liked=article_id in liked_ids,
+                    is_saved=article_id in saved_ids,
+                )
+            )
+        return cards
 
 
 def _compute_time_on_platform(platform_arrived_at: datetime) -> str:

@@ -143,20 +143,24 @@ def write_dimension_delta(
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 
-def read_dimension_weights(rc: redis.Redis, profile_id: int, dimension_type: str) -> dict[str, float]:
-    """Return decay-adjusted net scores for all keys of one dimension."""
-    raw = rc.hgetall(_key(profile_id)) or {}
+def fetch_global_session_raw(rc: redis.Redis, profile_id: int) -> dict:
+    """The whole global-session hash in one round-trip. Pass the result to the
+    *_from_raw readers below instead of letting each one hgetall it again —
+    see blend_all_dimensions in global_session/aggregator.py."""
+    return rc.hgetall(_key(profile_id)) or {}
+
+
+def read_dimension_weights_from_raw(raw: dict, dimension_type: str) -> dict[str, float]:
     return _decay_scores(raw, dimension_type)
 
 
-def read_dimension_score(
-    rc: redis.Redis,
-    profile_id: int,
-    dimension_type: str,
-    key: str,
-) -> GlobalDimScore:
-    """Return the full score record for one dimension key."""
-    raw = rc.hgetall(_key(profile_id)) or {}
+def read_dimension_weights(rc: redis.Redis, profile_id: int, dimension_type: str) -> dict[str, float]:
+    """Return decay-adjusted net scores for all keys of one dimension."""
+    raw = fetch_global_session_raw(rc, profile_id)
+    return read_dimension_weights_from_raw(raw, dimension_type)
+
+
+def read_dimension_score_from_raw(raw: dict, dimension_type: str, key: str) -> GlobalDimScore:
     base = f"{dimension_type}:{key}".encode()
     return GlobalDimScore(
         key=key,
@@ -166,6 +170,17 @@ def read_dimension_score(
         cnt=_i(raw.get(base + b":cnt")),
         last_ts=_i(raw.get(base + b":ts")),
     )
+
+
+def read_dimension_score(
+    rc: redis.Redis,
+    profile_id: int,
+    dimension_type: str,
+    key: str,
+) -> GlobalDimScore:
+    """Return the full score record for one dimension key."""
+    raw = fetch_global_session_raw(rc, profile_id)
+    return read_dimension_score_from_raw(raw, dimension_type, key)
 
 
 def read_all_dimension_data(

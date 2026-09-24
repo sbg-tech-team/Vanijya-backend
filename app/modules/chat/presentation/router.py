@@ -8,7 +8,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.dependencies import get_current_user_id
 from app.modules.chat.application import service as chat_service
-from app.core.realtime import emit_to_group, emit_to_user, is_online
+from app.core.realtime import are_online, emit_to_group, emit_to_user
 from app.modules.chat.presentation.dependencies import (
     get_all_chats_sorted,
     get_conversation_peer_uc,
@@ -175,9 +175,11 @@ def list_all_chats(
     in `dm` / `group`.
     """
     items = uc.execute(user_id, page, per_page)
+    dm_user_ids = [item.dm.participant.user_id for item in items if item.dm is not None]
+    online_by_user = are_online(dm_user_ids)
     for item in items:
         if item.dm is not None:
-            item.dm.participant.is_online = is_online(item.dm.participant.user_id)
+            item.dm.participant.is_online = online_by_user.get(item.dm.participant.user_id, False)
     return items
 
 
@@ -189,8 +191,9 @@ def list_conversations(
     uc=Depends(get_conversations_uc),
 ):
     convs = uc.execute(user_id, page, per_page)
+    online_by_user = are_online([conv.participant.user_id for conv in convs])
     for conv in convs:
-        conv.participant.is_online = is_online(conv.participant.user_id)
+        conv.participant.is_online = online_by_user.get(conv.participant.user_id, False)
     return convs
 
 
@@ -213,7 +216,8 @@ def get_presence(
 ):
     """Live online status (Socket.IO room membership) for the given users.
     Returns a `{user_id: bool}` map — used by the chat header and inbox dots."""
-    return {str(uid): is_online(uid) for uid in user_ids}
+    online_by_user = are_online(user_ids)
+    return {str(uid): online_by_user.get(uid, False) for uid in user_ids}
 
 
 @router.get("/conversations/{conv_id}/messages")

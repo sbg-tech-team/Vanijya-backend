@@ -15,6 +15,7 @@ from app.recommendation.global_session.aggregator import (
     sync_module_to_global,
     merge_weights,
     influence_for,
+    blend_all_dimensions,
 )
 from app.recommendation.global_session.service import (
     write_dimension_delta,
@@ -35,6 +36,7 @@ __all__ = [
     "sync_module_to_global",
     "merge_weights",
     "influence_for",
+    "blend_all_dimensions",
     # Service
     "write_dimension_delta",
     "read_global_weights",

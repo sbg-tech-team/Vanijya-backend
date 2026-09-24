@@ -409,21 +409,29 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
         return _stats_to_domain(row)
 
     def adjust_article_stats(self, article_id: UUID, field: str, delta: int) -> None:
+        # Floor at 0, matching app_v1_backup's max(0, current + delta) — and,
+        # critically, apply `delta` on the INSERT branch too: a bare
+        # `.values(field=0, ...)` here would silently drop every article's
+        # first-ever interaction (insert wins, delta never applied).
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        initial = {
+            "view_count": 0,
+            "like_count": 0,
+            "save_count": 0,
+            "share_count": 0,
+        }
+        initial[field] = max(delta, 0)
         stmt = (
             pg_insert(NewsArticleStats)
             .values(
                 article_id=article_id,
-                view_count=0,
-                like_count=0,
-                save_count=0,
-                share_count=0,
                 updated_at=now,
+                **initial,
             )
             .on_conflict_do_update(
                 index_elements=["article_id"],
                 set_={
-                    field: getattr(NewsArticleStats, field) + delta,
+                    field: func.greatest(getattr(NewsArticleStats, field) + delta, 0),
                     "updated_at": now,
                 },
             )
@@ -465,6 +473,54 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
             )
         ).first()
         return result is not None
+
+    # ── Batch reads ───────────────────────────────────────────────────────────
+
+    def get_raw_articles(self, article_ids: list[UUID]) -> dict[UUID, DomainRawArticle]:
+        if not article_ids:
+            return {}
+        rows = self._db.execute(
+            select(RawArticle).where(RawArticle.id.in_(article_ids))
+        ).scalars()
+        return {row.id: _raw_to_domain(row) for row in rows}
+
+    def get_enriched_articles(self, article_ids: list[UUID]) -> dict[UUID, DomainEnrichedArticle]:
+        if not article_ids:
+            return {}
+        rows = self._db.execute(
+            select(EnrichedArticle).where(EnrichedArticle.raw_article_id.in_(article_ids))
+        ).scalars()
+        return {row.raw_article_id: _enriched_to_domain(row) for row in rows}
+
+    def get_article_stats_batch(self, article_ids: list[UUID]) -> dict[UUID, DomainNewsArticleStats]:
+        if not article_ids:
+            return {}
+        rows = self._db.execute(
+            select(NewsArticleStats).where(NewsArticleStats.article_id.in_(article_ids))
+        ).scalars()
+        return {row.article_id: _stats_to_domain(row) for row in rows}
+
+    def get_like_states(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        if not article_ids:
+            return set()
+        rows = self._db.execute(
+            select(NewsLike.article_id).where(
+                NewsLike.profile_id == profile_id,
+                NewsLike.article_id.in_(article_ids),
+            )
+        ).scalars()
+        return set(rows)
+
+    def get_save_states(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        if not article_ids:
+            return set()
+        rows = self._db.execute(
+            select(NewsSave.article_id).where(
+                NewsSave.profile_id == profile_id,
+                NewsSave.article_id.in_(article_ids),
+            )
+        ).scalars()
+        return set(rows)
 
     # ── Taste ─────────────────────────────────────────────────────────────────
 

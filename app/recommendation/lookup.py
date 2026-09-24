@@ -38,3 +38,17 @@ class AmplifyLookupMixin:
             )
             .all()
         )
+
+    def global_taste_rows_bulk(self, profile_id: int, dimension_types: tuple[str, ...]) -> list:
+        """Same rows as global_taste_rows, for several dimensions in one query."""
+        from app.recommendation.global_taste.models import UserGlobalTaste
+
+        return (
+            self._amplify_session()
+            .query(UserGlobalTaste)
+            .filter(
+                UserGlobalTaste.profile_id == profile_id,
+                UserGlobalTaste.dimension_type.in_(dimension_types),
+            )
+            .all()
+        )

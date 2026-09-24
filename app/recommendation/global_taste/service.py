@@ -60,6 +60,21 @@ def get_weights(
     return weights
 
 
+def get_weights_bulk(
+    repo,
+    profile_id: int,
+    dimension_types: tuple[str, ...],
+) -> dict[str, dict[str, float]]:
+    """get_weights for several dimensions in one query instead of one each."""
+    rows: list[UserGlobalTaste] = repo.global_taste_rows_bulk(profile_id, dimension_types)
+    result: dict[str, dict[str, float]] = {d: {} for d in dimension_types}
+    for row in rows:
+        net = decayed_score(row.positive_score, row.negative_score, row.last_event_at, TASTE_DECAY_LAMBDA)
+        if net > 0:
+            result[row.dimension_type][row.dimension_key] = net
+    return result
+
+
 def get_score(
     db: Session,
     profile_id: int,

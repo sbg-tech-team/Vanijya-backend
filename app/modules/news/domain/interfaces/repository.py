@@ -218,6 +218,30 @@ class INewsRepository(ABC):
     def get_save_state(self, profile_id: int, article_id: UUID) -> bool:
         """Return True if this profile has saved this article."""
 
+    # ── Batch reads ───────────────────────────────────────────────────────────
+    # Feed card assembly needs these for a whole page of articles at once —
+    # one query per field instead of one query per field per article.
+
+    @abstractmethod
+    def get_raw_articles(self, article_ids: list[UUID]) -> dict[UUID, RawArticle]:
+        """Return found RawArticle entities keyed by id. Missing ids are omitted."""
+
+    @abstractmethod
+    def get_enriched_articles(self, article_ids: list[UUID]) -> dict[UUID, EnrichedArticle]:
+        """Return found EnrichedArticle entities keyed by raw_article_id."""
+
+    @abstractmethod
+    def get_article_stats_batch(self, article_ids: list[UUID]) -> dict[UUID, NewsArticleStats]:
+        """Return found stats rows keyed by article_id."""
+
+    @abstractmethod
+    def get_like_states(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        """Return the subset of article_ids this profile has liked."""
+
+    @abstractmethod
+    def get_save_states(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        """Return the subset of article_ids this profile has saved."""
+
     # ── Taste ─────────────────────────────────────────────────────────────────
     # Used by the application layer when it needs to write taste signals
     # directly (e.g. process_interaction_batch → revisit event).

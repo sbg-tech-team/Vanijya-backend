@@ -34,8 +34,8 @@ from app.modules.post.recommendation.vectors import (
 )
 from app.modules.profile.data.models import Profile
 from app.modules.connections.data.models import UserConnection
-from app.recommendation.global_session import merge_weights, sync_module_to_global
-from app.recommendation.global_taste import read_global_taste_weights
+from app.recommendation.global_session import blend_all_dimensions
+from app.recommendation.global_taste import read_global_taste_weights_bulk
 from app.shared.utils.time_decay import freshness_boost
 from app.modules.post.domain.exceptions import ProfileNotFoundError
 
@@ -461,16 +461,25 @@ def get_recommended_posts(
     cat_weights       = _taste["category"]
     commodity_weights = _taste["commodity"]
     author_weights    = _taste["author"]
-    city_weights      = read_global_taste_weights(repo, profile_id, "city")
-    state_weights     = read_global_taste_weights(repo, profile_id, "state")
+    # One query for both dimensions instead of one each.
+    _global_taste = read_global_taste_weights_bulk(repo, profile_id, ("city", "state"))
+    city_weights  = _global_taste["city"]
+    state_weights = _global_taste["state"]
 
     try:
-        sync_module_to_global(rc, profile_id, "post")
-        cat_weights       = merge_weights(rc, profile_id, "post", "category",  cat_weights)
-        commodity_weights = merge_weights(rc, profile_id, "post", "commodity", commodity_weights)
-        author_weights    = merge_weights(rc, profile_id, "post", "author",    author_weights)
-        city_weights      = merge_weights(rc, profile_id, "post", "city",      city_weights)
-        state_weights     = merge_weights(rc, profile_id, "post", "state",     state_weights)
+        # One Redis round-trip per hash (module session, global session) for
+        # all 5 dimensions combined, instead of one per dimension plus one
+        # more per distinct taste key inside each dimension — see PERF notes
+        # on blend_all_dimensions.
+        blended = blend_all_dimensions(rc, profile_id, "post", {
+            "category": cat_weights, "commodity": commodity_weights, "author": author_weights,
+            "city": city_weights, "state": state_weights,
+        })
+        cat_weights       = blended["category"]
+        commodity_weights = blended["commodity"]
+        author_weights    = blended["author"]
+        city_weights      = blended["city"]
+        state_weights     = blended["state"]
     except Exception as exc:
         # Fall back to the persistent weights already loaded above.
         log.warning("session-taste merge failed for profile %s; ranking on persistent taste only: %s", profile_id, exc)

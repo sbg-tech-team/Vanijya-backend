@@ -211,6 +211,24 @@ def is_online(user_id: UUID) -> bool:
     return bool(list(sio.manager.get_participants('/', f'user:{user_id}')))
 
 
+def are_online(user_ids: list[UUID]) -> dict[UUID, bool]:
+    """Batched is_online — one Redis round-trip (pipelined SCARD) for the whole
+    list instead of one round-trip per user. Same fallback semantics as is_online."""
+    if not user_ids:
+        return {}
+    rc = _rc()
+    if rc is not None:
+        try:
+            pipe = rc.pipeline(transaction=False)
+            for uid in user_ids:
+                pipe.scard(_ONLINE_KEY.format(uid))
+            counts = pipe.execute()
+            return {uid: bool(c) for uid, c in zip(user_ids, counts)}
+        except Exception as exc:
+            _log.warning("batched presence lookup failed, using local rooms: %s", exc)
+    return {uid: bool(list(sio.manager.get_participants('/', f'user:{uid}'))) for uid in user_ids}
+
+
 async def start_evict_listener() -> None:
     """Subscribe this worker to eviction broadcasts. Called from the app lifespan."""
     global _evict_task

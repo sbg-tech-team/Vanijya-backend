@@ -63,6 +63,10 @@ _SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
 # ActionType vocabulary where the names differ.
 _EVENT_ALIAS = {"open_article": "open_read_more", "share_tap": "share"}
 
+# Signals strong enough to invalidate the cached "default" feed ranking so the
+# next request re-scores instead of serving a stale page for up to 2h.
+_CACHE_INVALIDATING_EVENTS = frozenset({"like", "save", "revisit"})
+
 
 class RecordInteractionUseCase:
 
@@ -93,6 +97,7 @@ class RecordInteractionUseCase:
         events_to_insert: list[NewsInteractionEvent] = []
         # (article_id, event_type, value_ms) for the post-commit Redis pass
         signal_events: list[tuple[UUID, str, int | None]] = []
+        invalidate_cache = False
 
         for e in candidates:
             article_id = UUID(e["article_id"])
@@ -117,6 +122,7 @@ class RecordInteractionUseCase:
                         )
                     )
                     self._taste_from_article(profile_id, article_id, "revisit", rc=rc, session_action=ActionType.REVISIT)
+                    invalidate_cache = True
 
             events_to_insert.append(
                 NewsInteractionEvent(
@@ -130,6 +136,8 @@ class RecordInteractionUseCase:
             signal_events.append((article_id, event_type, value_ms))
 
         self._repo.bulk_insert_events(events_to_insert)
+        if invalidate_cache:
+            self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
         self._repo.commit()
 
         for article_id, event_type, value_ms in signal_events:
@@ -159,6 +167,7 @@ class RecordInteractionUseCase:
 
         if is_liked:
             self._taste_from_article(profile_id, article_id, "like", rc=rc, session_action=ActionType.LIKE)
+            self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
         self._repo.commit()
 
         return {"is_liked": is_liked}
@@ -173,6 +182,7 @@ class RecordInteractionUseCase:
 
         if is_saved:
             self._taste_from_article(profile_id, article_id, "save", rc=rc, session_action=ActionType.SAVE)
+            self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
         self._repo.commit()
 
         return {"is_saved": is_saved}

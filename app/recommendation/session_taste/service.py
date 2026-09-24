@@ -124,14 +124,14 @@ def write_signals(
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 
-def read_dimension_scores(
-    rc: redis.Redis,
-    profile_id: int,
-    module: str,
-    dimension_type: str,
-) -> dict[str, float]:
-    """Return decay-adjusted net scores for every key in one dimension."""
-    raw = rc.hgetall(_key(module, profile_id)) or {}
+def fetch_module_session_raw(rc: redis.Redis, profile_id: int, module: str) -> dict:
+    """The whole module-session hash in one round-trip. Pass the result to the
+    *_from_raw readers below instead of letting each one hgetall it again —
+    see blend_all_dimensions in global_session/aggregator.py."""
+    return rc.hgetall(_key(module, profile_id)) or {}
+
+
+def read_dimension_scores_from_raw(raw: dict, dimension_type: str) -> dict[str, float]:
     if not raw:
         return {}
 
@@ -154,15 +154,18 @@ def read_dimension_scores(
     return scores
 
 
-def read_dim_score(
+def read_dimension_scores(
     rc: redis.Redis,
     profile_id: int,
     module: str,
     dimension_type: str,
-    key: str,
-) -> DimScore:
-    """Return the full score record for one specific dimension key."""
-    raw = rc.hgetall(_key(module, profile_id)) or {}
+) -> dict[str, float]:
+    """Return decay-adjusted net scores for every key in one dimension."""
+    raw = fetch_module_session_raw(rc, profile_id, module)
+    return read_dimension_scores_from_raw(raw, dimension_type)
+
+
+def read_dim_score_from_raw(raw: dict, dimension_type: str, key: str) -> DimScore:
     pfx = _pfx(dimension_type)
     base = f"{pfx}:{key}".encode()
     return DimScore(
@@ -173,6 +176,18 @@ def read_dim_score(
         cnt=_i(raw.get(base + b":cnt")),
         last_ts=_i(raw.get(base + b":ts")),
     )
+
+
+def read_dim_score(
+    rc: redis.Redis,
+    profile_id: int,
+    module: str,
+    dimension_type: str,
+    key: str,
+) -> DimScore:
+    """Return the full score record for one specific dimension key."""
+    raw = fetch_module_session_raw(rc, profile_id, module)
+    return read_dim_score_from_raw(raw, dimension_type, key)
 
 
 def read_dimension_weights(
@@ -192,21 +207,10 @@ def read_dimension_weights(
 
 # ── Cross-platform dimension sync ─────────────────────────────────────────────
 
-def get_dimension_delta_and_snapshot(
-    rc: redis.Redis,
-    profile_id: int,
-    module: str,
+def get_dimension_delta_and_snapshot_from_raw(
+    raw: dict,
     dimension_type: str,
 ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
-    """
-    Compute the unsynced delta (pos/neg/conf, independently) for one
-    cross-platform dimension since the last global sync.
-
-    Returns (delta, snapshot) where each value is {key: {"pos":.., "neg":.., "conf":..}}.
-    Caller writes delta to global session, then passes snapshot to
-    mark_dimension_synced to prevent double-counting on the next call.
-    """
-    raw = rc.hgetall(_key(module, profile_id)) or {}
     if not raw:
         return {}, {}
 
@@ -232,6 +236,24 @@ def get_dimension_delta_and_snapshot(
             delta[dkey] = {"pos": pos_d, "neg": neg_d, "conf": conf_d}
 
     return delta, snapshot
+
+
+def get_dimension_delta_and_snapshot(
+    rc: redis.Redis,
+    profile_id: int,
+    module: str,
+    dimension_type: str,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """
+    Compute the unsynced delta (pos/neg/conf, independently) for one
+    cross-platform dimension since the last global sync.
+
+    Returns (delta, snapshot) where each value is {key: {"pos":.., "neg":.., "conf":..}}.
+    Caller writes delta to global session, then passes snapshot to
+    mark_dimension_synced to prevent double-counting on the next call.
+    """
+    raw = fetch_module_session_raw(rc, profile_id, module)
+    return get_dimension_delta_and_snapshot_from_raw(raw, dimension_type)
 
 
 def mark_dimension_synced(

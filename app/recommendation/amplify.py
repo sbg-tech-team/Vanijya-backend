@@ -31,8 +31,8 @@ import time
 
 import redis as _redis
 
-from app.recommendation.global_session import merge_weights, sync_module_to_global
-from app.recommendation.global_taste import read_global_taste_weights
+from app.recommendation.global_session import blend_all_dimensions
+from app.recommendation.global_taste import read_global_taste_weights, read_global_taste_weights_bulk
 from app.recommendation.session_taste import ActionType, SessionSignal, write_signals
 
 log = logging.getLogger(__name__)
@@ -218,23 +218,40 @@ def get_amplify_weights(
     Cold start (no session yet) → returns pure persistent weights.
     Fully fails safe → returns {} if every layer is unavailable.
     """
+    return get_amplify_weights_bulk(repo, rc, profile_id, module, (dimension_type,))[dimension_type]
+
+
+def get_amplify_weights_bulk(
+    repo,
+    rc: _redis.Redis,
+    profile_id: int,
+    module: str,
+    dimension_types: tuple[str, ...],
+) -> dict[str, dict[str, float]]:
+    """
+    get_amplify_weights for several dimensions at once — one Redis round-trip
+    per hash (module session, global session) total, instead of one per
+    dimension plus one more per distinct taste key inside each dimension. See
+    blend_all_dimensions for why that mattered (measured on the posts feed,
+    which blends 5 dimensions; news blends 3 and was paying for
+    sync_module_to_global's 4-dimension sync loop on every one of them).
+
+    Same formulas as the old per-dimension get_amplify_weights — this only
+    changes how many times the underlying hashes are fetched, not what's
+    computed from them.
+    """
     # Layer 3 — persistent (table may not exist yet; empty on any failure)
     try:
-        persistent = read_global_taste_weights(repo, profile_id, dimension_type)
+        persistent_by_dim = read_global_taste_weights_bulk(repo, profile_id, dimension_types)
     except Exception:
-        persistent = {}
+        persistent_by_dim = {d: {} for d in dimension_types}
 
-    # Layer 1 → Layer 2 — push this module's unsynced commodity delta to global
+    # Layers 1+2 — sync module session to global, then blend all three layers.
     try:
-        sync_module_to_global(rc, profile_id, module)
+        return blend_all_dimensions(rc, profile_id, module, persistent_by_dim)
     except Exception as exc:
-        log.warning("global-session sync failed for profile %s (%s): %s", profile_id, module, exc)
-
-    # Blend all three layers (confidence-gated inside merge_weights)
-    try:
-        return merge_weights(rc, profile_id, module, dimension_type, persistent)
-    except Exception:
-        return persistent
+        log.warning("amplify blend failed for profile %s (%s): %s", profile_id, module, exc)
+        return persistent_by_dim
 
 
 # ── Boost calculation ──────────────────────────────────────────────────────────

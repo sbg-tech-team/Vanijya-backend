@@ -48,7 +48,7 @@ from app.modules.news.recommendation.profile_scorer import compute_profile_boost
 from app.recommendation.amplify import (
     commodity_boost as _commodity_boost,
     commodity_ids_for,
-    get_amplify_weights,
+    get_amplify_weights_bulk,
     location_boost as _location_boost,
 )
 
@@ -88,9 +88,12 @@ class NewsRecommendationEngine:
         state_weights: dict[str, float] = {}
         if rc is not None:
             try:
-                commodity_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "commodity")
-                city_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "city")
-                state_weights = get_amplify_weights(self._repo, rc, profile_id, _MODULE, "state")
+                _amplify = get_amplify_weights_bulk(
+                    self._repo, rc, profile_id, _MODULE, ("commodity", "city", "state")
+                )
+                commodity_weights = _amplify["commodity"]
+                city_weights = _amplify["city"]
+                state_weights = _amplify["state"]
             except Exception:
                 log.exception("amplify weights unavailable for profile %s; ranking without them", profile_id)
 

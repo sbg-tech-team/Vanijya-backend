@@ -11,6 +11,7 @@ Usage:
 """
 from app.recommendation.global_taste.service import (
     get_weights as read_global_taste_weights,
+    get_weights_bulk as read_global_taste_weights_bulk,
     get_score,
     apply_promotion_delta,
     bulk_apply_promotion,
@@ -25,6 +26,7 @@ from app.recommendation.global_taste.schemas import (
 __all__ = [
     # Service
     "read_global_taste_weights",
+    "read_global_taste_weights_bulk",
     "get_score",
     "apply_promotion_delta",
     "bulk_apply_promotion",
