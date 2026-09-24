@@ -73,7 +73,10 @@ try:
     conn_repo = ConnectionsRepository(db)
 
     def stored():
-        return prof_repo.get_profile_by_id(target.id).followers_count
+        # with_follow_counts is opt-in: a profile lookup happens on nearly
+        # every news and group request, and those never read these numbers.
+        return prof_repo.get_profile_by_id(
+            target.id, with_follow_counts=True).followers_count
 
     check("no followers yet", stored(), 0)
 
@@ -103,7 +106,12 @@ try:
 
     # following_count is the other direction
     check("following_count counts outgoing",
-          prof_repo.get_profile_by_id(b.id).following_count, 1)
+          prof_repo.get_profile_by_id(b.id, with_follow_counts=True).following_count, 1)
+
+    # Not asking for them costs no query and returns 0 — deliberate, so the
+    # hot lookups do not pay for numbers they never render.
+    check("counts are not computed unless asked",
+          prof_repo.get_profile_by_id(target.id).followers_count, 0)
 
     # ── role casing ─────────────────────────────────────────────────────────
     row = db.query(Profile).filter(Profile.id == target.id).first()
