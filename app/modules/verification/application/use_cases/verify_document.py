@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from app.modules.verification.domain.entities import ProfileRef, VerificationOutcome
 from app.modules.verification.domain.exceptions import (
+    ProviderUnavailableError,
     DocumentRejectedError,
     InvalidKybDocumentError,
     KycRequiredError,
@@ -59,7 +60,6 @@ def verify_document(
             )
 
     api_response = None
-    status = "error"
     error_message = None
     verified_at = None
     api_provider = "sandbox"
@@ -73,7 +73,16 @@ def verify_document(
     except NotImplementedError:
         raise
     except DocumentRejectedError as exc:
-        status = "error"
+        # The provider looked at the document and said no.
+        status = "rejected"
+        error_message = str(exc)
+    except ProviderUnavailableError as exc:
+        # The provider could not look at all — expired credentials, quota, a
+        # timeout. Recorded separately because "your PAN failed" and "we could
+        # not check right now" are different sentences to a user, and for
+        # three months everyone got the first one when the truth was the
+        # second.
+        status = "provider_unavailable"
         error_message = str(exc)
 
     return repo.save_verification(

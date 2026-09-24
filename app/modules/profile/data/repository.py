@@ -53,7 +53,9 @@ def _to_user_entity(user: User) -> UserEntity:
     )
 
 
-def _to_profile_entity(profile: Profile) -> ProfileEntity:
+def _to_profile_entity(
+    profile: Profile, followers_count: int = 0, following_count: int = 0
+) -> ProfileEntity:
     business = None
     if profile.business:
         business = BusinessEntity(
@@ -101,8 +103,8 @@ def _to_profile_entity(profile: Profile) -> ProfileEntity:
         quantity_max=profile.quantity_max,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
-        followers_count=profile.followers_count,
-        following_count=profile.following_count,
+        followers_count=followers_count,
+        following_count=following_count,
         avatar_url=profile.avatar_url,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
@@ -206,7 +208,7 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.users_id == user_id)
             .first()
         )
-        return _to_profile_entity(profile) if profile else None
+        return self._with_follow_counts(profile) if profile else None
 
     def get_profile_by_id(self, profile_id: int) -> ProfileEntity | None:
         profile = (
@@ -218,7 +220,7 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.id == profile_id)
             .first()
         )
-        return _to_profile_entity(profile) if profile else None
+        return self._with_follow_counts(profile) if profile else None
 
     def get_profile_by_user_id(self, user_id: UUID) -> ProfileEntity | None:
         profile = (
@@ -230,7 +232,7 @@ class ProfileRepository(IProfileRepository):
             .filter(Profile.users_id == user_id)
             .first()
         )
-        return _to_profile_entity(profile) if profile else None
+        return self._with_follow_counts(profile) if profile else None
 
     def get_profile_id_for_user(self, user_id: UUID) -> int | None:
         row = self._db.query(Profile.id).filter(Profile.users_id == user_id).first()
@@ -353,6 +355,33 @@ class ProfileRepository(IProfileRepository):
         self._db.commit()
 
     # ---- Lookup-table validation --------------------------------------------
+
+    def _with_follow_counts(self, profile: Profile) -> ProfileEntity:
+        """Counts come from the follow rows, never from a stored column.
+
+        They used to be integer columns on `profile` kept in step by hand in
+        ConnectionsRepository.add_follow / remove_follow. That is correct only
+        while every write goes through those two methods — seeding and
+        load-test cleanup wrote user_connections directly, and the counters
+        drifted: 15 of 91 profiles disagreed with the rows, one by 762,373. A
+        profile header said 3 followers while /followers returned 2.
+
+        Two indexed counts, and only on the single-profile reads. No list
+        endpoint returns these, so nothing pays per row.
+        """
+        followers = (
+            self._db.query(func.count())
+            .select_from(UserConnection)
+            .filter(UserConnection.following_id == profile.users_id)
+            .scalar()
+        )
+        following = (
+            self._db.query(func.count())
+            .select_from(UserConnection)
+            .filter(UserConnection.follower_id == profile.users_id)
+            .scalar()
+        )
+        return _to_profile_entity(profile, followers or 0, following or 0)
 
     def role_exists(self, role_id: int) -> bool:
         return self._db.query(Role.id).filter(Role.id == role_id).first() is not None

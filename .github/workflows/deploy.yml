@@ -113,6 +113,12 @@ jobs:
       - name: Translation unit tests
         run: python -m pytest tests/ -q
 
+      - name: Provider failures are not reported as rejections
+        run: python tests/test_verification_status.py
+
+      - name: Follow counts match the rows, role casing is consistent
+        run: python tests/test_follow_counts.py
+
       - name: Notification preferences are enforced at the send site
         run: python tests/test_notification_prefs.py
 

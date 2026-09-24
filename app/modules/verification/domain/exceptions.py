@@ -18,8 +18,21 @@ class ProfileNotFoundError(Exception):
 
 
 class DocumentRejectedError(Exception):
-    """The provider answered, and the document is invalid or inactive.
+    """The provider answered about THIS document, and it is invalid, inactive
+    or does not exist. The user's document is genuinely bad.
 
-    Not an HTTP error: app_old records it as a `status="error"` row and still
-    returns 200. Do not map this to a 4xx.
+    Recorded as `status="rejected"`, and the endpoint still returns 200 — a
+    rejection is a result, not a transport failure. Do not map it to a 4xx.
+    """
+
+
+class ProviderUnavailableError(Exception):
+    """The provider could not answer about this document at all: expired or
+    missing credentials, exhausted quota, a timeout, a 5xx, or a body that was
+    not JSON.
+
+    Recorded as `status="provider_unavailable"`, distinct from a rejection,
+    because the two are indistinguishable to a user and must not be. Telling
+    somebody their PAN failed when in fact our API subscription lapsed is the
+    bug this exists to prevent — it happened, for three months.
     """

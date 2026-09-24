@@ -91,9 +91,14 @@ class VerificationRepository(IVerificationRepository):
         )
 
     def list_records(self, profile_id: int) -> list[DocRecord]:
+        # Ordered. get_status takes the first record per category, and with
+        # no ORDER BY that was whichever row the database happened to return —
+        # so a user with a verified PAN and a failed Aadhaar could see either.
+        # Newest first, so the latest attempt is the one reported.
         rows = (
             self.db.query(VerificationRecord)
             .filter(VerificationRecord.profile_id == profile_id)
+            .order_by(VerificationRecord.updated_at.desc())
             .all()
         )
         return [

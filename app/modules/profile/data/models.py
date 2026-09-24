@@ -87,8 +87,6 @@ class Profile(Base):
 
     is_user_verified: Mapped[bool] = mapped_column(default=False)
     is_business_verified: Mapped[bool] = mapped_column(default=False)
-    followers_count: Mapped[int] = mapped_column(Integer, default=0)
-    following_count: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -201,3 +199,4 @@ class NotificationPreferences(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+

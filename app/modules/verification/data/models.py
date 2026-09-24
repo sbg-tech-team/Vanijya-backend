@@ -20,7 +20,11 @@ class VerificationRecord(Base):
     # "kyc" (pan/aadhaar) | "kyb" (gst/iec)
     verification_category: Mapped[str] = mapped_column(String(5))
 
-    # "verified" | "rejected" | "error"
+    # "verified"             — the provider confirmed the document
+    # "rejected"             — the provider looked and said no
+    # "provider_unavailable" — we could not get a verdict at all
+    #                          (expired credentials, quota, timeout)
+    # "error" is legacy: rows written before the two were told apart.
     status: Mapped[str] = mapped_column(String(20))
 
     # which external API was called
