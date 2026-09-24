@@ -9,6 +9,8 @@ from app.core.redis_client import get_redis
 from app.modules.calling.presentation import dependencies as calling_di
 from app.modules.news.presentation import dependencies as news_di
 from app.modules.translation.presentation import dependencies as translation_di
+from app.modules.connections.application import jobs as connections_jobs
+from app.modules.connections.data.repository import ConnectionsRepository
 from app.modules.post.data.repository import PostRepository
 from app.modules.post.data.taste_repository import TasteRepository
 from app.modules.post.recommendation import jobs as post_rec_jobs
@@ -74,6 +76,14 @@ def _run_ignore_detection():
 
 
 
+def _run_follow_count_reconciliation():
+    db = SessionLocal()
+    try:
+        connections_jobs.run_follow_count_reconciliation_job(ConnectionsRepository(db))
+    finally:
+        db.close()
+
+
 def _run_global_taste_promotion():
     """
     Nightly Global Session → Persistent Global Taste promotion.
@@ -130,6 +140,11 @@ def start():
         _run_global_taste_promotion,
         "cron", hour=3, minute=15,
         id="recommendation.global_taste_promotion",
+    )
+    scheduler.add_job(
+        _run_follow_count_reconciliation,
+        "cron", hour=3, minute=30,
+        id="connections.follow_count_reconciliation",
     )
 
     # Calling cost guardrails, weakest assumption last. Stream bills

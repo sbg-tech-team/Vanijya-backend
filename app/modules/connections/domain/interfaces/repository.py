@@ -47,6 +47,13 @@ eager-loading behaviour."""
         ...
 
     @abstractmethod
+    def reconcile_follow_counts(self) -> int:
+        """Recompute followers_count/following_count from user_connections and
+        correct any profile whose stored value disagrees. Only writes rows
+        that are actually wrong. Returns the number of profiles corrected."""
+        ...
+
+    @abstractmethod
     def list_following(self, user_id: UUID) -> list:
         ...
 

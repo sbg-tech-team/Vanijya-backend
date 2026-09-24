@@ -114,6 +114,30 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
         self.db.commit()
         return True
 
+    def reconcile_follow_counts(self) -> int:
+        """One statement, not one query per profile: each profile's true counts
+        are computed via a correlated subquery indexed on user_connections
+        (follower_id / following_id), and only rows that actually disagree get
+        written. Safety net for the discipline that add_follow/remove_follow
+        depend on — see run_follow_count_reconciliation_job."""
+        result = self.db.execute(text("""
+            UPDATE profile
+            SET followers_count = sub.followers_cnt,
+                following_count = sub.following_cnt
+            FROM (
+                SELECT
+                    p.id,
+                    (SELECT count(*) FROM user_connections uc WHERE uc.following_id = p.users_id) AS followers_cnt,
+                    (SELECT count(*) FROM user_connections uc WHERE uc.follower_id = p.users_id) AS following_cnt
+                FROM profile p
+            ) sub
+            WHERE profile.id = sub.id
+              AND (profile.followers_count IS DISTINCT FROM sub.followers_cnt
+                   OR profile.following_count IS DISTINCT FROM sub.following_cnt)
+        """))
+        self.db.commit()
+        return result.rowcount
+
     def list_followers(self, user_id: UUID) -> list:
         return (
             self.db.query(UserConnection)
