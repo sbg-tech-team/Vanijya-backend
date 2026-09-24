@@ -164,7 +164,7 @@ def create_profile(repo: IProfileRepository, user_id: UUID, payload: ProfileCrea
 
     _upsert_user_embedding(repo, user_id)
 
-    profile = repo.get_profile_for_user(user_id)
+    profile = repo.get_profile_for_user(user_id, with_follow_counts=True)
     if not profile:
         raise ProfileNotFoundError("Profile not found after creation")
     return _to_response(profile, posts_count=0)

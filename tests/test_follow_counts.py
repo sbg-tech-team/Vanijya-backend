@@ -113,6 +113,35 @@ try:
     check("counts are not computed unless asked",
           prof_repo.get_profile_by_id(target.id).followers_count, 0)
 
+    # ── every response that renders the counts must ask for them ────────────
+    # with_follow_counts is opt-in, so a use case can render the field and
+    # silently get 0. /profile/me did exactly that: the header said 0 while
+    # the followers list returned 2. This asserts the flag at every call site
+    # whose response actually carries the numbers.
+    import ast
+    import inspect
+    from app.modules.profile.application.use_cases import get_profile as gp_mod
+
+    src = inspect.getsource(gp_mod)
+    tree = ast.parse(src)
+    LOOKUPS = {"get_profile_for_user", "get_profile_by_id", "get_profile_by_user_id"}
+    # Use cases whose response includes followers_count / following_count.
+    RENDERS_COUNTS = {"get_my_profile", "get_profile_by_id", "get_profile_by_user_id"}
+
+    missing = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        if fn.name not in RENDERS_COUNTS:
+            continue
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            attr = getattr(call.func, "attr", None)
+            if attr in LOOKUPS:
+                asked = any(k.arg == "with_follow_counts" and
+                            getattr(k.value, "value", False) is True
+                            for k in call.keywords)
+                if not asked:
+                    missing.append(f"{fn.name} -> {attr}")
+    check("every counted response asks for the counts", missing, [])
+
     # ── role casing ─────────────────────────────────────────────────────────
     row = db.query(Profile).filter(Profile.id == target.id).first()
     formatted = fmt_profile(row)

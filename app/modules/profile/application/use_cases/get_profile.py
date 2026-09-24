@@ -29,7 +29,7 @@ def _render_posts(
 
 
 def get_my_profile(repo: IProfileRepository, user_id: UUID) -> ProfileResponse:
-    profile = repo.get_profile_for_user(user_id)
+    profile = repo.get_profile_for_user(user_id, with_follow_counts=True)
     if not profile:
         raise ProfileNotFoundError("Profile not found")
     posts_count = repo.count_posts_for_profile(profile.id)
