@@ -118,8 +118,8 @@ def set_call_context(
             scope.set_tag("call_status", status)
         for k, v in extra.items():
             scope.set_extra(k, v)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("sentry call context failed: %s", exc)
 
 
 def capture(message: str, level: str = "warning", **extra) -> None:
@@ -135,5 +135,5 @@ def capture(message: str, level: str = "warning", **extra) -> None:
             for k, v in extra.items():
                 scope.set_extra(k, v)
             sentry_sdk.capture_message(message, level=level)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("sentry capture failed: %s", exc)

@@ -88,6 +88,7 @@ class _FallbackRepo:
     def fresh_post_candidates(self, *a, **k):   return []
     def get_category_taste_weights(self, *a, **k): return {}
     def global_taste_rows(self, *a, **k):        return []
+    def global_taste_rows_bulk(self, *a, **k):   return []
     def all_commodities(self):                   return []
 
     @property
