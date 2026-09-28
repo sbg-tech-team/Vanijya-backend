@@ -23,3 +23,10 @@ class NotAConversationMemberError(TranslationError):
     message on the platform by POSTing its id to /translate.
     """
     pass
+
+
+class LanguageNotChosenError(TranslationError):
+    """App language is English and the reader never picked a translation
+    language — nothing to translate into. The client prompts the reader to
+    choose one (PUT /translate/preference) rather than the server guessing."""
+    pass

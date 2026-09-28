@@ -31,6 +31,8 @@ def patch_startup():
 collect_ignore = [
     p.name
     for p in pathlib.Path(__file__).parent.glob("test_*.py")
-    if 'if __name__ == "__main__"' in p.read_text()
-    or "def test_" not in p.read_text()
+    # utf-8 explicitly: the default is the locale encoding, cp1252 on
+    # Windows, which cannot read a test file containing Indic script.
+    if 'if __name__ == "__main__"' in p.read_text(encoding="utf-8")
+    or "def test_" not in p.read_text(encoding="utf-8")
 ]

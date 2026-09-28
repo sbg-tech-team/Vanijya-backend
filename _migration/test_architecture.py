@@ -126,6 +126,7 @@ try:
                       "app.modules.post.presentation.router",
                       "app.modules.groups.presentation.router",
                       "app.modules.chat.presentation.router",
+                      "app.modules.translation.presentation.router",
                       "app.modules.calling.presentation.router",
                       "app.modules.safety.presentation.router",
                       "app.modules.deeplink.presentation.router",

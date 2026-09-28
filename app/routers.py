@@ -35,6 +35,7 @@ def register_routers(app) -> list[str]:
     )
     from app.modules.profile.presentation.router import router as profile_router
     from app.modules.safety.presentation.router import router as safety_router
+    from app.modules.translation.presentation.router import router as translation_router
     from app.modules.verification.presentation.router import router as verification_router
 
     ordered = [
@@ -52,6 +53,7 @@ def register_routers(app) -> list[str]:
         ("recommendations", recommendations_router),
         ("groups", groups_router),
         ("chat", chat_router),
+        ("translation", translation_router),
         ("calling", calling_router),
         ("safety", safety_router),
         ("deeplink", deeplink_router),

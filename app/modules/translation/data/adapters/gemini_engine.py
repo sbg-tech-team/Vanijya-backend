@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from google import genai
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from app.modules.translation.domain.entities import EngineResponse
 from app.modules.translation.domain.exceptions import TranslationEngineUnavailableError
+from app.modules.translation.domain.interfaces.content_engine import IContentTranslationEngine
 from app.modules.translation.domain.interfaces.engine import ITranslationEngine
 from app.modules.translation.domain.prompt import AssembledPrompt
 
@@ -18,7 +20,7 @@ class _StructuredOutput(BaseModel):
     chosen_target_lang: Optional[str] = None
 
 
-class GeminiTranslationEngine(ITranslationEngine):
+class GeminiTranslationEngine(ITranslationEngine, IContentTranslationEngine):
     """Static system_instruction is passed unchanged on every call by design —
     that consistency is what lets the engine's own prefix caching apply to it.
     Structured (JSON) output is only requested when the call also needs a
@@ -31,7 +33,10 @@ class GeminiTranslationEngine(ITranslationEngine):
     An absent key must degrade to "not configured" on first real use, the
     same way StreamVideoProvider handles an absent Stream key, rather than
     crashing every import of the chat router in any environment without the
-    key set (CI included)."""
+    key set (CI included).
+
+    Serves both chat (translate) and content (translate_fields) from one
+    client, one model setting and one key."""
 
     def __init__(self, api_key: Optional[str], model: str):
         self._api_key = api_key
@@ -75,3 +80,18 @@ class GeminiTranslationEngine(ITranslationEngine):
                 chosen_target_lang=parsed.chosen_target_lang,
             )
         return EngineResponse(translated_text=response.text.strip())
+
+    def translate_fields(self, prompt: AssembledPrompt) -> object:
+        """JSON mode without a response_schema: the item ids and field names
+        vary per call, which a fixed schema cannot express. The caller
+        validates the shape before anything is stored."""
+        client = self._get_client()
+        response = client.models.generate_content(
+            model=self._model,
+            contents=prompt.user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=prompt.system_instruction,
+                response_mime_type="application/json",
+            ),
+        )
+        return json.loads(response.text)

@@ -3,15 +3,23 @@ from datetime import timedelta
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+import redis
+
 from app.core.config import settings
+from app.core.redis_client import get_redis
 from app.dependencies import get_db
 from app.modules.translation.application.pipeline import TranslationPipeline
 from app.modules.translation.application.use_cases.handle_incoming_message import HandleIncomingMessageUseCase
+from app.modules.translation.application.use_cases.resolve_content_language import ResolveContentLanguageUseCase
 from app.modules.translation.application.use_cases.resolve_target_language import ResolveTargetLanguageUseCase
 from app.modules.translation.application.use_cases.toggle_continuous import ToggleContinuousTranslationUseCase
+from app.modules.translation.application.use_cases.translate_content import TranslateContentUseCase
 from app.modules.translation.application.use_cases.translate_message import TranslateMessageUseCase
+from app.modules.translation.application.use_cases.translation_preference import TranslationPreferenceUseCase
 from app.modules.translation.data.adapters.gemini_engine import GeminiTranslationEngine
 from app.modules.translation.data.adapters.inmemory_cache import InMemoryTranslationCache
+from app.modules.translation.data.adapters.redis_lock import RedisTranslationLock
+from app.modules.translation.data.content_repository import ContentTranslationRepository
 from app.modules.translation.data.repository import TranslationRepository
 
 # Process-lifetime singletons — must not be recreated per request, or they'd
@@ -66,6 +74,32 @@ def get_toggle_continuous_uc(
     resolve: ResolveTargetLanguageUseCase = Depends(get_resolve_target_language_uc),
 ) -> ToggleContinuousTranslationUseCase:
     return ToggleContinuousTranslationUseCase(repository=repo, resolve_target_language=resolve)
+
+
+# ── Content (post / comment / news) translation ─────────────────────────────
+# Same engine singleton as chat: one client, one model setting, one key.
+
+def get_content_translation_repo(db: Session = Depends(get_db)) -> ContentTranslationRepository:
+    return ContentTranslationRepository(db)
+
+
+def get_translate_content_uc(
+    repo: ContentTranslationRepository = Depends(get_content_translation_repo),
+    rc: redis.Redis = Depends(get_redis),
+) -> TranslateContentUseCase:
+    return TranslateContentUseCase(repository=repo, engine=_engine, lock=RedisTranslationLock(rc))
+
+
+def get_resolve_content_language_uc(
+    repo: TranslationRepository = Depends(get_translation_repo),
+) -> ResolveContentLanguageUseCase:
+    return ResolveContentLanguageUseCase(repo)
+
+
+def get_translation_preference_uc(
+    repo: TranslationRepository = Depends(get_translation_repo),
+) -> TranslationPreferenceUseCase:
+    return TranslationPreferenceUseCase(repo)
 
 
 # ── Scheduled-job composition ────────────────────────────────────────────────
