@@ -15,6 +15,9 @@ from app.modules.translation.domain.content import (
     ItemResult,
     TranslationShapeError,
     field_hash,
+    normalize_field_digits,
+    number_problem,
+    script_problem,
     split_fresh,
     validate_shape,
 )
@@ -165,11 +168,25 @@ class TranslateContentUseCase:
             except TranslationShapeError as exc:
                 log.warning("content translation for %s rejected: %s", source.ref.key, exc)
                 continue
-            self.repository.save_fields(
-                source.ref,
-                target_lang,
-                {name: (field_hash(todo[name]), text) for name, text in translated.items()},
-            )
+
+            # Per field, not per item: one field left in English, or with a
+            # price that changed, does not throw away the good ones. A dropped field stays missing, so the
+            # item reports failed and the next tap retries just that field.
+            clean = {}
+            for name, text in translated.items():
+                text = normalize_field_digits(text)
+                problem = script_problem(text, target_lang) or number_problem(todo[name], text)
+                if problem:
+                    log.warning("content translation %s.%s (%s) rejected: %s",
+                                source.ref.key, name, target_lang, problem)
+                else:
+                    clean[name] = text
+            if clean:
+                self.repository.save_fields(
+                    source.ref,
+                    target_lang,
+                    {name: (field_hash(todo[name]), text) for name, text in clean.items()},
+                )
 
     def _collect(
         self,

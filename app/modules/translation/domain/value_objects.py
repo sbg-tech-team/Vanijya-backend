@@ -25,6 +25,12 @@ CONTENT_ITEMS_PER_ENGINE_CALL: int = 5
 # The lock outlives any plausible engine call, so a crashed holder frees it
 # on its own.
 CONTENT_LOCK_TTL_SECONDS: int = 60
+# Per engine call. A live probe saw 2-3 s normally but 10 s and 25 s outliers;
+# past this the reader is better served by "failed, tap again" than a spinner.
+CONTENT_ENGINE_TIMEOUT_SECONDS: int = 15
+# Low, not zero: the same post should read the same for every reader who
+# gets a fresh translation, but a little freedom helps phrasing.
+CONTENT_ENGINE_TEMPERATURE: float = 0.2
 # How long a reader waits for someone else's in-flight translation of the same
 # item before being told it is still in progress.
 CONTENT_WAIT_SECONDS: float = 8.0

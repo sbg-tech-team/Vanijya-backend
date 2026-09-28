@@ -12,6 +12,10 @@ from app.modules.translation.domain.exceptions import TranslationEngineUnavailab
 from app.modules.translation.domain.interfaces.content_engine import IContentTranslationEngine
 from app.modules.translation.domain.interfaces.engine import ITranslationEngine
 from app.modules.translation.domain.prompt import AssembledPrompt
+from app.modules.translation.domain.value_objects import (
+    CONTENT_ENGINE_TEMPERATURE,
+    CONTENT_ENGINE_TIMEOUT_SECONDS,
+)
 
 
 class _StructuredOutput(BaseModel):
@@ -92,6 +96,9 @@ class GeminiTranslationEngine(ITranslationEngine, IContentTranslationEngine):
             config=types.GenerateContentConfig(
                 system_instruction=prompt.system_instruction,
                 response_mime_type="application/json",
+                temperature=CONTENT_ENGINE_TEMPERATURE,
+                # Per request, so chat's calls keep their own behaviour.
+                http_options=types.HttpOptions(timeout=CONTENT_ENGINE_TIMEOUT_SECONDS * 1000),
             ),
         )
         return json.loads(response.text)

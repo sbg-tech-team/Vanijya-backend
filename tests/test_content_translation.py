@@ -82,8 +82,18 @@ class FakeContentRepo:
         self.stored.setdefault((ref.key, target_lang), {}).update(fields)
 
 
+_DEV = "कखगघचछजझटठडढतथदधनपफबभमयरलवशसह"
+
+
+def tr(text):
+    """The fake engine's 'translation': deterministic Devanagari, so it passes
+    the script check for Hindi the way a real translation would."""
+    return "अनुवाद " + "".join(
+        c if c.isdigit() else _DEV[ord(c) % len(_DEV)] for c in text if c.isalnum())
+
+
 class FakeEngine:
-    """Translates by prefixing '[lang]'. `mangle` lets a test corrupt output."""
+    """Translates with tr(). `mangle` lets a test corrupt output."""
 
     def __init__(self, configured=True, fail=False, mangle=None):
         self._configured = configured
@@ -102,7 +112,7 @@ class FakeEngine:
         import json
         items = json.loads(prompt.user_content.split("Items:\n", 1)[1])
         out = {
-            key: {name: ([f"[tr] {x}" for x in v] if isinstance(v, list) else f"[tr] {v}")
+            key: {name: ([tr(x) for x in v] if isinstance(v, list) else tr(v))
                   for name, v in fields.items()}
             for key, fields in items.items()
         }
@@ -249,11 +259,11 @@ def test_miss_calls_engine_once_saves_with_hash_and_rate_limits_once():
     [res] = make_uc(repo, engine, lock).execute(1, [ref], "hi", before_engine_call=lambda: calls.append(1))
 
     assert res.status == "ready" and not res.cached
-    assert res.fields == {"title": "[tr] Wheat up", "caption": "[tr] Buy now"}
+    assert res.fields == {"title": tr("Wheat up"), "caption": tr("Buy now")}
     assert len(engine.prompts) == 1 and calls == [1]
     [(key, lang, saved)] = repo.saves
     assert key == "post:1" and lang == "hi"
-    assert saved["title"] == (field_hash("Wheat up"), "[tr] Wheat up")
+    assert saved["title"] == (field_hash("Wheat up"), tr("Wheat up"))
     assert lock.released == lock.acquired == ["content_translate:post:1:hi"]
 
 
@@ -276,7 +286,7 @@ def test_only_missing_fields_are_sent():
 
     assert '"caption": "Edited caption"' in engine.prompts[0].user_content
     assert "Wheat up" not in engine.prompts[0].user_content.split("Items:")[1]
-    assert res.fields == {"title": "गेहूं ऊपर", "caption": "[tr] Edited caption"}
+    assert res.fields == {"title": "गेहूं ऊपर", "caption": tr("Edited caption")}
 
 
 def test_news_card_request_does_not_pay_for_detail_fields():
@@ -423,12 +433,12 @@ def test_endpoint_uses_app_language_and_returns_items():
     client, _ = _client(pref="mr", repo=repo)
     r = client.post("/translate/content",
                     json={"items": [{"type": "post", "id": "1"}, {"type": "news", "id": "nope"}]},
-                    headers={"X-App-Language": "gu"})
+                    headers={"X-App-Language": "hi"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["lang"] == "gu"
+    assert body["lang"] == "hi"
     assert body["items"][0]["status"] == "ready"
-    assert body["items"][0]["fields"]["title"] == "[tr] Wheat"
+    assert body["items"][0]["fields"]["title"] == tr("Wheat")
     assert body["items"][1]["status"] == "not_found"
 
 
@@ -474,3 +484,85 @@ def test_endpoint_normalizes_ids():
     assert r.status_code == 200, r.text
     items = r.json()["items"]
     assert len(items) == 1 and items[0]["id"] == "7" and items[0]["status"] == "ready"
+
+
+
+# ── Script check ───────────────────────────────────────────────────────────────
+
+def test_script_check_catches_what_the_live_probe_saw():
+    from app.modules.translation.domain.content import script_problem
+    # Cyrillic inside a Hindi word, from a real flash-lite response.
+    assert "another script" in script_problem("Indore मंडी से 50 MT शरбаты गेहूं रेडी है", "hi")
+    # A Gujarati "translation" that is still the Hinglish source.
+    assert "untranslated" in script_problem(
+        "Indore mandi se 50 MT sharbati gehu ready hai, rate 2850 rs/quintal", "gu")
+    # Hindi output in Gujarati script, or the reverse, is another script.
+    assert script_problem("भाई 40 MT चाहिए", "gu")
+    # Good output with codes and units in Latin passes.
+    assert script_problem("इंदौर मंडी से 50 MT शरबती गेहूं रेडी है, रेट 2850 रु/क्विंटल", "hi") is None
+    assert script_problem("DGFT નોટિફિકેશને નિકાસ પ્રતિબંધ છ મહિના લંબાવ્યો", "gu") is None
+    # Short codes are left alone rather than failing the item.
+    assert script_problem("MSP", "hi") is None
+    # English target: any non-Latin letter is wrong.
+    assert script_problem("Need 40 MT, final rate?", "en") is None
+    assert script_problem("Need 40 MT, भाई", "en")
+    # Lists are checked element by element.
+    assert script_problem(["ठीक है", "still english words everywhere here"], "hi")
+
+
+def test_untranslated_field_is_dropped_the_rest_saved():
+    repo = FakeContentRepo()
+    ref = repo.add("post", 1, title="Wheat up", caption="Loading in three days from Indore")
+
+    def leave_caption_english(out):
+        out["post:1"]["caption"] = "Loading in three days from Indore"
+        return out
+
+    [res] = make_uc(repo, FakeEngine(mangle=leave_caption_english)).execute(1, [ref], "hi")
+
+    assert res.status == "failed"
+    assert res.fields == {"title": tr("Wheat up")}     # the good field is kept
+    [(_, _, saved)] = repo.saves
+    assert set(saved) == {"title"}
+
+
+
+# ── Number check ───────────────────────────────────────────────────────────────
+
+def test_numbers_must_survive_and_digits_are_normalized():
+    from app.modules.translation.domain.content import normalize_digits, number_problem
+    src = "Pusa 1121 at ₹8,450/qtl, up ₹150; 3% fall on 20 September"
+    # Same numbers, Devanagari digits and no thousands comma: fine once normalized.
+    assert normalize_digits("₹८,४५०") == "₹8,450"
+    assert number_problem(src, "पूसा ११२१ ₹८४५०/क्विंटल, ₹१५० ऊपर; 20 सितंबर को 3% गिरावट") is None
+    # A changed price, a dropped number, a number spelled out: all rejected.
+    assert number_problem(src, "पूसा 1121 ₹8,540/क्विंटल, ₹150 ऊपर; 20 सितंबर 3%")
+    assert number_problem(src, "पूसा 1121 ₹8,450/क्विंटल; 20 सितंबर 3%")
+    assert number_problem("Payment in 7 days", "पेमेंट सात दिन में")
+    # Lists compare as a whole.
+    assert number_problem(["fell 3%", "by 6 months"], ["3% गिरा", "6 महीने"]) is None
+
+
+def test_changed_price_is_never_stored():
+    repo = FakeContentRepo()
+    ref = repo.add("post", 1, title="Wheat", caption="50 MT at 2850 per quintal")
+
+    def change_price(out):
+        out["post:1"]["caption"] = "50 MT गेहूं 2580 रुपये प्रति क्विंटल"
+        return out
+
+    [res] = make_uc(repo, FakeEngine(mangle=change_price)).execute(1, [ref], "hi")
+    assert res.status == "failed" and "caption" not in res.fields
+    assert all("caption" not in saved for _, _, saved in repo.saves)
+
+
+def test_indic_digits_are_stored_as_ascii():
+    repo = FakeContentRepo()
+    ref = repo.add("comment", 1, content="need 40 MT")
+
+    def marathi_digits(out):
+        out["comment:1"]["content"] = "४० MT पाहिजे"
+        return out
+
+    [res] = make_uc(repo, FakeEngine(mangle=marathi_digits)).execute(1, [ref], "mr")
+    assert res.status == "ready" and res.fields["content"] == "40 MT पाहिजे"

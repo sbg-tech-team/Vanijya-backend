@@ -27,7 +27,9 @@ LANGUAGE_NAMES = {
     "en": "English",
     "hi": "Hindi (Devanagari script)",
     "gu": "Gujarati",
-    "mr": "Marathi",
+    # Shares Devanagari with Hindi; without saying so the engine was seen
+    # writing Hindi when asked for Marathi.
+    "mr": "Marathi (मराठी — the Marathi language in Devanagari script, not Hindi)",
     "ta": "Tamil",
     "te": "Telugu",
     "kn": "Kannada",
