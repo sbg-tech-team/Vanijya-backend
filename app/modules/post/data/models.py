@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import ARRAY, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database.base import Base
@@ -60,6 +61,12 @@ class Post(Base):
     comment_count: Mapped[int] = mapped_column(Integer, default=0)
     share_count: Mapped[int] = mapped_column(Integer, default=0)
     save_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Reader translations, {lang: {field: {"h": source_hash, "v": text}}}.
+    # Written only by the translation module, with a single atomic UPDATE of
+    # this column. Deferred so feeds and every other read of the row never
+    # load it; stored on the row so deleting the item deletes them.
+    translations: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, deferred=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -128,6 +135,8 @@ class PostComment(Base):
     post_id: Mapped[int] = mapped_column(Integer, ForeignKey("posts.id", ondelete="CASCADE"))
     profile_id: Mapped[int] = mapped_column(Integer, ForeignKey("profile.id", ondelete="CASCADE"))
     content: Mapped[str] = mapped_column(Text)
+    # Reader translations — same shape and rules as Post.translations.
+    translations: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     post: Mapped["Post"] = relationship("Post", back_populates="comments")

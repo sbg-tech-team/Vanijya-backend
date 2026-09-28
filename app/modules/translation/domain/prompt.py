@@ -21,7 +21,9 @@ STATIC_SYSTEM_INSTRUCTION = (
     "translate or repeat that context in your output."
 )
 
-_LANGUAGE_NAMES = {
+# Shared by chat and content (post/news) translation — the set of languages a
+# client may ask for. Anything outside it is ignored, never sent to the engine.
+LANGUAGE_NAMES = {
     "en": "English",
     "hi": "Hindi (Devanagari script)",
     "gu": "Gujarati",
@@ -36,8 +38,16 @@ _LANGUAGE_NAMES = {
 }
 
 
-def _language_name(code: str) -> str:
-    return _LANGUAGE_NAMES.get(code, code)
+def language_name(code: str) -> str:
+    return LANGUAGE_NAMES.get(code, code)
+
+
+def normalize_language(code: Optional[str]) -> Optional[str]:
+    """'hi', 'HI', 'hi-IN', 'hi_IN' -> 'hi'. Anything unsupported -> None."""
+    if not code:
+        return None
+    base = code.strip().replace("_", "-").split("-")[0].lower()
+    return base if base in LANGUAGE_NAMES else None
 
 
 @dataclass
@@ -76,7 +86,7 @@ def assemble_prompt(
             "language you translated into as chosen_target_lang (ISO 639-1 code)."
         )
     else:
-        instruction = f"Translate the following message into {_language_name(target_lang)}."
+        instruction = f"Translate the following message into {language_name(target_lang)}."
         if not structured:
             instruction += " Respond with only the translated text, nothing else."
         parts.append(instruction)

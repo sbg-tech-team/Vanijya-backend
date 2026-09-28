@@ -50,6 +50,12 @@ class RawArticle(Base):
     )
     platform_arrived_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Reader translations of the article AND its enrichment (title,
+    # description, summary bullets, impact), {lang: {field: {"h", "v"}}}.
+    # Written only by the translation module; deferred so the feed never
+    # loads it. Kept on the raw row because that is the article's identity —
+    # article_id everywhere in the API is this id.
+    translations: Mapped[dict | None] = mapped_column(JSONB, nullable=True, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 

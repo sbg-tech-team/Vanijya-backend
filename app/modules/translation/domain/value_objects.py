@@ -12,3 +12,24 @@ AUTO_FALLBACK = "__auto__"
 # thread, low enough that a script cannot run up a bill.
 TRANSLATE_RATE_LIMIT: int = 60
 TRANSLATE_RATE_WINDOW_SECONDS: int = 3600
+
+
+# ── Content (post / comment / news) translation ──────────────────────────────
+# Items per request. Bounds a single tap's worst case: a post plus its visible
+# comments fits comfortably.
+CONTENT_MAX_ITEMS_PER_REQUEST: int = 20
+# Items per engine call. Batching shares the static instruction across items;
+# capping it keeps one response small enough that a single malformed item does
+# not cost a huge output, and a timeout does not lose a whole page.
+CONTENT_ITEMS_PER_ENGINE_CALL: int = 5
+# The lock outlives any plausible engine call, so a crashed holder frees it
+# on its own.
+CONTENT_LOCK_TTL_SECONDS: int = 60
+# How long a reader waits for someone else's in-flight translation of the same
+# item before being told it is still in progress.
+CONTENT_WAIT_SECONDS: float = 8.0
+CONTENT_WAIT_POLL_SECONDS: float = 0.5
+# Only requests that reach the engine count — a cache hit is free, so it is
+# never rate limited.
+CONTENT_TRANSLATE_RATE_LIMIT: int = 60
+CONTENT_TRANSLATE_RATE_WINDOW_SECONDS: int = 3600
