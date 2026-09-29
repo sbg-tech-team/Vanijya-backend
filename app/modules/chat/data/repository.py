@@ -374,8 +374,12 @@ def _build_message(
     attachments: Optional[list[ChatAttachment]] = None,
     translated_text: Optional[str] = None,
     target_lang: Optional[str] = None,
+    sender_profile: Optional[Profile] = None,
 ) -> MessageEntity:
-    sender_profile = db.query(Profile).filter(Profile.users_id == msg.sender_id).first()
+    # sender_profile=None means "not batched by the caller" — fetch this one
+    # message's sender directly, same convention as attachments above.
+    if sender_profile is None:
+        sender_profile = db.query(Profile).filter(Profile.users_id == msg.sender_id).first()
     sender_snap = (
         _profile_snap(sender_profile)
         if sender_profile
@@ -557,10 +561,20 @@ class ChatRepository(IChatRepository):
             return {"translated_text": trans_map.get(m.id),
                     "target_lang": translate_to if trans_map.get(m.id) else None}
 
+        # One query for every sender's profile on the page, instead of one
+        # _build_message() call re-fetching the same sender per message —
+        # attachments and translations were already batched here; this wasn't.
+        sender_ids = {m.sender_id for m in rows}
+        profile_by_sender: dict[UUID, Profile] = {}
+        if sender_ids:
+            for p in self.db.query(Profile).filter(Profile.users_id.in_(sender_ids)).all():
+                profile_by_sender[p.users_id] = p
+
         if context_type != "dm":
             # Group receipts aren't tracked yet (no per-member cursors on group_members).
             return [
-                _build_message(self.db, m, attachments=attach_map.get(m.id, []), **_tr(m))
+                _build_message(self.db, m, attachments=attach_map.get(m.id, []),
+                                sender_profile=profile_by_sender.get(m.sender_id), **_tr(m))
                 for m in rows
             ]
 
@@ -581,7 +595,8 @@ class ChatRepository(IChatRepository):
             read = last_read_at is not None and last_read_at >= m.sent_at
             out.append(_build_message(
                 self.db, m, delivered=delivered, read=read,
-                attachments=attach_map.get(m.id, []), **_tr(m),
+                attachments=attach_map.get(m.id, []),
+                sender_profile=profile_by_sender.get(m.sender_id), **_tr(m),
             ))
         return out
 

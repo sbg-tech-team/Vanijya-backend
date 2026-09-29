@@ -16,6 +16,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import case, or_, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.recommendation.lookup import AmplifyLookupMixin
@@ -358,21 +359,12 @@ class GroupsRepository(AmplifyLookupMixin, IGroupsRepository):
     ) -> None:
         from app.modules.post.data.recommendation_models import PostEmbedding
 
-        existing = (
-            self.db.query(PostEmbedding)
-            .filter(PostEmbedding.post_id == post_id)
-            .first()
-        )
-        if existing:
-            existing.vector = vector
-            existing.partition = partition
-            existing.is_active = True
-            existing.expires_at = expires_at
-            existing.category = category
-            existing.commodity_idx = commodity_idx
-            existing.created_at = now
-            return
-        self.db.add(PostEmbedding(
+        # One atomic upsert instead of a SELECT to decide insert-vs-update —
+        # post_id is the table's primary key, so ON CONFLICT targets it
+        # directly. Every caller of index_post() hits this; a freshly-created
+        # post (this deal-publish path included) can never have a prior row,
+        # so the old SELECT was guaranteed-wasted work on that path.
+        stmt = pg_insert(PostEmbedding.__table__).values(
             post_id=post_id,
             vector=vector,
             partition=partition,
@@ -381,7 +373,19 @@ class GroupsRepository(AmplifyLookupMixin, IGroupsRepository):
             category=category,
             commodity_idx=commodity_idx,
             created_at=now,
-        ))
+        ).on_conflict_do_update(
+            index_elements=["post_id"],
+            set_={
+                "vector": vector,
+                "partition": partition,
+                "is_active": True,
+                "expires_at": expires_at,
+                "category": category,
+                "commodity_idx": commodity_idx,
+                "created_at": now,
+            },
+        )
+        self.db.execute(stmt)
 
     def deactivate_post_embedding(self, post_id: int) -> None:
         from app.modules.post.data.recommendation_models import PostEmbedding

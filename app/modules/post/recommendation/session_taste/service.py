@@ -32,7 +32,6 @@ from app.modules.post.recommendation.session_taste.constants import (
 )
 from app.modules.post.data.taste_models import PostInteractionEvent
 from app.modules.post.presentation.taste_schemas import InteractionEventItem
-from app.modules.post.recommendation.session_taste import taste_service
 from app.modules.post.data.models import Post
 from app.modules.profile.data.models import Business, Profile
 from app.recommendation.amplify import write_post_signals
@@ -258,12 +257,15 @@ def record_interaction(
         return
 
     # user_post_taste is the one taste store — see get_taste_weights().
-    taste_service.update_taste(
-            repo, profile_id, "category", category, pos_delta, neg_delta)
+    # One upsert per interaction (like/save/comment/...) writes up to 3 rows
+    # (category, commodity, author) — batched into one round-trip instead of
+    # one per dimension.
+    entries: list[tuple[str, str, float, float, int]] = [
+        ("category", category, pos_delta, neg_delta, 1),
+    ]
 
     if commodity_id is not None:
-        taste_service.update_taste(
-            repo, profile_id, "commodity", str(commodity_id), pos_delta, neg_delta)
+        entries.append(("commodity", str(commodity_id), pos_delta, neg_delta, 1))
 
     # Author affinity: only for high-confidence signals; never self-interaction
     if (
@@ -271,7 +273,7 @@ def record_interaction(
         and author_profile_id != profile_id
         and pos_delta >= AUTHOR_TASTE_MIN_DELTA
     ):
-        taste_service.update_taste(
-            repo, profile_id, "author", str(author_profile_id), pos_delta, neg_delta)
+        entries.append(("author", str(author_profile_id), pos_delta, neg_delta, 1))
 
+    repo.upsert_taste_bulk(profile_id, entries)
     repo.commit()

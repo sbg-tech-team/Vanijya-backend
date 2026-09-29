@@ -15,6 +15,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -135,11 +136,17 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
         return self.db.query(Post).filter(Post.id == post_id).first()
 
     def get_active_post(self, post_id: int) -> Optional[Post]:
-        return (
-            self.db.query(Post)
-            .filter(Post.id == post_id, Post.profile_id.in_(self.active_profile_ids()))
-            .first()
-        )
+        # Used to also filter Post.profile_id.in_(self.active_profile_ids()) —
+        # an unbounded `SELECT id FROM profile` (no WHERE clause) run on every
+        # single post read/write, joined in via a giant IN(...). It existed to
+        # exclude posts from soft-deleted users (User.is_deleted), but that
+        # column was removed (migration b4c5d6e7f8a9) — deletion is hard-delete
+        # with ON DELETE CASCADE now (users -> profile -> posts), so a Post row
+        # can no longer exist for a deleted profile at all. The condition was
+        # already flagged as structurally always-true and pointless in
+        # audit_phase_07.md (P7-F1); this removes it from the one call site
+        # that's actually still reachable from a router.
+        return self.db.query(Post).filter(Post.id == post_id).first()
 
     def list_active_posts(self, limit: int, offset: int) -> list[Post]:
         return (
@@ -337,21 +344,10 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
     ) -> None:
         from app.modules.post.data.recommendation_models import PostEmbedding
 
-        existing = (
-            self.db.query(PostEmbedding)
-            .filter(PostEmbedding.post_id == post_id)
-            .first()
-        )
-        if existing:
-            existing.vector = vector
-            existing.partition = partition
-            existing.is_active = True
-            existing.expires_at = expires_at
-            existing.category = category
-            existing.commodity_idx = commodity_idx
-            existing.created_at = now
-            return
-        self.db.add(PostEmbedding(
+        # One atomic upsert instead of a SELECT to decide insert-vs-update —
+        # post_id is the table's primary key, so ON CONFLICT targets it
+        # directly.
+        stmt = pg_insert(PostEmbedding.__table__).values(
             post_id=post_id,
             vector=vector,
             partition=partition,
@@ -360,7 +356,19 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             category=category,
             commodity_idx=commodity_idx,
             created_at=now,
-        ))
+        ).on_conflict_do_update(
+            index_elements=["post_id"],
+            set_={
+                "vector": vector,
+                "partition": partition,
+                "is_active": True,
+                "expires_at": expires_at,
+                "category": category,
+                "commodity_idx": commodity_idx,
+                "created_at": now,
+            },
+        )
+        self.db.execute(stmt)
 
     def deactivate_post_embedding(self, post_id: int) -> None:
         from app.modules.post.data.recommendation_models import PostEmbedding

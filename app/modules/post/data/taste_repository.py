@@ -60,6 +60,45 @@ class TasteRepository(AmplifyLookupMixin, ITasteRepository):
         )
         self.db.execute(stmt)
 
+    def upsert_taste_bulk(
+        self,
+        profile_id: int,
+        entries: list[tuple[str, str, float, float, int]],
+    ) -> None:
+        """Same upsert as upsert_taste, for several (dimension_type,
+        dimension_key) rows in one round-trip instead of one call each.
+
+        entries: (dimension_type, dimension_key, positive_delta, negative_delta, event_count).
+        Each conflicting row adds its OWN delta (via `excluded`, the per-row
+        proposed values) — not a shared value — so this is exact, not an
+        approximation of calling upsert_taste N times.
+        """
+        if not entries:
+            return
+        now = datetime.now(timezone.utc)
+        stmt = pg_insert(UserPostTaste.__table__).values([
+            {
+                "profile_id": profile_id,
+                "dimension_type": dim_type,
+                "dimension_key": dim_key,
+                "positive_score": pos,
+                "negative_score": neg,
+                "event_count": cnt,
+                "last_event_at": now,
+            }
+            for dim_type, dim_key, pos, neg, cnt in entries
+        ])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["profile_id", "dimension_type", "dimension_key"],
+            set_={
+                "positive_score": UserPostTaste.__table__.c.positive_score + stmt.excluded.positive_score,
+                "negative_score": UserPostTaste.__table__.c.negative_score + stmt.excluded.negative_score,
+                "event_count": UserPostTaste.__table__.c.event_count + stmt.excluded.event_count,
+                "last_event_at": now,
+            },
+        )
+        self.db.execute(stmt)
+
     def taste_rows(self, profile_id: int, dimension_types: tuple[str, ...]) -> list:
         return (
             self.db.query(UserPostTaste)

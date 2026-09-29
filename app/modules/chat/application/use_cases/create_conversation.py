@@ -15,10 +15,13 @@ class CreatePersonalDealUseCase:
         self.repo = repo
 
     def execute(self, sender_id: UUID, conv_id: UUID, **deal_fields):
-        conv = self.repo.get_conversation(conv_id, sender_id)
-        if not conv:
+        # get_conv_send_info: one joined query for status + membership, instead
+        # of get_conversation's full participant/last-message/unread-count
+        # build — none of which this check needs.
+        guard = self.repo.get_conv_send_info(conv_id, sender_id)
+        if not guard:
             raise ConversationNotFoundError("Conversation not found.")
-        if conv.status != ConversationStatus.ACTIVE:
+        if guard.status != ConversationStatus.ACTIVE:
             raise ConversationAccessDeniedError(
                 "Can only create deals in an active conversation."
             )

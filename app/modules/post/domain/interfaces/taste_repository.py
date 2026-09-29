@@ -26,6 +26,17 @@ class ITasteRepository(ABC):
         ...
 
     @abstractmethod
+    def upsert_taste_bulk(
+        self,
+        profile_id: int,
+        entries: list[tuple[str, str, float, float, int]],
+    ) -> None:
+        """upsert_taste for several (dimension_type, dimension_key) rows in one
+        round-trip. entries: (dimension_type, dimension_key, positive_delta,
+        negative_delta, event_count). Does not commit."""
+        ...
+
+    @abstractmethod
     def taste_rows(self, profile_id: int, dimension_types: tuple[str, ...]) -> list:
         """Raw UserPostTaste rows for these dimensions, in one query."""
         ...
