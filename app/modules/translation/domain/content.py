@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional, Union
 from uuid import UUID
@@ -141,11 +142,16 @@ class TranslationShapeError(ValueError):
 
 
 def validate_shape(sent: dict[str, FieldValue], got: object) -> dict[str, FieldValue]:
-    """The engine must hand back exactly the keys it was sent, each the same
-    kind (a string stays a string, a list keeps its length). A merged or
-    dropped news bullet would be stored and then served to every later reader,
-    so anything else is rejected rather than saved."""
-    if not isinstance(got, dict) or set(got) != set(sent):
+    """The engine must hand back every key it was sent, each the same kind (a
+    string stays a string, a list keeps its length). A merged or dropped news
+    bullet would be stored and then served to every later reader, so that is
+    rejected rather than saved.
+
+    Extra keys are ignored, not rejected: in a batch with a news item the
+    engine was seen adding an empty "description" to a post whose title and
+    caption were translated correctly. Only the keys that were sent are
+    returned, so an extra one can never be stored."""
+    if not isinstance(got, dict) or not set(sent) <= set(got):
         raise TranslationShapeError(f"expected keys {sorted(sent)}, got {str(got)[:200]}")
     out: dict[str, FieldValue] = {}
     for name, value in sent.items():
@@ -193,12 +199,24 @@ def _in(ch: str, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(lo <= cp <= hi for lo, hi in ranges)
 
 
+# Codes the prompt allows in Latin letters: MT, DGFT, NCDEX, IR-64, HCL. Two or
+# more characters, capitals and digits only. They are left out of the Latin
+# share, or a stock story naming NCC, IRFC and HCL reads as "untranslated".
+_CODE = re.compile(r"(?<![A-Za-z])[A-Z][A-Z0-9]*(?:[-/.&][A-Z0-9]+)*(?![A-Za-z])")
+
+
+def _without_codes(text: str) -> str:
+    return _CODE.sub(lambda m: "" if len(m.group()) >= 2 else m.group(), text)
+
+
 def script_problem(value: FieldValue, target_lang: str) -> Optional[str]:
     """Why this translated field is not in the target script, or None if it is."""
     texts = value if isinstance(value, list) else [value]
     for text in texts:
         target = latin = other = 0
         own = _SCRIPT_RANGES.get(target_lang)
+        if own is not None:
+            text = _without_codes(text)
         for ch in text:
             if not ch.isalpha():
                 continue  # digits, punctuation, ₹, combining vowel signs
@@ -215,9 +233,34 @@ def script_problem(value: FieldValue, target_lang: str) -> Optional[str]:
                 other += 1
         if other:
             return f"{other} letter(s) from another script"
+        if own is not None:
+            mixed = _mixed_script_word(text, own)
+            if mixed:
+                return f"word mixes Latin and target script: {mixed!r}"
         total = target + latin
         if total >= MIN_LETTERS_FOR_SHARE and latin / total > MAX_LATIN_SHARE:
             return f"mostly untranslated ({latin * 100 // total}% Latin letters)"
+    return None
+
+
+def _mixed_script_word(text: str, own: tuple[tuple[int, int], ...]) -> Optional[str]:
+    """A single word written partly in Latin and partly in the target script —
+    "Indiaவில்", "உடits", "સિલ્vio". Reviewers marked every one they saw as
+    wrong, only a few letters are Latin so the share check misses them, and
+    no correct translation contains one. Codes are already stripped by the
+    caller, so "NCC-யின்" style suffixes never reach here."""
+    word: list[str] = []
+    for ch in text + " ":
+        # Letters and combining marks (vowel signs, virama) belong to the word.
+        if ch.isalpha() or unicodedata.category(ch).startswith("M"):
+            word.append(ch)
+            continue
+        if word:
+            has_latin = any(_in(c, _LATIN_RANGES) for c in word)
+            has_own = any(_in(c, own) for c in word)
+            if has_latin and has_own:
+                return "".join(word)
+            word = []
     return None
 
 
@@ -255,8 +298,15 @@ def normalize_field_digits(value: FieldValue) -> FieldValue:
 
 
 def number_problem(source: FieldValue, translated: FieldValue) -> Optional[str]:
-    """Why the translation's numbers differ from the source's, or None."""
-    want, got = _numbers(source), _numbers(translated)
-    if want != got:
-        return f"numbers changed: source {want}, translation {got}"
+    """Why the translation lost or changed a number from the source, or None.
+
+    Every number in the source must appear in the translation, as often as it
+    does in the source. Extra numbers are allowed: a number word written as
+    digits ("fortnight" -> "15 दिवस", "six-day" -> "6 दिवसांच्या") is a correct
+    translation. A changed price still fails, because the original goes
+    missing (2850 -> 2580 loses 2850)."""
+    missing = Counter(_numbers(source)) - Counter(_numbers(translated))
+    if missing:
+        return (f"numbers changed: {sorted(missing.elements())} from the source "
+                f"missing in the translation {_numbers(translated)}")
     return None

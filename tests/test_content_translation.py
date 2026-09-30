@@ -8,6 +8,7 @@ repository, engine and lock are in-memory fakes, so these run standalone.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 from uuid import uuid4
@@ -189,7 +190,6 @@ def test_validate_shape_rejects_changed_shape():
     for bad in (
         None,
         {"title": "x"},                                          # dropped a field
-        {"title": "x", "summary_bullets": ["1", "2", "3"], "extra": "y"},
         {"title": "x", "summary_bullets": ["1 2", "3"]},        # merged bullets
         {"title": "", "summary_bullets": ["1", "2", "3"]},      # empty text
         {"title": ["x"], "summary_bullets": ["1", "2", "3"]},   # wrong kind
@@ -566,3 +566,118 @@ def test_indic_digits_are_stored_as_ascii():
 
     [res] = make_uc(repo, FakeEngine(mangle=marathi_digits)).execute(1, [ref], "mr")
     assert res.status == "ready" and res.fields["content"] == "40 MT पाहिजे"
+
+
+
+# ── Check fixes from the per-language quality run ──────────────────────────────
+
+def test_extra_keys_are_ignored_not_stored():
+    sent = {"title": "t", "caption": "c"}
+    got = validate_shape(sent, {"title": "टी", "caption": "सी", "description": ""})
+    assert got == {"title": "टी", "caption": "सी"}
+    with pytest.raises(TranslationShapeError):
+        validate_shape(sent, {"title": "टी", "description": "सी"})   # caption missing
+
+
+def test_extra_numbers_allowed_missing_or_changed_ones_not():
+    from app.modules.translation.domain.content import number_problem
+    assert number_problem("a correction of 2-3% over the next fortnight",
+                          "पुढील 15 दिवसांत 2-3% करेक्शन") is None
+    assert number_problem("a six-day trip", "6 दिवसांच्या दौरा") is None
+    assert number_problem("50 MT at 2850", "50 MT 2580 रुपये")          # price changed
+    assert number_problem("2 lots of 20 MT and 20 MT more", "2 लॉट 20 MT")  # a 20 went missing
+
+
+def test_codes_do_not_count_as_untranslated():
+    from app.modules.translation.domain.content import script_problem
+    assert script_problem("NCC ला आंध्र प्रदेशात ₹1,076.71 कोटींचा पाणीपुरवठा करार मिळाला; "
+                          "HCL, IRFC, NCDEX आणि IR-64 चा उल्लेख", "mr") is None
+    # Real words left in English still fail.
+    assert script_problem("Shree Balaji Agro और Patel Brothers, Rajkot ने सौदा किया", "hi")
+    # Other-script letters are still caught regardless.
+    assert script_problem("NCC इंदौर મંડી", "gu")
+
+
+# ── Fixes from the native-speaker review ───────────────────────────────────────
+
+def test_mixed_script_words_are_rejected():
+    from app.modules.translation.domain.content import script_problem
+    # All three were marked wrong by reviewers and passed the old checks.
+    assert "mixes" in script_problem("Indiaவில் உள்ள உணவு நிறுவனங்கள் மாற வேண்டும்", "ta")
+    assert "mixes" in script_problem("விற்று உடits-ஆக விடுகிறீர்களா", "ta")
+    assert "mixes" in script_problem("મંત્રી સિલ્vio એર્કેન્સ ભારતની મુલાકાતે છે", "gu")
+    # Codes with a suffix, a code on its own, and clean text are fine.
+    assert script_problem("NCC-யின் ஒப்பந்தம் ₹1,076.71 கோடி", "ta") is None
+    assert script_problem("DGFT નોટિફિકેશન દ્વારા નિકાસ પ્રતિબંધ", "gu") is None
+    assert script_problem("இந்தியாவில் உள்ள உணவு நிறுவனங்கள்", "ta") is None
+
+
+def test_glossary_matches_whole_words_including_romanized_hindi():
+    from app.modules.translation.domain.glossary import glossary_for
+    got = dict(glossary_for(["Indore mandi se 50 MT sharbati gehu, rate 2850 rs/quintal"], "ta"))
+    assert got == {"wheat": "கோதுமை", "quintal": "குவிண்டால்", "mandi (market yard)": "மண்டி"}
+    assert dict(glossary_for(["कपास के भाव में तेजी"], "ta")) == {"cotton (kapas)": "பருத்தி"}
+    # "gram" must not fire inside "program"; no entries for a language -> nothing.
+    assert glossary_for(["loyalty program for traders"], "ta") == []
+    assert glossary_for(["50 MT cotton"], "te") == []
+
+
+def test_prompt_carries_glossary_and_the_new_rules():
+    src = ContentSource(ContentRef("post", "1"), {"caption": "Chana desi, 200 bags, Indore"})
+    p = assemble_content_prompt(items=[(src, dict(src.fields))], target_lang="ta")
+    assert "Glossary" in p.user_content
+    assert "chana (chickpea) -> கொண்டைக்கடலை" in p.user_content
+    assert "bags (of produce) -> மூட்டைகள்" in p.user_content
+    assert "Glossary" not in assemble_content_prompt(
+        items=[(ContentSource(ContentRef("post", "2"), {"title": "Hello"}), {"title": "Hello"})],
+        target_lang="ta").user_content
+    for rule in ("month names", "'Unjha' -> 'ઉંઝા'", "fortnight", "never carry its words over"):
+        assert rule in CONTENT_SYSTEM_INSTRUCTION
+
+
+class _FirstCallBad(FakeEngine):
+    """Returns a bad translation for `key` on the first call only."""
+
+    def __init__(self, key, field_name, bad):
+        super().__init__()
+        self.key, self.field_name, self.bad = key, field_name, bad
+
+    def translate_fields(self, prompt):
+        out = super().translate_fields(prompt)
+        if len(self.prompts) == 1 and self.key in out:
+            out[self.key][self.field_name] = self.bad
+        return out
+
+
+def test_rejected_item_is_retried_alone_and_saved():
+    repo = FakeContentRepo()
+    good = repo.add("comment", 1, content="fine")
+    ref = repo.add("post", 2, title="Wheat", caption="Loading in three days from Indore")
+    engine = _FirstCallBad("post:2", "caption", "Loading in three days from Indore")
+
+    res_good, res = make_uc(repo, engine).execute(1, [good, ref], "hi")
+
+    assert res_good.status == "ready" and res.status == "ready"
+    assert len(engine.prompts) == 2
+    retry_items = json.loads(engine.prompts[1].user_content.split("Items:\n", 1)[1])
+    assert retry_items == {"post:2": {"caption": "Loading in three days from Indore"}}  # alone, only the missing field
+
+
+def test_retries_are_capped_and_engine_failures_not_retried():
+    from app.modules.translation.domain.value_objects import CONTENT_MAX_RETRY_ITEMS
+    repo = FakeContentRepo()
+    refs = [repo.add("comment", i, content=f"comment number {i} in english words") for i in range(5)]
+
+    def always_english(out):
+        for k in out:
+            out[k]["content"] = "still english words everywhere here"
+        return out
+
+    engine = FakeEngine(mangle=always_english)
+    results = make_uc(repo, engine).execute(1, refs, "hi")
+    assert [r.status for r in results] == ["failed"] * 5
+    assert len(engine.prompts) == 1 + CONTENT_MAX_RETRY_ITEMS
+
+    down = FakeEngine(fail=True)
+    make_uc(FakeContentRepo(sources=dict(repo.sources)), down).execute(1, refs, "hi")
+    assert len(down.prompts) == 1

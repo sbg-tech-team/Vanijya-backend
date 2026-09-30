@@ -29,6 +29,7 @@ from app.modules.translation.domain.interfaces.translation_lock import ITranslat
 from app.modules.translation.domain.value_objects import (
     CONTENT_ITEMS_PER_ENGINE_CALL,
     CONTENT_LOCK_TTL_SECONDS,
+    CONTENT_MAX_RETRY_ITEMS,
     CONTENT_WAIT_POLL_SECONDS,
     CONTENT_WAIT_SECONDS,
 )
@@ -135,8 +136,13 @@ class TranslateContentUseCase:
             if mine:
                 if before_engine_call is not None:
                     before_engine_call()
+                rejected: list[_Pending] = []
                 for i in range(0, len(mine), CONTENT_ITEMS_PER_ENGINE_CALL):
-                    self._translate_batch(mine[i:i + CONTENT_ITEMS_PER_ENGINE_CALL], target_lang)
+                    rejected += self._translate_batch(mine[i:i + CONTENT_ITEMS_PER_ENGINE_CALL], target_lang)
+                # One more try, alone, for what a check rejected: away from
+                # the other items it cannot borrow their words or keys.
+                for item in rejected[:CONTENT_MAX_RETRY_ITEMS]:
+                    self._translate_batch([item], target_lang)
         finally:
             for source, _ in mine:
                 self.lock.release(self._lock_key(source.ref, target_lang))
@@ -147,31 +153,37 @@ class TranslateContentUseCase:
             [s.ref for s, _ in mine], waiting, target_lang, viewer_profile_id, results
         )
 
-    def _translate_batch(self, batch: list[_Pending], target_lang: str) -> None:
+    def _translate_batch(self, batch: list[_Pending], target_lang: str) -> list[_Pending]:
+        """Translate, check and store one batch. Returns what a check rejected
+        — each item with just its still-missing fields — so the caller can
+        retry it. An engine outage or timeout returns nothing to retry: a
+        second call would most likely fail the same way, on the reader's time."""
         prompt = assemble_content_prompt(items=batch, target_lang=target_lang)
         try:
             response = self.engine.translate_fields(prompt)
         except Exception as exc:
-            # Engine outage or timeout. Items stay untranslated and are
-            # reported failed; the next tap tries again.
+            # Items stay untranslated and are reported failed; the next tap
+            # tries again.
             log.warning("content translation call failed (%d items, %s): %s",
                         len(batch), target_lang, exc)
-            return
+            return []
 
         if not isinstance(response, dict):
             log.warning("content translation returned %s, not an object", type(response).__name__)
-            return
+            return list(batch)
 
+        rejected: list[_Pending] = []
         for source, todo in batch:
             try:
                 translated = validate_shape(todo, response.get(source.ref.key))
             except TranslationShapeError as exc:
                 log.warning("content translation for %s rejected: %s", source.ref.key, exc)
+                rejected.append((source, todo))
                 continue
 
             # Per field, not per item: one field left in English, or with a
-            # price that changed, does not throw away the good ones. A dropped field stays missing, so the
-            # item reports failed and the next tap retries just that field.
+            # price that changed, does not throw away the good ones. A dropped
+            # field stays missing — retried once below, then on the next tap.
             clean = {}
             for name, text in translated.items():
                 text = normalize_field_digits(text)
@@ -187,6 +199,9 @@ class TranslateContentUseCase:
                     target_lang,
                     {name: (field_hash(todo[name]), text) for name, text in clean.items()},
                 )
+            if len(clean) < len(todo):
+                rejected.append((source, {n: v for n, v in todo.items() if n not in clean}))
+        return rejected
 
     def _collect(
         self,
