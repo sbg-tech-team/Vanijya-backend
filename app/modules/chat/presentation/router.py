@@ -270,21 +270,27 @@ def translate_message(
 ):
     """Single-tap — translates one message the caller received. Never call
     this for the caller's own sent messages; there's nothing to disambiguate
-    there and the resolution chain is reader-specific."""
-    try:
-        rate_limiter.check(
-            r, f"translate:{user_id}",
-            limit=TRANSLATE_RATE_LIMIT, window=TRANSLATE_RATE_WINDOW_SECONDS,
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        # Redis down must not block translating; the limiter is a cost guard,
-        # not a gate. Logged so a silent outage doesn't hide unbounded spend.
-        log.warning("translation rate limiting unavailable for %s", user_id)
+    there and the resolution chain is reader-specific.
+
+    Rate limited only when the engine is actually called: a 403, a 404 or a
+    cache hit costs nothing, so it does not use up the reader's allowance."""
+    def _rate_limit() -> None:
+        try:
+            rate_limiter.check(
+                r, f"translate:{user_id}",
+                limit=TRANSLATE_RATE_LIMIT, window=TRANSLATE_RATE_WINDOW_SECONDS,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            # Redis down must not block translating; the limiter is a cost guard,
+            # not a gate. Logged so a silent outage doesn't hide unbounded spend.
+            log.warning("translation rate limiting unavailable for %s", user_id)
 
     try:
-        return uc.execute(reader_id=user_id, message_id=message_id, explicit_target_lang=body.target_lang)
+        return uc.execute(reader_id=user_id, message_id=message_id,
+                          explicit_target_lang=body.target_lang,
+                          before_engine_call=_rate_limit)
     except TranslationMessageNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except NotAConversationMemberError as e:

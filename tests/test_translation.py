@@ -346,6 +346,63 @@ def test_translate_message_auto_fallback_reports_chosen_language():
     assert engine.calls[0].structured_output is True
 
 
+def _counting_uc(repo, cache, engine):
+    uc = TranslateMessageUseCase(
+        repository=repo, context_store=repo, translation_cache=cache,
+        pipeline=TranslationPipeline(repo, repo, engine),
+        resolve_target_language=ResolveTargetLanguageUseCase(repo),
+    )
+    counted = []
+    return uc, counted, (lambda: counted.append(1))
+
+
+def test_rate_limit_counts_only_engine_calls():
+    """The limiter guards Gemini spend, so only a request that reaches Gemini
+    uses up the reader's allowance."""
+    repo = FakeRepo(memberships=set())
+    message = make_message(body="namaste")
+    repo.messages[message.id] = message
+    cache = InMemoryTranslationCache()
+    engine = FakeEngine(response=EngineResponse(translated_text="hello"))
+    uc, counted, limit = _counting_uc(repo, cache, engine)
+    reader = uuid4()
+
+    # Missing message and non-member: rejected, not counted.
+    with pytest.raises(MessageNotFoundError):
+        uc.execute(reader_id=reader, message_id=uuid4(), before_engine_call=limit)
+    with pytest.raises(NotAConversationMemberError):
+        uc.execute(reader_id=reader, message_id=message.id, explicit_target_lang="en",
+                   before_engine_call=limit)
+    assert counted == []
+
+    # Member, cache miss: counted once.
+    repo.memberships = {(reader, message.context_type, message.context_id)}
+    uc.execute(reader_id=reader, message_id=message.id, explicit_target_lang="en",
+               before_engine_call=limit)
+    assert counted == [1]
+
+    # Same message again, served from cache: not counted.
+    assert uc.execute(reader_id=reader, message_id=message.id, explicit_target_lang="en",
+                      before_engine_call=limit).used_cache
+    assert counted == [1]
+
+
+def test_rate_limit_rejection_stops_the_engine_call():
+    repo = FakeRepo()
+    message = make_message(body="namaste")
+    repo.messages[message.id] = message
+    engine = FakeEngine(response=EngineResponse(translated_text="hello"))
+    uc, _, _ = _counting_uc(repo, InMemoryTranslationCache(), engine)
+
+    def over_limit():
+        raise RuntimeError("429")
+
+    with pytest.raises(RuntimeError):
+        uc.execute(reader_id=uuid4(), message_id=message.id, explicit_target_lang="en",
+                   before_engine_call=over_limit)
+    assert engine.calls == []
+
+
 # ── HandleIncomingMessageUseCase (continuous) ────────────────────────────────────
 
 def test_handle_incoming_returns_none_for_group_messages():
@@ -474,7 +531,7 @@ def http_client():
 
 def test_translate_endpoint_returns_translation(http_client):
     class StubUC:
-        def execute(self, reader_id, message_id, explicit_target_lang=None):
+        def execute(self, reader_id, message_id, explicit_target_lang=None, before_engine_call=None):
             assert reader_id == _MOCK_USER_ID
             return TranslationResult(translated_text="hello", target_lang="en", used_cache=False)
 
@@ -486,7 +543,7 @@ def test_translate_endpoint_returns_translation(http_client):
 
 def test_translate_endpoint_404s_on_missing_message(http_client):
     class StubUC:
-        def execute(self, reader_id, message_id, explicit_target_lang=None):
+        def execute(self, reader_id, message_id, explicit_target_lang=None, before_engine_call=None):
             raise _MsgNotFound("Message not found or has no text body.")
 
     _fastapi_app.dependency_overrides[get_translate_message_uc] = lambda: StubUC()
@@ -496,7 +553,7 @@ def test_translate_endpoint_404s_on_missing_message(http_client):
 
 def test_translate_endpoint_503s_when_engine_unconfigured(http_client):
     class StubUC:
-        def execute(self, reader_id, message_id, explicit_target_lang=None):
+        def execute(self, reader_id, message_id, explicit_target_lang=None, before_engine_call=None):
             raise TranslationEngineUnavailableError("Gemini API key is not configured")
 
     _fastapi_app.dependency_overrides[get_translate_message_uc] = lambda: StubUC()

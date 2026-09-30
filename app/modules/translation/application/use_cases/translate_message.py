@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from app.modules.translation.application.pipeline import TranslationPipeline
@@ -18,7 +18,12 @@ from app.modules.translation.domain.value_objects import AUTO_FALLBACK
 
 class TranslateMessageUseCase:
     """Single-tap — the reader explicitly translates one message they received.
-    Never for the reader's own sent messages (caller is responsible for that)."""
+    Never for the reader's own sent messages (caller is responsible for that).
+
+    `before_engine_call` runs only when the engine is actually about to be
+    called — it is where the caller rate-limits. A missing message, a reader
+    who is not a member, or a cache hit costs nothing and so counts nothing,
+    the same rule content translation follows."""
 
     def __init__(
         self,
@@ -39,6 +44,7 @@ class TranslateMessageUseCase:
         reader_id: UUID,
         message_id: UUID,
         explicit_target_lang: Optional[str] = None,
+        before_engine_call: Optional[Callable[[], None]] = None,
     ) -> TranslationResult:
         message = self.repository.get_message(message_id)
         if message is None or not message.body:
@@ -58,6 +64,9 @@ class TranslateMessageUseCase:
         cached = self.translation_cache.get(message.body, cache_key_lang, fingerprint)
         if cached is not None:
             return TranslationResult(translated_text=cached, target_lang=target, used_cache=True)
+
+        if before_engine_call is not None:
+            before_engine_call()
 
         engine_target = None if target == AUTO_FALLBACK else target
         response = self.pipeline.run(message, engine_target, context)
