@@ -70,6 +70,7 @@ def get_news_feed(
 def get_trending_feed(
     profile: ProfileContextDep,
     use_case: Annotated[GetFeedUseCase, Depends(get_feed_use_case)],
+    rc: RedisDep,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor_article_id: str | None = Query(None),
 ):
@@ -82,6 +83,7 @@ def get_trending_feed(
         feed_type="trending",
         cursor_article_id=cursor_article_id,
         page_size=limit,
+        rc=rc,
     )
     return _feed_response(page, "Trending news fetched")
 
@@ -90,6 +92,7 @@ def get_trending_feed(
 def get_saved_feed(
     profile: ProfileContextDep,
     use_case: Annotated[GetFeedUseCase, Depends(get_feed_use_case)],
+    rc: RedisDep,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor_article_id: str | None = Query(None),
 ):
@@ -102,6 +105,7 @@ def get_saved_feed(
         feed_type="saved",
         cursor_article_id=cursor_article_id,
         page_size=limit,
+        rc=rc,
     )
     return _feed_response(page, "Saved articles fetched")
 
@@ -110,6 +114,7 @@ def get_saved_feed(
 def get_global_feed(
     profile: ProfileContextDep,
     use_case: Annotated[GetFeedUseCase, Depends(get_feed_use_case)],
+    rc: RedisDep,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor_article_id: str | None = Query(None),
 ):
@@ -122,6 +127,7 @@ def get_global_feed(
         feed_type="global",
         cursor_article_id=cursor_article_id,
         page_size=limit,
+        rc=rc,
     )
     return _feed_response(page, "Global feed fetched")
 
@@ -130,6 +136,7 @@ def get_global_feed(
 def get_domestic_feed(
     profile: ProfileContextDep,
     use_case: Annotated[GetFeedUseCase, Depends(get_feed_use_case)],
+    rc: RedisDep,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor_article_id: str | None = Query(None),
 ):
@@ -142,6 +149,7 @@ def get_domestic_feed(
         feed_type="domestic",
         cursor_article_id=cursor_article_id,
         page_size=limit,
+        rc=rc,
     )
     return _feed_response(page, "Domestic feed fetched")
 
@@ -150,6 +158,7 @@ def get_domestic_feed(
 def get_government_feed(
     profile: ProfileContextDep,
     use_case: Annotated[GetFeedUseCase, Depends(get_feed_use_case)],
+    rc: RedisDep,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     cursor_article_id: str | None = Query(None),
 ):
@@ -162,6 +171,7 @@ def get_government_feed(
         feed_type="government",
         cursor_article_id=cursor_article_id,
         page_size=limit,
+        rc=rc,
     )
     return _feed_response(page, "Government feed fetched")
 

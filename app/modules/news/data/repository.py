@@ -6,6 +6,10 @@ Never imported directly by application/ or presentation/ — always via DI.
 """
 from __future__ import annotations
 
+import concurrent.futures
+import dataclasses
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -13,6 +17,7 @@ from sqlalchemy import func, select, update, delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.database.session import SessionLocal
 from app.recommendation.lookup import AmplifyLookupMixin
 from app.modules.news.domain.entities import (
     EnrichedArticle as DomainEnrichedArticle,
@@ -53,6 +58,14 @@ from app.modules.news.data.models import (
 )
 
 CACHE_TTL_HOURS = 2
+
+# News content is near-immutable after enrichment (ingestion runs on a daily
+# cron — see scheduler.py), so a long TTL is safe: staleness only matters if
+# an article gets re-enriched or archived within the window, which is rare.
+_FILTERED_IDS_TTL_SECONDS = CACHE_TTL_HOURS * 3600
+_ARTICLE_CONTENT_TTL_SECONDS = 6 * 3600
+
+log = logging.getLogger(__name__)
 
 
 # ── ORM ↔ domain converters ────────────────────────────────────────────────────
@@ -110,6 +123,52 @@ def _enriched_to_domain(row: EnrichedArticle) -> DomainEnrichedArticle:
         generated_at=row.generated_at,
         created_at=row.created_at,
     )
+
+
+# ── Redis cache (de)serialization ───────────────────────────────────────────
+# Explicit field conversion rather than a generic encoder: both dataclasses
+# are flat (no nested dataclasses) with a small, fixed set of non-JSON-native
+# fields (UUID, datetime, the one str-Enum), so this is unambiguous and easy
+# to verify against entities.py if a field is ever added there.
+
+def _raw_to_cache(a: DomainRawArticle) -> dict:
+    d = dataclasses.asdict(a)
+    d["id"] = str(d["id"])
+    d["published_at"] = d["published_at"].isoformat()
+    d["platform_arrived_at"] = d["platform_arrived_at"].isoformat()
+    d["created_at"] = d["created_at"].isoformat()
+    d["updated_at"] = d["updated_at"].isoformat()
+    d["intelligence_status"] = d["intelligence_status"].value
+    return d
+
+
+def _raw_from_cache(d: dict) -> DomainRawArticle:
+    d = dict(d)
+    d["id"] = UUID(d["id"])
+    d["published_at"] = datetime.fromisoformat(d["published_at"])
+    d["platform_arrived_at"] = datetime.fromisoformat(d["platform_arrived_at"])
+    d["created_at"] = datetime.fromisoformat(d["created_at"])
+    d["updated_at"] = datetime.fromisoformat(d["updated_at"])
+    d["intelligence_status"] = IntelligenceStatus(d["intelligence_status"])
+    return DomainRawArticle(**d)
+
+
+def _enriched_to_cache(a: DomainEnrichedArticle) -> dict:
+    d = dataclasses.asdict(a)
+    d["raw_article_id"] = str(d["raw_article_id"])
+    d["id"] = str(d["id"])
+    d["generated_at"] = d["generated_at"].isoformat()
+    d["created_at"] = d["created_at"].isoformat()
+    return d
+
+
+def _enriched_from_cache(d: dict) -> DomainEnrichedArticle:
+    d = dict(d)
+    d["raw_article_id"] = UUID(d["raw_article_id"])
+    d["id"] = UUID(d["id"])
+    d["generated_at"] = datetime.fromisoformat(d["generated_at"])
+    d["created_at"] = datetime.fromisoformat(d["created_at"])
+    return DomainEnrichedArticle(**d)
 
 
 def _stats_to_domain(row: NewsArticleStats) -> DomainNewsArticleStats:
@@ -522,6 +581,87 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
         ).scalars()
         return set(rows)
 
+    def get_card_assembly_data(self, profile_id: int, article_ids: list[UUID], rc=None):
+        if not article_ids:
+            return {}, {}, {}, set(), set()
+
+        # 4 independent lookups — none depends on another's result, but on
+        # self._db they'd run as sequential round trips. A SQLAlchemy Session
+        # isn't thread-safe to share, so each DB-bound task below gets its own
+        # short-lived session off the same pooled engine and runs concurrently.
+        def _run(method_name, *args):
+            session = SessionLocal()
+            try:
+                return getattr(NewsRepository(session), method_name)(*args)
+            finally:
+                session.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            f_content = pool.submit(self._get_article_content, article_ids, rc)
+            f_stats = pool.submit(_run, "get_article_stats_batch", article_ids)
+            f_liked = pool.submit(_run, "get_like_states", profile_id, article_ids)
+            f_saved = pool.submit(_run, "get_save_states", profile_id, article_ids)
+
+            raw_by_id, enriched_by_id = f_content.result()
+            stats_by_id = f_stats.result()
+            liked_ids = f_liked.result()
+            saved_ids = f_saved.result()
+
+        return raw_by_id, enriched_by_id, stats_by_id, liked_ids, saved_ids
+
+    def _get_article_content(self, article_ids: list[UUID], rc=None):
+        """raw + enriched content for these articles — Redis-cached together
+        (one MGET instead of two queries) since both are near-immutable once
+        an article is enriched. Falls back to the DB for cache misses and for
+        anything not yet in the cache, and best-effort fills the cache after.
+        """
+        raw_by_id: dict[UUID, DomainRawArticle] = {}
+        enriched_by_id: dict[UUID, DomainEnrichedArticle] = {}
+        missing_ids = list(article_ids)
+
+        if rc is not None:
+            try:
+                keys = [f"news:article_content:{aid}" for aid in article_ids]
+                cached_values = rc.mget(keys)
+                missing_ids = []
+                for aid, cached in zip(article_ids, cached_values):
+                    if cached is None:
+                        missing_ids.append(aid)
+                        continue
+                    payload = json.loads(cached)
+                    raw_by_id[aid] = _raw_from_cache(payload["raw"])
+                    if payload.get("enriched"):
+                        enriched_by_id[aid] = _enriched_from_cache(payload["enriched"])
+            except Exception:
+                log.debug("article content cache read failed", exc_info=True)
+                missing_ids = list(article_ids)
+                raw_by_id, enriched_by_id = {}, {}
+
+        if missing_ids:
+            fresh_raw = self.get_raw_articles(missing_ids)
+            fresh_enriched = self.get_enriched_articles(missing_ids)
+            raw_by_id.update(fresh_raw)
+            enriched_by_id.update(fresh_enriched)
+
+            if rc is not None and fresh_raw:
+                try:
+                    pipe = rc.pipeline()
+                    for aid, raw in fresh_raw.items():
+                        payload = {
+                            "raw": _raw_to_cache(raw),
+                            "enriched": _enriched_to_cache(fresh_enriched[aid])
+                            if aid in fresh_enriched else None,
+                        }
+                        pipe.set(
+                            f"news:article_content:{aid}", json.dumps(payload),
+                            ex=_ARTICLE_CONTENT_TTL_SECONDS,
+                        )
+                    pipe.execute()
+                except Exception:
+                    log.debug("article content cache write failed", exc_info=True)
+
+        return raw_by_id, enriched_by_id
+
     # ── Taste ─────────────────────────────────────────────────────────────────
 
     def upsert_taste(
@@ -711,14 +851,29 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
             ).scalars()
         )
 
-    def get_filtered_ids(self, feed_filter: str) -> list[UUID]:
+    def get_filtered_ids(self, feed_filter: str, rc=None) -> list[UUID]:
         """
         Pure DB filter for global/domestic/government tabs - no recommendation,
         no scoring.
           - "global" / "domestic" -> geo_category match
           - "government"          -> is_government = True (any geo)
         Ordered by platform_arrived_at DESC.
+
+        This list barely changes between ingestion runs (once/day — see
+        scheduler.py), but computing it means fetching and sorting every
+        matching article (hundreds of rows) just to return the first page.
+        Redis-cached with a TTL so that cost is paid once per cycle, not once
+        per request, instead of changing the query itself.
         """
+        cache_key = f"news:filtered_ids:{feed_filter}"
+        if rc is not None:
+            try:
+                cached = rc.get(cache_key)
+                if cached is not None:
+                    return [UUID(s) for s in json.loads(cached)]
+            except Exception:
+                log.debug("filtered_ids cache read failed for %s", feed_filter, exc_info=True)
+
         if feed_filter == "government":
             enriched_ids_q = select(EnrichedArticle.raw_article_id).where(
                 EnrichedArticle.is_government.is_(True)
@@ -731,13 +886,21 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
         if not filtered_ids:
             return []
 
-        return list(
+        ids = list(
             self._db.execute(
                 select(RawArticle.id)
                 .where(RawArticle.is_active.is_(True), RawArticle.id.in_(filtered_ids))
                 .order_by(RawArticle.platform_arrived_at.desc(), RawArticle.id.desc())
             ).scalars()
         )
+
+        if rc is not None and ids:
+            try:
+                rc.set(cache_key, json.dumps([str(i) for i in ids]), ex=_FILTERED_IDS_TTL_SECONDS)
+            except Exception:
+                log.debug("filtered_ids cache write failed for %s", feed_filter, exc_info=True)
+
+        return ids
 
     def news_candidate_pool(
         self,

@@ -95,7 +95,7 @@ class GetFeedUseCase:
             else None
         )
 
-        cards = self._assemble_cards(profile_id, page_ids)
+        cards = self._assemble_cards(profile_id, page_ids, rc)
         return NewsFeedPage(articles=cards, next_cursor=next_cursor)
 
     # -- Ranking --------------------------------------------------------------
@@ -117,7 +117,7 @@ class GetFeedUseCase:
             if feed_type == "saved":
                 return self._repo.get_saved_ids(profile_id)
             if feed_type in _GEO_FEED_TYPES:
-                return self._repo.get_filtered_ids(feed_type)
+                return self._repo.get_filtered_ids(feed_type, rc)
 
         # "default" - cache check
         cached = self._repo.get_feed_ranking_cache(profile_id, feed_type)
@@ -139,14 +139,16 @@ class GetFeedUseCase:
 
     # -- Card assembly ----------------------------------------------------------
     # One batched query per field across the whole page rather than five
-    # per-article round-trips (was O(5*page_size) DB calls — see PERF notes).
+    # per-article round-trips (was O(5*page_size) DB calls — see PERF notes),
+    # and those 5 field queries run concurrently (get_card_assembly_data) since
+    # none depends on another's result.
 
-    def _assemble_cards(self, profile_id: int, article_ids: list[UUID]) -> list[NewsCard]:
-        raw_by_id = self._repo.get_raw_articles(article_ids)
-        enriched_by_id = self._repo.get_enriched_articles(article_ids)
-        stats_by_id = self._repo.get_article_stats_batch(article_ids)
-        liked_ids = self._repo.get_like_states(profile_id, article_ids)
-        saved_ids = self._repo.get_save_states(profile_id, article_ids)
+    def _assemble_cards(
+        self, profile_id: int, article_ids: list[UUID], rc: redis.Redis | None = None
+    ) -> list[NewsCard]:
+        raw_by_id, enriched_by_id, stats_by_id, liked_ids, saved_ids = (
+            self._repo.get_card_assembly_data(profile_id, article_ids, rc)
+        )
 
         cards: list[NewsCard] = []
         for article_id in article_ids:

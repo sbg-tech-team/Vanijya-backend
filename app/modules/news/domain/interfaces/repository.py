@@ -242,6 +242,23 @@ class INewsRepository(ABC):
     def get_save_states(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
         """Return the subset of article_ids this profile has saved."""
 
+    @abstractmethod
+    def get_card_assembly_data(
+        self, profile_id: int, article_ids: list[UUID], rc=None
+    ) -> tuple[
+        dict[UUID, RawArticle], dict[UUID, EnrichedArticle],
+        dict[UUID, NewsArticleStats], set[UUID], set[UUID],
+    ]:
+        """get_raw_articles + get_enriched_articles + get_article_stats_batch +
+        get_like_states + get_save_states, run concurrently instead of as 5
+        sequential round trips (independent queries, same DB round-trip cost
+        each — running them in parallel turns ~5x RTT into ~1x RTT wall-clock).
+        Raw + enriched content (near-immutable after enrichment) is Redis-
+        cached when `rc` is given; stats/like/save state is always read live
+        since those mutate on every interaction.
+        Returns (raw_by_id, enriched_by_id, stats_by_id, liked_ids, saved_ids).
+        """
+
     # ── Taste ─────────────────────────────────────────────────────────────────
     # Used by the application layer when it needs to write taste signals
     # directly (e.g. process_interaction_batch → revisit event).
