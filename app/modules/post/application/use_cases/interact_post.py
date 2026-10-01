@@ -1,7 +1,6 @@
 
 import logging
-
-from fastapi import BackgroundTasks
+from typing import Protocol
 
 from app.modules.post.data.models import CATEGORY_DEAL, Post, PostLike, PostComment, PostShare, PostSave, PostDealDetails
 from app.modules.post.domain.interfaces.repository import IPostRepository
@@ -24,6 +23,13 @@ import os
 log = logging.getLogger(__name__)
 
 _POST_STORAGE_BUCKET = os.environ.get("POST_STORAGE_BUCKET", "posts")
+
+
+class TaskQueue(Protocol):
+    """Shaped like fastapi.BackgroundTasks' add_task — the application layer
+    stays framework-free, so it depends on this shape, not on FastAPI; the
+    presentation layer passes the real BackgroundTasks object in."""
+    def add_task(self, func, *args, **kwargs) -> None: ...
 
 
 # ----------------------------------------------------------------------------
@@ -49,7 +55,7 @@ def _profile_location(repo: IPostRepository, profile_id: int) -> tuple[float, fl
 
 
 def _defer_record_interaction(
-    background_tasks: BackgroundTasks,
+    background_tasks: TaskQueue,
     repo: IPostRepository,
     post_id: int,
     profile_id: int,
@@ -79,7 +85,7 @@ def _defer_record_interaction(
 # ----------------------------------------------------------------------------
 
 def toggle_like(
-    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: TaskQueue
 ) -> LikeResponse:
     post, existing = repo.get_active_post_with_like(post_id, profile_id)
     if not post:
@@ -110,7 +116,7 @@ def toggle_like(
 
 def add_comment(
     repo: IPostRepository, post_id: int, profile_id: int, payload: CommentCreate,
-    background_tasks: BackgroundTasks,
+    background_tasks: TaskQueue,
 ) -> CommentResponse:
     post = _get_post_or_raise(repo, post_id)
 
@@ -201,7 +207,7 @@ def delete_comment(repo: IPostRepository, post_id: int, comment_id: int, profile
 # ----------------------------------------------------------------------------
 
 def record_share(
-    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: TaskQueue
 ) -> ShareResponse:
     """Increment share_count only — used for external shares (copy link, WhatsApp, etc.)."""
     post = _get_post_or_raise(repo, post_id)
@@ -223,7 +229,7 @@ def send_post(
     profile_id: int,
     user_id: "UUID",  # noqa: F821 - string annotation, never evaluated
     payload: PostSendRequest,
-    background_tasks: BackgroundTasks,
+    background_tasks: TaskQueue,
 ) -> dict:
     """
     Full in-app share:
@@ -265,7 +271,7 @@ def send_post(
 # ----------------------------------------------------------------------------
 
 def toggle_save(
-    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: TaskQueue
 ) -> SaveResponse:
     post, existing = repo.get_active_post_with_save(post_id, profile_id)
     if not post:
