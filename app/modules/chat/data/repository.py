@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -10,6 +11,7 @@ from collections import defaultdict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app.core.database.session import SessionLocal
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.interfaces.repository import IChatRepository
 from app.modules.chat.domain.value_objects import ConversationStatus
@@ -915,10 +917,37 @@ class ChatRepository(IChatRepository):
 
         A correct global sort needs every chat gathered before slicing, so this
         builds all of the user's DMs and groups, sorts by last activity, then
-        paginates in memory (bounded per user — fine for a chat list)."""
-        conv_ids = select(ConversationMember.conversation_id).where(ConversationMember.user_id == user_id)
-        convs = self.db.query(Conversation).filter(Conversation.id.in_(conv_ids)).all()
-        dms_by_conv = _build_conversations_batch(self.db, convs, user_id)
+        paginates in memory (bounded per user — fine for a chat list).
+
+        The DM branch (conversations + _build_conversations_batch, ~6 queries)
+        and the groups branch (get_group_conversations, ~2 queries) touch
+        entirely different tables and don't depend on each other's result, but
+        ran one after another. They now run concurrently — each gets its own
+        short-lived session since a SQLAlchemy Session isn't thread-safe to
+        share across threads."""
+        def _dm_branch():
+            session = SessionLocal()
+            try:
+                conv_ids = select(ConversationMember.conversation_id).where(
+                    ConversationMember.user_id == user_id
+                )
+                convs = session.query(Conversation).filter(Conversation.id.in_(conv_ids)).all()
+                return convs, _build_conversations_batch(session, convs, user_id)
+            finally:
+                session.close()
+
+        def _groups_branch():
+            session = SessionLocal()
+            try:
+                return ChatRepository(session).get_group_conversations(user_id)
+            finally:
+                session.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_dm = pool.submit(_dm_branch)
+            f_groups = pool.submit(_groups_branch)
+            convs, dms_by_conv = f_dm.result()
+            group_conversations = f_groups.result()
 
         items: list[ChatListItem] = []
         for conv in convs:
@@ -928,7 +957,7 @@ class ChatRepository(IChatRepository):
             last_activity = dm.last_message.sent_at if dm.last_message else dm.updated_at
             items.append(ChatListItem(type="dm", last_activity=last_activity, dm=dm))
 
-        for group in self.get_group_conversations(user_id):
+        for group in group_conversations:
             last_activity = group.last_message.sent_at if group.last_message else group.updated_at
             items.append(ChatListItem(type="group", last_activity=last_activity, group=group))
 
