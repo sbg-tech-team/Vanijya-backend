@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 import redis
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.modules.post.recommendation.session_taste.constants import (
     AUTHOR_TASTE_MIN_DELTA,
@@ -232,8 +233,11 @@ def record_interaction(
     author_profile_id: int | None = None,
 ) -> None:
     """
-    Applies a weighted taste delta for a synchronous interaction signal
-    (like / save / comment / share / revisit).
+    Applies a weighted taste delta for an interaction signal
+    (like / save / comment / share / revisit). Callers run this off the
+    response path (FastAPI BackgroundTasks) — it's best-effort analytics, not
+    something the user should wait on, and it commits its own transaction
+    since it runs independently after the user-facing write already landed.
 
     Writes user_post_taste — the single authoritative taste store, read by both
     the recommendation feed and the following feed.
@@ -249,11 +253,6 @@ def record_interaction(
 
     pos_delta, neg_delta = derive_signal(signal_type, None)
     if pos_delta <= 0:
-        return
-
-    # A deleted profile has no taste to record (the legacy write used to be the
-    # thing that caught this).
-    if not repo.profile_exists(profile_id):
         return
 
     # user_post_taste is the one taste store — see get_taste_weights().
@@ -275,5 +274,13 @@ def record_interaction(
     ):
         entries.append(("author", str(author_profile_id), pos_delta, neg_delta, 1))
 
-    repo.upsert_taste_bulk(profile_id, entries)
-    repo.commit()
+    try:
+        repo.upsert_taste_bulk(profile_id, entries)
+        repo.commit()
+    except IntegrityError:
+        # profile_id no longer exists — the account was deleted between this
+        # token being issued and this write running (tokens live up to 10h
+        # with no revocation check). user_post_taste.profile_id's own FK
+        # (ON DELETE CASCADE) catches this directly instead of a
+        # profile_exists() pre-check paying a round trip on every call.
+        repo.rollback()

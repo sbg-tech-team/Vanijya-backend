@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import and_, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -267,6 +267,38 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             PostLike.post_id == post_id, PostLike.profile_id == profile_id
         ).first()
 
+    def get_active_post_with_like(
+        self, post_id: int, profile_id: int
+    ) -> tuple[Optional[Post], Optional[PostLike]]:
+        """get_active_post + get_like in one round trip — toggle_like always
+        needs both and neither depends on the other's result."""
+        row = (
+            self.db.query(Post, PostLike)
+            .outerjoin(
+                PostLike,
+                and_(PostLike.post_id == Post.id, PostLike.profile_id == profile_id),
+            )
+            .filter(Post.id == post_id)
+            .first()
+        )
+        return row if row is not None else (None, None)
+
+    def get_active_post_with_save(
+        self, post_id: int, profile_id: int
+    ) -> tuple[Optional[Post], Optional[PostSave]]:
+        """get_active_post + get_save in one round trip, same shape as
+        get_active_post_with_like."""
+        row = (
+            self.db.query(Post, PostSave)
+            .outerjoin(
+                PostSave,
+                and_(PostSave.post_id == Post.id, PostSave.profile_id == profile_id),
+            )
+            .filter(Post.id == post_id)
+            .first()
+        )
+        return row if row is not None else (None, None)
+
     def get_save(self, post_id: int, profile_id: int) -> Optional[PostSave]:
         return self.db.query(PostSave).filter(
             PostSave.post_id == post_id, PostSave.profile_id == profile_id
@@ -278,12 +310,18 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             query = query.filter(PostSave.id < cursor_save_id)
         return query.order_by(PostSave.id.desc()).limit(limit).all()
 
-    def bump_counter(self, post_id: int, column: str, delta: int) -> None:
-        """Increment/decrement a denormalised counter on posts, no commit."""
+    def bump_counter(self, post_id: int, column: str, delta: int) -> int:
+        """Increment/decrement a denormalised counter on posts, no commit.
+        RETURNING the new value in the same round trip instead of a separate
+        refresh() — Postgres already computes it server-side either way."""
         col = getattr(Post, column)
-        self.db.query(Post).filter(Post.id == post_id).update(
-            {col: col + delta}, synchronize_session=False
+        stmt = (
+            update(Post)
+            .where(Post.id == post_id)
+            .values({col: col + delta})
+            .returning(col)
         )
+        return self.db.execute(stmt).scalar_one()
 
     def get_profile_with_business_by_id(self, profile_id: int):
         return (

@@ -1,6 +1,8 @@
 
 import logging
 
+from fastapi import BackgroundTasks
+
 from app.modules.post.data.models import CATEGORY_DEAL, Post, PostLike, PostComment, PostShare, PostSave, PostDealDetails
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.post.domain.exceptions import (
@@ -46,53 +48,85 @@ def _profile_location(repo: IPostRepository, profile_id: int) -> tuple[float, fl
     return float(profile.business.latitude), float(profile.business.longitude)
 
 
+def _defer_record_interaction(
+    background_tasks: BackgroundTasks,
+    repo: IPostRepository,
+    post_id: int,
+    profile_id: int,
+    category_id: int,
+    signal_type: str,
+    commodity_id: int | None,
+    author_profile_id: int | None,
+) -> None:
+    """Taste write is best-effort analytics, not something the caller's
+    response should wait on — runs after the response goes out instead of
+    blocking it. FastAPI keeps this request's DB session open for background
+    tasks, so reusing repo.taste here is safe, not a hack."""
+    def _run():
+        try:
+            interaction_service.record_interaction(
+                repo.taste, profile_id, category_id, signal_type, commodity_id, author_profile_id
+            )
+        except Exception:
+            log.exception(
+                "taste update failed for %s on post %s by profile %s", signal_type, post_id, profile_id
+            )
+    background_tasks.add_task(_run)
+
+
 # ----------------------------------------------------------------------------
 # Likes
 # ----------------------------------------------------------------------------
 
-def toggle_like(repo: IPostRepository, post_id: int, profile_id: int) -> LikeResponse:
-    post = _get_post_or_raise(repo, post_id)
-
-    existing = repo.get_like(post_id, profile_id)
+def toggle_like(
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+) -> LikeResponse:
+    post, existing = repo.get_active_post_with_like(post_id, profile_id)
+    if not post:
+        raise PostNotFoundError(f"Post {post_id} not found")
 
     if existing:
         repo.delete(existing)
-        repo.bump_counter(post_id, "like_count", -1)
+        new_count = repo.bump_counter(post_id, "like_count", -1)
         repo.commit()
-        repo.refresh(post)
-        return LikeResponse(liked=False, like_count=post.like_count)
+        return LikeResponse(liked=False, like_count=new_count)
     else:
+        # captured before commit() — the session default (expire_on_commit=
+        # True) marks `post`'s attributes stale after any commit, so reading
+        # them afterward would silently fire a fresh SELECT to reload the row
+        category_id, commodity_id, author_profile_id = post.category_id, post.commodity_id, post.profile_id
         repo.add(PostLike(post_id=post_id, profile_id=profile_id))
-        repo.bump_counter(post_id, "like_count", 1)
+        new_count = repo.bump_counter(post_id, "like_count", 1)
         repo.commit()
-        repo.refresh(post)
-        try:
-            interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "like", post.commodity_id, post.profile_id)
-        except Exception:
-            log.exception("taste update failed for like on post %s by profile %s", post_id, profile_id)
-        return LikeResponse(liked=True, like_count=post.like_count)
+        _defer_record_interaction(
+            background_tasks, repo, post_id, profile_id, category_id, "like", commodity_id, author_profile_id
+        )
+        return LikeResponse(liked=True, like_count=new_count)
 
 
 # ----------------------------------------------------------------------------
 # Comments
 # ----------------------------------------------------------------------------
 
-def add_comment(repo: IPostRepository, post_id: int, profile_id: int, payload: CommentCreate) -> CommentResponse:
+def add_comment(
+    repo: IPostRepository, post_id: int, profile_id: int, payload: CommentCreate,
+    background_tasks: BackgroundTasks,
+) -> CommentResponse:
     post = _get_post_or_raise(repo, post_id)
 
     if not post.allow_comments:
         raise CommentsDisabledError("Comments are disabled on this post")
 
+    category_id, commodity_id, author_profile_id = post.category_id, post.commodity_id, post.profile_id
     comment = PostComment(post_id=post_id, profile_id=profile_id, content=payload.content)
     repo.add(comment)
     repo.bump_counter(post_id, "comment_count", 1)
     repo.commit()
     repo.refresh(comment)
 
-    try:
-        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "comment", post.commodity_id, post.profile_id)
-    except Exception:
-        log.exception("taste update failed for comment on post %s by profile %s", post_id, profile_id)
+    _defer_record_interaction(
+        background_tasks, repo, post_id, profile_id, category_id, "comment", commodity_id, author_profile_id
+    )
 
     commenter = repo.get_profile_with_business_by_id(profile_id)
 
@@ -166,19 +200,20 @@ def delete_comment(repo: IPostRepository, post_id: int, comment_id: int, profile
 # Shares
 # ----------------------------------------------------------------------------
 
-def record_share(repo: IPostRepository, post_id: int, profile_id: int) -> ShareResponse:
+def record_share(
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+) -> ShareResponse:
     """Increment share_count only — used for external shares (copy link, WhatsApp, etc.)."""
     post = _get_post_or_raise(repo, post_id)
+    category_id, commodity_id, author_profile_id = post.category_id, post.commodity_id, post.profile_id
 
     repo.add(PostShare(post_id=post_id, profile_id=profile_id))
-    repo.bump_counter(post_id, "share_count", 1)
+    new_count = repo.bump_counter(post_id, "share_count", 1)
     repo.commit()
-    repo.refresh(post)
-    try:
-        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
-    except Exception:
-        log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
-    return ShareResponse(share_count=post.share_count)
+    _defer_record_interaction(
+        background_tasks, repo, post_id, profile_id, category_id, "share", commodity_id, author_profile_id
+    )
+    return ShareResponse(share_count=new_count)
 
 
 def send_post(
@@ -188,6 +223,7 @@ def send_post(
     profile_id: int,
     user_id: "UUID",  # noqa: F821 - string annotation, never evaluated
     payload: PostSendRequest,
+    background_tasks: BackgroundTasks,
 ) -> dict:
     """
     Full in-app share:
@@ -199,6 +235,7 @@ def send_post(
       4. Return share_count + raw delivery lists so the router can emit WebSocket events.
     """
     post = _get_post_or_raise(repo, post_id)
+    category_id, commodity_id, author_profile_id = post.category_id, post.commodity_id, post.profile_id
 
     dm_deliveries, group_deliveries = deliver_uc.execute(
         sender_id=user_id,
@@ -210,16 +247,14 @@ def send_post(
     )
 
     repo.add(PostShare(post_id=post_id, profile_id=profile_id))
-    repo.bump_counter(post_id, "share_count", 1)
+    new_count = repo.bump_counter(post_id, "share_count", 1)
     repo.commit()
-    repo.refresh(post)
-    try:
-        interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "share", post.commodity_id, post.profile_id)
-    except Exception:
-        log.exception("taste update failed for share on post %s by profile %s", post_id, profile_id)
+    _defer_record_interaction(
+        background_tasks, repo, post_id, profile_id, category_id, "share", commodity_id, author_profile_id
+    )
 
     return {
-        "share_count": post.share_count,
+        "share_count": new_count,
         "dm_deliveries": dm_deliveries,
         "group_deliveries": group_deliveries,
     }
@@ -229,10 +264,12 @@ def send_post(
 # Saves
 # ----------------------------------------------------------------------------
 
-def toggle_save(repo: IPostRepository, post_id: int, profile_id: int) -> SaveResponse:
-    post = _get_post_or_raise(repo, post_id)
-
-    existing = repo.get_save(post_id, profile_id)
+def toggle_save(
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: BackgroundTasks
+) -> SaveResponse:
+    post, existing = repo.get_active_post_with_save(post_id, profile_id)
+    if not post:
+        raise PostNotFoundError(f"Post {post_id} not found")
 
     if existing:
         repo.delete(existing)
@@ -240,13 +277,13 @@ def toggle_save(repo: IPostRepository, post_id: int, profile_id: int) -> SaveRes
         repo.commit()
         return SaveResponse(saved=False)
     else:
+        category_id, commodity_id, author_profile_id = post.category_id, post.commodity_id, post.profile_id
         repo.add(PostSave(post_id=post_id, profile_id=profile_id))
         repo.bump_counter(post_id, "save_count", 1)
         repo.commit()
-        try:
-            interaction_service.record_interaction(repo.taste, profile_id, post.category_id, "save", post.commodity_id, post.profile_id)
-        except Exception:
-            log.exception("taste update failed for save on post %s by profile %s", post_id, profile_id)
+        _defer_record_interaction(
+            background_tasks, repo, post_id, profile_id, category_id, "save", commodity_id, author_profile_id
+        )
         return SaveResponse(saved=True)
 
 

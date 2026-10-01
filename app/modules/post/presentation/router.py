@@ -148,11 +148,12 @@ async def delete_post_api(
 @router.post("/{post_id}/like")
 def toggle_like_api(
     post_id: int,
+    background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     repo: IPostRepository = Depends(get_post_repo),
 ):
     try:
-        result = service.toggle_like(repo, post_id, profile_id)
+        result = service.toggle_like(repo, post_id, profile_id, background_tasks)
         return ok(result, "Like toggled")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -180,11 +181,12 @@ def get_comments_api(
 def add_comment_api(
     post_id: int,
     payload: CommentCreate,
+    background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     repo: IPostRepository = Depends(get_post_repo),
 ):
     try:
-        result = service.add_comment(repo, post_id, profile_id, payload)
+        result = service.add_comment(repo, post_id, profile_id, payload, background_tasks)
         return ok(result, "Comment added successfully")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -241,7 +243,7 @@ async def send_post_api(
     """
     from app.core.realtime import emit_to_user, emit_to_group
     try:
-        result = service.send_post(repo, deliver_uc, post_id, profile_id, user_id, payload)
+        result = service.send_post(repo, deliver_uc, post_id, profile_id, user_id, payload, background_tasks)
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -259,6 +261,7 @@ async def send_post_api(
 @router.post("/{post_id}/record-share")
 def record_share_api(
     post_id: int,
+    background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     repo: IPostRepository = Depends(get_post_repo),
 ):
@@ -267,7 +270,7 @@ def record_share_api(
     Use when the user shares via WhatsApp, copy link, or any channel outside the app.
     """
     try:
-        result = service.record_share(repo, post_id, profile_id)
+        result = service.record_share(repo, post_id, profile_id, background_tasks)
         return ok(result, "Share recorded")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -280,11 +283,12 @@ def record_share_api(
 @router.post("/{post_id}/save")
 def toggle_save_api(
     post_id: int,
+    background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     repo: IPostRepository = Depends(get_post_repo),
 ):
     try:
-        result = service.toggle_save(repo, post_id, profile_id)
+        result = service.toggle_save(repo, post_id, profile_id, background_tasks)
         return ok(result, "Save toggled")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

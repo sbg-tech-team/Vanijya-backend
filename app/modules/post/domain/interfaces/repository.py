@@ -153,6 +153,22 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
+    def get_active_post_with_like(
+        self, post_id: int, profile_id: int
+    ) -> tuple[Optional[Post], Optional[PostLike]]:
+        """get_active_post + get_like in one round trip. (None, None) if the
+        post doesn't exist; (post, None) if it exists but isn't liked yet."""
+        ...
+
+    @abstractmethod
+    def get_active_post_with_save(
+        self, post_id: int, profile_id: int
+    ) -> tuple[Optional[Post], Optional[PostSave]]:
+        """get_active_post + get_save in one round trip. (None, None) if the
+        post doesn't exist; (post, None) if it exists but isn't saved yet."""
+        ...
+
+    @abstractmethod
     def get_save(self, post_id: int, profile_id: int) -> Optional[PostSave]:
         ...
 
@@ -161,8 +177,9 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
-    def bump_counter(self, post_id: int, column: str, delta: int) -> None:
-        """Increment/decrement a denormalised counter on posts, no commit."""
+    def bump_counter(self, post_id: int, column: str, delta: int) -> int:
+        """Increment/decrement a denormalised counter on posts, no commit.
+        Returns the new value via RETURNING instead of a separate refresh()."""
         ...
 
     @abstractmethod
