@@ -114,8 +114,14 @@ def batch_feed_cards(
     posts: list[Post],
     viewer_profile_id: int,
     viewer_users_id=None,
+    known_saved_ids: set[int] | None = None,
 ) -> list[FeedPostCard]:
-    """Build FeedPostCard objects with full author info and following status."""
+    """Build FeedPostCard objects with full author info and following status.
+
+    known_saved_ids: pass this when the caller already knows which of these
+    posts are saved (e.g. they came from the saves table in the first
+    place — get_saved_posts) so is_saved doesn't re-ask a question already
+    answered by construction."""
     if not posts:
         return []
 
@@ -123,7 +129,7 @@ def batch_feed_cards(
     author_profile_ids = list({p.profile_id for p in posts})
 
     liked_ids = repo.liked_post_ids(viewer_profile_id, post_ids)
-    saved_ids = repo.saved_post_ids(viewer_profile_id, post_ids)
+    saved_ids = known_saved_ids if known_saved_ids is not None else repo.saved_post_ids(viewer_profile_id, post_ids)
 
     authors = repo.get_authors_with_business(author_profile_ids)
 
@@ -381,7 +387,10 @@ def get_saved_posts(
     posts = repo.get_posts_by_ids(post_ids)
     post_map = {p.id: p for p in posts}
     ordered = [post_map[pid] for pid in post_ids if pid in post_map]
+    # every post here came from this profile's own saves (list_saves above),
+    # so is_saved is true by construction — no need to ask the DB again.
+    known_saved_ids = {p.id for p in ordered}
     return SavedPostFeedResponse(
-        posts=batch_feed_cards(repo, ordered, profile_id),
+        posts=batch_feed_cards(repo, ordered, profile_id, known_saved_ids=known_saved_ids),
         next_cursor=next_cursor,
     )
