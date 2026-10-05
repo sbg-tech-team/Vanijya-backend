@@ -29,15 +29,8 @@ def _active_profile_ids(repo: IPostRepository) -> list[int]:
     return repo.active_profile_ids()
 
 
-def _is_liked(repo: IPostRepository, post_id: int, profile_id: int) -> bool:
-    return repo.is_liked(post_id, profile_id)
-
-
-def _is_saved(repo: IPostRepository, post_id: int, profile_id: int) -> bool:
-    return repo.is_saved(post_id, profile_id)
-
-
 def _to_post_response(repo: IPostRepository, post: Post, viewer_profile_id: int) -> PostResponse:
+    is_liked, is_saved = repo.get_interaction_state(post.id, viewer_profile_id)
     return PostResponse(
         id=post.id,
         profile_id=post.profile_id,
@@ -55,8 +48,8 @@ def _to_post_response(repo: IPostRepository, post: Post, viewer_profile_id: int)
         allow_comments=post.allow_comments,
         deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
         created_at=post.created_at,
-        is_liked=_is_liked(repo, post.id, viewer_profile_id),
-        is_saved=_is_saved(repo, post.id, viewer_profile_id),
+        is_liked=is_liked,
+        is_saved=is_saved,
         view_count=post.view_count,
         like_count=post.like_count,
         comment_count=post.comment_count,
@@ -76,8 +69,7 @@ def _batch_post_responses(
 
     post_ids = [p.id for p in posts]
 
-    liked_ids = repo.liked_post_ids(viewer_profile_id, post_ids)
-    saved_ids = repo.saved_post_ids(viewer_profile_id, post_ids)
+    liked_ids, saved_ids = repo.get_interaction_ids(viewer_profile_id, post_ids)
 
     return [
         PostResponse(
@@ -128,8 +120,11 @@ def batch_feed_cards(
     post_ids = [p.id for p in posts]
     author_profile_ids = list({p.profile_id for p in posts})
 
-    liked_ids = repo.liked_post_ids(viewer_profile_id, post_ids)
-    saved_ids = known_saved_ids if known_saved_ids is not None else repo.saved_post_ids(viewer_profile_id, post_ids)
+    if known_saved_ids is not None:
+        liked_ids = repo.liked_post_ids(viewer_profile_id, post_ids)
+        saved_ids = known_saved_ids
+    else:
+        liked_ids, saved_ids = repo.get_interaction_ids(viewer_profile_id, post_ids)
 
     authors = repo.get_authors_with_business(author_profile_ids)
 
@@ -188,8 +183,7 @@ def _batch_my_post_cards(
 
     post_ids = [p.id for p in posts]
 
-    liked_ids = repo.liked_post_ids(profile_id, post_ids)
-    saved_ids = repo.saved_post_ids(profile_id, post_ids)
+    liked_ids, saved_ids = repo.get_interaction_ids(profile_id, post_ids)
 
     author = repo.get_profile_with_business(profile_id)
     biz = author.business if author else None

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import and_, text, update
+from sqlalchemy import and_, literal, select, text, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -246,6 +246,23 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             PostSave.profile_id == profile_id,
         ).first() is not None
 
+    def get_interaction_state(self, post_id: int, profile_id: int) -> tuple[bool, bool]:
+        """is_liked + is_saved in one round trip — two independent EXISTS
+        checks against different tables, evaluated together instead of as
+        two separate queries. Returns (is_liked, is_saved)."""
+        liked_exists = (
+            select(PostLike.id)
+            .where(PostLike.post_id == post_id, PostLike.profile_id == profile_id)
+            .exists()
+        )
+        saved_exists = (
+            select(PostSave.id)
+            .where(PostSave.post_id == post_id, PostSave.profile_id == profile_id)
+            .exists()
+        )
+        row = self.db.execute(select(liked_exists, saved_exists)).one()
+        return bool(row[0]), bool(row[1])
+
     def liked_post_ids(self, profile_id: int, post_ids: list[int]) -> set:
         return {
             row[0]
@@ -261,6 +278,23 @@ class PostRepository(AmplifyLookupMixin, IPostRepository):
             .filter(PostSave.profile_id == profile_id, PostSave.post_id.in_(post_ids))
             .all()
         }
+
+    def get_interaction_ids(self, profile_id: int, post_ids: list[int]) -> tuple[set, set]:
+        """liked_post_ids + saved_post_ids in one round trip via UNION ALL —
+        both are plain existence lookups against different tables, neither
+        depends on the other. Returns (liked_ids, saved_ids)."""
+        if not post_ids:
+            return set(), set()
+        liked_q = select(PostLike.post_id, literal(1).label("kind")).where(
+            PostLike.profile_id == profile_id, PostLike.post_id.in_(post_ids)
+        )
+        saved_q = select(PostSave.post_id, literal(2).label("kind")).where(
+            PostSave.profile_id == profile_id, PostSave.post_id.in_(post_ids)
+        )
+        rows = self.db.execute(union_all(liked_q, saved_q)).all()
+        liked_ids = {r[0] for r in rows if r[1] == 1}
+        saved_ids = {r[0] for r in rows if r[1] == 2}
+        return liked_ids, saved_ids
 
     def get_like(self, post_id: int, profile_id: int) -> Optional[PostLike]:
         return self.db.query(PostLike).filter(

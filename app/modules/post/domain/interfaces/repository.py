@@ -141,11 +141,22 @@ class IPostRepository(ABC):
         ...
 
     @abstractmethod
+    def get_interaction_state(self, post_id: int, profile_id: int) -> tuple[bool, bool]:
+        """is_liked + is_saved in one round trip. Returns (is_liked, is_saved)."""
+        ...
+
+    @abstractmethod
     def liked_post_ids(self, profile_id: int, post_ids: list[int]) -> set:
         ...
 
     @abstractmethod
     def saved_post_ids(self, profile_id: int, post_ids: list[int]) -> set:
+        ...
+
+    @abstractmethod
+    def get_interaction_ids(self, profile_id: int, post_ids: list[int]) -> tuple[set, set]:
+        """liked_post_ids + saved_post_ids in one round trip. Returns
+        (liked_ids, saved_ids)."""
         ...
 
     @abstractmethod

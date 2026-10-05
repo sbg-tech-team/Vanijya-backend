@@ -13,17 +13,8 @@ def _active_profile_ids(repo: IPostRepository) -> list[int]:
     return repo.active_profile_ids()
 
 
-def _is_liked(repo, post_id, profile_id):
-    from app.modules.post.data.models import PostLike
-    return repo.is_liked(post_id, profile_id)
-
-
-def _is_saved(repo, post_id, profile_id):
-    from app.modules.post.data.models import PostSave
-    return repo.is_saved(post_id, profile_id)
-
-
 def _to_post_response(repo: IPostRepository, post: Post, viewer_profile_id: int) -> PostResponse:
+    is_liked, is_saved = repo.get_interaction_state(post.id, viewer_profile_id)
     return PostResponse(
         id=post.id,
         profile_id=post.profile_id,
@@ -41,8 +32,8 @@ def _to_post_response(repo: IPostRepository, post: Post, viewer_profile_id: int)
         allow_comments=post.allow_comments,
         deal_details=PostDealResponse.model_validate(post.deal_details) if post.deal_details else None,
         created_at=post.created_at,
-        is_liked=_is_liked(repo, post.id, viewer_profile_id),
-        is_saved=_is_saved(repo, post.id, viewer_profile_id),
+        is_liked=is_liked,
+        is_saved=is_saved,
         view_count=post.view_count,
         like_count=post.like_count,
         comment_count=post.comment_count,
