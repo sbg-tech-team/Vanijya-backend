@@ -148,35 +148,54 @@ async def create_post(repo: IPostRepository, profile_id: int, payload: PostCreat
         allow_comments=payload.allow_comments,
     )
     repo.add(post)
-    repo.commit()
-    repo.refresh(post)
 
     deal = None
     if payload.category_id == CATEGORY_DEAL and payload.deal_details:
-        deal = PostDealDetails(post_id=post.id, **payload.deal_details.model_dump())
-        repo.add(deal)
-        repo.commit()
-        repo.refresh(post)
+        deal = PostDealDetails(**payload.deal_details.model_dump())
+        # Relationship assignment (not post_id=post.id + repo.add(deal)) — the
+        # "all, delete-orphan" cascade on Post.deal_details carries `deal` into
+        # the session automatically, and back_populates means post.deal_details
+        # is already set in memory, so _to_post_response below doesn't pay for
+        # a lazy-load SELECT to read it back.
+        post.deal_details = deal
+
+    # One flush assigns post.id (and deal.post_id via the relationship FK sync)
+    # without committing — this used to be 2 commits + 2 refreshes (one pair
+    # per post/deal insert); flush gets the generated PKs for the same single
+    # round trip the first commit always needed, with nothing to refresh after.
+    repo.flush()
+
+    # Read everything the response and index_post need now, before commit()
+    # expires `post`/`deal` (session default expire_on_commit=True) — same fix
+    # already applied in get_post.
+    response = _to_post_response(repo, post, profile_id)
+    post_id, commodity_id, target_roles, category_id = post.id, post.commodity_id, post.target_roles, post.category_id
+    deal_commodity_quantity = float(deal.commodity_quantity) if deal else None
 
     author_lat, author_lon = _profile_location(repo, profile_id)
     post_lat = float(post.latitude) if post.latitude is not None else author_lat
     post_lon = float(post.longitude) if post.longitude is not None else author_lon
+
+    repo.commit()
+
     try:
         rec_service.index_post(
             repo=repo,
-            post_id=post.id,
-            commodity_id=post.commodity_id,
-            target_role_ids=post.target_roles,
+            post_id=post_id,
+            commodity_id=commodity_id,
+            target_role_ids=target_roles,
             lat=post_lat,
             lon=post_lon,
-            category_id=post.category_id,
-            commodity_quantity=float(deal.commodity_quantity) if deal else None,
+            category_id=category_id,
+            commodity_quantity=deal_commodity_quantity,
         )
         repo.commit()
     except Exception:
         # Never break post creation — but an unindexed post is invisible to the
-        # recommender, so this must be visible in the logs.
+        # recommender, so this must be visible in the logs. The post itself was
+        # already committed above, so this rollback only discards the indexing
+        # write, not post creation.
         repo.rollback()
-        log.exception("indexing failed for new post %s — it will not surface in the feed", post.id)
+        log.exception("indexing failed for new post %s — it will not surface in the feed", post_id)
 
-    return _to_post_response(repo, post, profile_id)
+    return response

@@ -308,9 +308,20 @@ def toggle_deal_closed(repo: IPostRepository, post_id: int, profile_id: int) -> 
     if deal is None:
         raise PostForbiddenError("Deal details missing on this post")
     deal.is_closed = not deal.is_closed
+    new_is_closed = deal.is_closed
+
+    # Captured before commit() expires `post`/`deal` (session default
+    # expire_on_commit=True) — each of these was previously re-read via an
+    # implicit reload SELECT every time it was touched below, after the
+    # commit, even though none of it changes after the toggle above.
+    author_profile_id = post.profile_id
+    post_commodity_id, post_target_roles, post_category_id = post.commodity_id, post.target_roles, post.category_id
+    post_lat_raw, post_lon_raw = post.latitude, post.longitude
+    deal_commodity_quantity = float(deal.commodity_quantity)
+
     repo.commit()
 
-    if deal.is_closed:
+    if new_is_closed:
         try:
             rec_service.remove_post_index(repo, post_id)
             repo.commit()
@@ -318,23 +329,23 @@ def toggle_deal_closed(repo: IPostRepository, post_id: int, profile_id: int) -> 
             repo.rollback()
             log.exception("de-indexing failed for closed deal on post %s", post_id)
     else:
-        author_lat, author_lon = _profile_location(repo, post.profile_id)
-        post_lat = float(post.latitude) if post.latitude is not None else author_lat
-        post_lon = float(post.longitude) if post.longitude is not None else author_lon
+        author_lat, author_lon = _profile_location(repo, author_profile_id)
+        post_lat = float(post_lat_raw) if post_lat_raw is not None else author_lat
+        post_lon = float(post_lon_raw) if post_lon_raw is not None else author_lon
         try:
             rec_service.index_post(
                 repo=repo,
-                post_id=post.id,
-                commodity_id=post.commodity_id,
-                target_role_ids=post.target_roles,
+                post_id=post_id,
+                commodity_id=post_commodity_id,
+                target_role_ids=post_target_roles,
                 lat=post_lat,
                 lon=post_lon,
-                category_id=post.category_id,
-                commodity_quantity=float(deal.commodity_quantity),
+                category_id=post_category_id,
+                commodity_quantity=deal_commodity_quantity,
             )
             repo.commit()
         except Exception:
             repo.rollback()
             log.exception("re-indexing failed for post %s — it will not surface in the feed", post_id)
 
-    return DealClosedResponse(is_closed=deal.is_closed)
+    return DealClosedResponse(is_closed=new_is_closed)

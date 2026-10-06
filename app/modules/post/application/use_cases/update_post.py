@@ -66,6 +66,10 @@ def update_post(repo: IPostRepository, post_id: int, profile_id: int, payload: P
         for field, value in payload.deal_details.model_dump(exclude_none=True).items():
             setattr(post.deal_details, field, value)
 
+    # Built from the just-assigned in-memory fields, before commit() expires
+    # `post` (session default expire_on_commit=True) — Post has no DB-generated
+    # column this response reads, so a refresh after commit would only re-read
+    # values already known here.
+    response = _to_post_response(repo, post, profile_id)
     repo.commit()
-    repo.refresh(post)
-    return _to_post_response(repo, post, profile_id)
+    return response
