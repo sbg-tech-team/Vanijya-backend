@@ -277,11 +277,7 @@ def _group_last_messages_batch(db: Session, group_ids: list[UUID]) -> dict[UUID,
     }
 
 
-def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
-    deal = db.query(GroupDeal).filter(GroupDeal.id == deal_id).first()
-    if deal is None:
-        return None
-    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+def _deal_snap_from_row(deal, commodity) -> DealSnap:
     return DealSnap(
         deal_id=deal.id,
         title=deal.title,
@@ -298,32 +294,7 @@ def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
     )
 
 
-def _personal_deal_snap(db: Session, personal_deal_id: UUID) -> Optional[DealSnap]:
-    deal = db.query(PersonalDeal).filter(PersonalDeal.id == personal_deal_id).first()
-    if deal is None:
-        return None
-    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
-    return DealSnap(
-        deal_id=deal.id,
-        title=deal.title,
-        commodity_name=commodity.name if commodity else "",
-        grain_type=deal.grain_type,
-        grain_size=deal.grain_size,
-        commodity_quantity=float(deal.commodity_quantity),
-        quantity_unit=deal.quantity_unit,
-        commodity_price=float(deal.commodity_price),
-        price_type=deal.price_type,
-        image_urls=deal.image_urls,
-        is_closed=deal.is_closed,
-        caption=deal.caption,
-    )
-
-
-def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
-    post = db.query(Post).filter(Post.id == post_id).first()
-    if post is None:
-        return None
-    author = db.query(Profile).filter(Profile.id == post.profile_id).first()
+def _post_snap_from_row(post, author) -> PostSnap:
     return PostSnap(
         post_id=post.id,
         title=post.title,
@@ -333,6 +304,86 @@ def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
         category_name=CATEGORY_NAMES.get(post.category_id, ""),
         author_name=author.name if author else "",
     )
+
+
+def _deal_snap(db: Session, deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(GroupDeal).filter(GroupDeal.id == deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return _deal_snap_from_row(deal, commodity)
+
+
+def _personal_deal_snap(db: Session, personal_deal_id: UUID) -> Optional[DealSnap]:
+    deal = db.query(PersonalDeal).filter(PersonalDeal.id == personal_deal_id).first()
+    if deal is None:
+        return None
+    commodity = db.query(Commodity).filter(Commodity.id == deal.commodity_id).first()
+    return _deal_snap_from_row(deal, commodity)
+
+
+def _post_snap(db: Session, post_id: int) -> Optional[PostSnap]:
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if post is None:
+        return None
+    author = db.query(Profile).filter(Profile.id == post.profile_id).first()
+    return _post_snap_from_row(post, author)
+
+
+_UNSET = object()
+
+
+def _batch_deal_post_snaps(
+    db: Session, rows: list[Message]
+) -> tuple[dict[UUID, Optional[DealSnap]], dict[UUID, Optional[PostSnap]]]:
+    """One round trip per table for the whole page's deal/post cards, instead
+    of _deal_snap/_personal_deal_snap/_post_snap re-querying per message —
+    same reason attachments/translations/profiles are batched above this."""
+    group_deal_ids = {m.deal_id for m in rows if m.deal_id}
+    personal_deal_ids = {m.personal_deal_id for m in rows if m.personal_deal_id}
+    post_ids = {m.post_id for m in rows if m.post_id}
+
+    group_deals = (
+        {d.id: d for d in db.query(GroupDeal).filter(GroupDeal.id.in_(group_deal_ids)).all()}
+        if group_deal_ids else {}
+    )
+    personal_deals = (
+        {d.id: d for d in db.query(PersonalDeal).filter(PersonalDeal.id.in_(personal_deal_ids)).all()}
+        if personal_deal_ids else {}
+    )
+    commodity_ids = {d.commodity_id for d in group_deals.values()} | {
+        d.commodity_id for d in personal_deals.values()
+    }
+    commodities = (
+        {c.id: c for c in db.query(Commodity).filter(Commodity.id.in_(commodity_ids)).all()}
+        if commodity_ids else {}
+    )
+
+    posts = {p.id: p for p in db.query(Post).filter(Post.id.in_(post_ids)).all()} if post_ids else {}
+    post_profile_ids = {p.profile_id for p in posts.values()}
+    post_authors = (
+        {pr.id: pr for pr in db.query(Profile).filter(Profile.id.in_(post_profile_ids)).all()}
+        if post_profile_ids else {}
+    )
+
+    deal_map: dict[UUID, Optional[DealSnap]] = {}
+    post_map: dict[UUID, Optional[PostSnap]] = {}
+    for m in rows:
+        if m.deal_id and m.deal_id in group_deals:
+            deal = group_deals[m.deal_id]
+            deal_map[m.id] = _deal_snap_from_row(deal, commodities.get(deal.commodity_id))
+        elif m.personal_deal_id and m.personal_deal_id in personal_deals:
+            deal = personal_deals[m.personal_deal_id]
+            deal_map[m.id] = _deal_snap_from_row(deal, commodities.get(deal.commodity_id))
+        else:
+            deal_map[m.id] = None
+
+        if m.post_id and m.post_id in posts:
+            post = posts[m.post_id]
+            post_map[m.id] = _post_snap_from_row(post, post_authors.get(post.profile_id))
+        else:
+            post_map[m.id] = None
+    return deal_map, post_map
 
 
 def _call_snap(msg: Message) -> Optional["CallSnap"]:
@@ -377,6 +428,8 @@ def _build_message(
     translated_text: Optional[str] = None,
     target_lang: Optional[str] = None,
     sender_profile: Optional[Profile] = None,
+    deal=_UNSET,
+    post=_UNSET,
 ) -> MessageEntity:
     # sender_profile=None means "not batched by the caller" — fetch this one
     # message's sender directly, same convention as attachments above.
@@ -396,6 +449,14 @@ def _build_message(
     # batch-fetch once and pass the matching slice in to avoid N+1.
     if attachments is None:
         attachments = db.query(ChatAttachment).filter(ChatAttachment.message_id == msg.id).all()
+    # deal/post=_UNSET means "not batched by the caller" — fetch this one
+    # message's deal/post directly, same convention as sender_profile/attachments.
+    if deal is _UNSET:
+        deal = _deal_snap(db, msg.deal_id) if msg.deal_id else (
+            _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
+        )
+    if post is _UNSET:
+        post = _post_snap(db, msg.post_id) if msg.post_id else None
     return MessageEntity(
         id=msg.id,
         context_id=msg.context_id,
@@ -410,10 +471,8 @@ def _build_message(
         reply_to_id=msg.reply_to_id,
         is_deleted=msg.is_deleted,
         sent_at=msg.sent_at,
-        deal=_deal_snap(db, msg.deal_id) if msg.deal_id else (
-            _personal_deal_snap(db, msg.personal_deal_id) if msg.personal_deal_id else None
-        ),
-        post=_post_snap(db, msg.post_id) if msg.post_id else None,
+        deal=deal,
+        post=post,
         call=_call_snap(msg) if msg.message_type == "call" else None,
         attachments=[_attachment_snap(a) for a in attachments],
         delivered=delivered,
@@ -572,11 +631,16 @@ class ChatRepository(IChatRepository):
             for p in self.db.query(Profile).filter(Profile.users_id.in_(sender_ids)).all():
                 profile_by_sender[p.users_id] = p
 
+        # Batch-fetch deal/personal-deal/post cards for the whole page — these
+        # were the one thing in this function still re-queried per message.
+        deal_map, post_map = _batch_deal_post_snaps(self.db, rows)
+
         if context_type != "dm":
             # Group receipts aren't tracked yet (no per-member cursors on group_members).
             return [
                 _build_message(self.db, m, attachments=attach_map.get(m.id, []),
-                                sender_profile=profile_by_sender.get(m.sender_id), **_tr(m))
+                                sender_profile=profile_by_sender.get(m.sender_id),
+                                deal=deal_map.get(m.id), post=post_map.get(m.id), **_tr(m))
                 for m in rows
             ]
 
@@ -598,7 +662,8 @@ class ChatRepository(IChatRepository):
             out.append(_build_message(
                 self.db, m, delivered=delivered, read=read,
                 attachments=attach_map.get(m.id, []),
-                sender_profile=profile_by_sender.get(m.sender_id), **_tr(m),
+                sender_profile=profile_by_sender.get(m.sender_id),
+                deal=deal_map.get(m.id), post=post_map.get(m.id), **_tr(m),
             ))
         return out
 
