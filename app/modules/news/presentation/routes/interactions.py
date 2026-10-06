@@ -49,6 +49,7 @@ def submit_interaction_batch(
     profile: ProfileContextDep,
     use_case: Annotated[RecordInteractionUseCase, Depends(get_record_interaction_use_case)],
     rc: RedisDep,
+    background_tasks: BackgroundTasks,
 ):
     """
     Submit a batch of client-side interaction events (impression, dwell,
@@ -64,7 +65,9 @@ def submit_interaction_batch(
         }
         for e in body.events
     ]
-    result = use_case.process_event_batch(profile_id=profile.profile_id, raw_events=raw_events, rc=rc)
+    result = use_case.process_event_batch(
+        profile_id=profile.profile_id, raw_events=raw_events, background_tasks=background_tasks, rc=rc
+    )
     out = RecordEventsOut(**result)
     return ok(out.model_dump(mode="json"), "Batch processed")
 

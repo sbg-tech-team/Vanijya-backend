@@ -88,6 +88,7 @@ class RecordInteractionUseCase:
         self,
         profile_id: int,
         raw_events: list[dict],
+        background_tasks: TaskQueue,
         rc: redis.Redis | None = None,
     ) -> dict:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -103,9 +104,31 @@ class RecordInteractionUseCase:
         valid_ids = self._repo.filter_valid_article_ids(list(article_ids))
         candidates = [e for e in candidates if UUID(e.get("article_id", "0" * 32)) in valid_ids]
 
+        # Aggregate open_article events per article up front — a batch of up
+        # to BATCH_MAX_EVENTS used to mean that many separate upsert_view() +
+        # adjust_article_stats() round trips, one per event. Revisit status is
+        # now determined once per distinct article from state BEFORE this
+        # batch (not progressively within it, unlike the old per-event
+        # sequential check) — the same article opened twice in one batch is
+        # the rare edge case this trades away for a small constant number of
+        # round trips instead of one pair per open_article event.
+        open_article_counts: dict[UUID, int] = {}
+        open_article_last_at: dict[UUID, datetime] = {}
+        for e in candidates:
+            if e["event_type"] != "open_article":
+                continue
+            article_id = UUID(e["article_id"])
+            occurred_at = _parse_occurred_at(e.get("occurred_at"), now)
+            open_article_counts[article_id] = open_article_counts.get(article_id, 0) + 1
+            if article_id not in open_article_last_at or occurred_at > open_article_last_at[article_id]:
+                open_article_last_at[article_id] = occurred_at
+
+        revisit_ids = self._repo.get_existing_view_article_ids(profile_id, list(open_article_counts))
+
         events_to_insert: list[NewsInteractionEvent] = []
-        # (article_id, event_type, value_ms) for the post-commit Redis pass
+        # (article_id, event_type, value_ms) for the deferred signal pass
         signal_events: list[tuple[UUID, str, int | None]] = []
+        revisit_taste_ids: set[UUID] = set()
         invalidate_cache = False
 
         for e in candidates:
@@ -117,21 +140,18 @@ class RecordInteractionUseCase:
             if event_type == "dwell" and e.get("value_ms") is not None:
                 value_ms = min(int(e["value_ms"]), _DWELL_VALUE_CAP_MS)
 
-            if event_type == "open_article":
-                is_revisit = self._repo.upsert_view(profile_id, article_id)
-                self._repo.adjust_article_stats(article_id, "view_count", 1)
-                if is_revisit:
-                    events_to_insert.append(
-                        NewsInteractionEvent(
-                            profile_id=profile_id,
-                            article_id=article_id,
-                            event_type="revisit",
-                            occurred_at=occurred_at,
-                            processed_at=now,
-                        )
+            if event_type == "open_article" and article_id in revisit_ids:
+                events_to_insert.append(
+                    NewsInteractionEvent(
+                        profile_id=profile_id,
+                        article_id=article_id,
+                        event_type="revisit",
+                        occurred_at=occurred_at,
+                        processed_at=now,
                     )
-                    self._taste_from_article(profile_id, article_id, "revisit", rc=rc, session_action=ActionType.REVISIT)
-                    invalidate_cache = True
+                )
+                revisit_taste_ids.add(article_id)
+                invalidate_cache = True
 
             events_to_insert.append(
                 NewsInteractionEvent(
@@ -144,23 +164,46 @@ class RecordInteractionUseCase:
             )
             signal_events.append((article_id, event_type, value_ms))
 
+        if open_article_counts:
+            self._repo.upsert_views_batch(profile_id, open_article_counts, open_article_last_at)
+            self._repo.adjust_article_stats_batch("view_count", open_article_counts)
+
         self._repo.bulk_insert_events(events_to_insert)
         if invalidate_cache:
             self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
         self._repo.commit()
 
-        for article_id, event_type, value_ms in signal_events:
-            action = _classify_action(event_type, value_ms)
-            if action is None:
-                continue
-            enriched = self._repo.get_enriched_article(article_id)
-            if enriched is None:
-                continue
-            write_news_signals(
-                rc, profile_id,
-                commodity_ids_for(self._repo, enriched.commodity_tags or []),
-                enriched.location_city, enriched.location_state, action,
-            )
+        # Revisit taste writes + per-event Redis session signals are
+        # best-effort analytics that don't affect this response — deferred
+        # the same way toggle_like/toggle_save/record_share defer theirs,
+        # using one batched enriched-article fetch instead of one per event.
+        all_ids = {article_id for article_id, _, _ in signal_events} | revisit_taste_ids
+        enriched_by_id = self._repo.get_enriched_articles(list(all_ids)) if all_ids else {}
+
+        def _run():
+            try:
+                for article_id in revisit_taste_ids:
+                    enriched = enriched_by_id.get(article_id)
+                    if enriched is not None:
+                        self._apply_taste_signal(
+                            profile_id, enriched, "revisit", rc=rc, session_action=ActionType.REVISIT
+                        )
+                for article_id, event_type, value_ms in signal_events:
+                    action = _classify_action(event_type, value_ms)
+                    if action is None:
+                        continue
+                    enriched = enriched_by_id.get(article_id)
+                    if enriched is None:
+                        continue
+                    write_news_signals(
+                        rc, profile_id,
+                        commodity_ids_for(self._repo, enriched.commodity_tags or []),
+                        enriched.location_city, enriched.location_state, action,
+                    )
+                self._repo.commit()
+            except Exception:
+                log.exception("deferred batch taste/signal processing failed for profile %s", profile_id)
+        background_tasks.add_task(_run)
 
         return {"accepted": len(events_to_insert), "dropped": len(raw_events) - len(candidates)}
 
@@ -262,15 +305,28 @@ class RecordInteractionUseCase:
         rc: redis.Redis | None = None,
         session_action: ActionType | None = None,
     ) -> None:
-        """
-        Persistent taste (category dimension only, matching app_v1_backup) +
-        Redis session-taste signal (commodity + city + state), from one
-        enriched-article lookup.
-        """
+        """Single-article version of _apply_taste_signal — fetches the
+        enriched article itself. Batch callers (process_event_batch) already
+        have it prefetched and call _apply_taste_signal directly instead."""
         enriched = self._repo.get_enriched_article(article_id)
         if enriched is None:
             return
+        self._apply_taste_signal(profile_id, enriched, signal_type, rc=rc, session_action=session_action)
 
+    def _apply_taste_signal(
+        self,
+        profile_id: int,
+        enriched,
+        signal_type: str,
+        *,
+        rc: redis.Redis | None = None,
+        session_action: ActionType | None = None,
+    ) -> None:
+        """
+        Persistent taste (category dimension only, matching app_v1_backup) +
+        Redis session-taste signal (commodity + city + state), from an
+        already-fetched enriched article.
+        """
         if enriched.primary_factor:
             pos, neg = _SIGNAL_WEIGHTS.get(signal_type, (0.0, 0.0))
             if pos or neg:

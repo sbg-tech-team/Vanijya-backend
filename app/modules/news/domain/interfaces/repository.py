@@ -17,6 +17,7 @@ in the ingestion loop where each article is its own transaction unit).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -133,6 +134,20 @@ class INewsRepository(ABC):
         Does not commit.
         Returns True if this was a revisit (row already existed), False if new.
         """
+
+    @abstractmethod
+    def get_existing_view_article_ids(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        """Which of these articles already had a NewsView row for this profile
+        before now — i.e. revisit determination for a whole batch in one
+        round trip, instead of one upsert_view() existence check per article."""
+
+    @abstractmethod
+    def upsert_views_batch(
+        self, profile_id: int, counts: dict[UUID, int], last_occurred_at: dict[UUID, datetime]
+    ) -> None:
+        """upsert_view for many articles in one round trip. Does not commit.
+        Pair with get_existing_view_article_ids() beforehand for revisit
+        determination — this call only writes."""
 
     # ── Like ──────────────────────────────────────────────────────────────────
 

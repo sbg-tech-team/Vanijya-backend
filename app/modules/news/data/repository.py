@@ -393,6 +393,51 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
         )
         return False
 
+    def get_existing_view_article_ids(self, profile_id: int, article_ids: list[UUID]) -> set[UUID]:
+        """Which of these articles this profile already had a NewsView row for
+        BEFORE this call — i.e. revisit determination, batched into one SELECT
+        instead of one upsert_view() existence check per article."""
+        if not article_ids:
+            return set()
+        rows = self._db.execute(
+            select(NewsView.article_id).where(
+                NewsView.profile_id == profile_id,
+                NewsView.article_id.in_(article_ids),
+            )
+        ).scalars().all()
+        return set(rows)
+
+    def upsert_views_batch(
+        self, profile_id: int, counts: dict[UUID, int], last_occurred_at: dict[UUID, datetime]
+    ) -> None:
+        """upsert_view for many articles in one round trip — one multi-row
+        ON CONFLICT upsert (increments view_count by that article's event
+        count in this batch) instead of one upsert_view() call per article.
+        Pair with get_existing_view_article_ids() beforehand for revisit
+        determination — this call only needs to write, not read."""
+        if not counts:
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        rows = [
+            {
+                "profile_id": profile_id,
+                "article_id": article_id,
+                "view_count": count,
+                "first_viewed_at": last_occurred_at.get(article_id, now),
+                "last_viewed_at": last_occurred_at.get(article_id, now),
+            }
+            for article_id, count in counts.items()
+        ]
+        stmt = pg_insert(NewsView).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["profile_id", "article_id"],
+            set_={
+                "view_count": NewsView.view_count + stmt.excluded.view_count,
+                "last_viewed_at": stmt.excluded.last_viewed_at,
+            },
+        )
+        self._db.execute(stmt)
+
     # ── Like ──────────────────────────────────────────────────────────────────
 
     def toggle_like(self, profile_id: int, article_id: UUID) -> bool:
@@ -494,6 +539,30 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
                     "updated_at": now,
                 },
             )
+        )
+        self._db.execute(stmt)
+
+    def adjust_article_stats_batch(self, field: str, deltas: dict[UUID, int]) -> None:
+        """adjust_article_stats for many articles in one round trip — same
+        floor-at-0 upsert, as a single multi-row statement (one execute()
+        instead of one per article). Used by process_event_batch, where a
+        batch of up to BATCH_MAX_EVENTS open_article events previously meant
+        that many separate adjust_article_stats() calls."""
+        if not deltas:
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        zero_fields = {"view_count": 0, "like_count": 0, "save_count": 0, "share_count": 0}
+        rows = [
+            {**zero_fields, "article_id": article_id, "updated_at": now, field: max(delta, 0)}
+            for article_id, delta in deltas.items()
+        ]
+        stmt = pg_insert(NewsArticleStats).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["article_id"],
+            set_={
+                field: func.greatest(getattr(NewsArticleStats, field) + stmt.excluded[field], 0),
+                "updated_at": now,
+            },
         )
         self._db.execute(stmt)
 
