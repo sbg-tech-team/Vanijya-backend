@@ -101,11 +101,12 @@ def get_saved_posts_api(
 @router.get("/{post_id}")
 def get_post_api(
     post_id: int,
+    background_tasks: BackgroundTasks,
     profile_id: int = Depends(get_current_profile_id),
     repo: IPostRepository = Depends(get_post_repo),
 ):
     try:
-        result = service.get_post(repo, post_id, profile_id)
+        result = service.get_post(repo, post_id, profile_id, background_tasks)
         return ok(result, "Post fetched successfully")
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

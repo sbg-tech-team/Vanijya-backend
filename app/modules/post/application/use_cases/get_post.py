@@ -17,6 +17,7 @@ from app.modules.post.recommendation.constants import FRESH_BOOST_PEAK, FRESH_DE
 from app.shared.utils.time_decay import freshness_boost
 from app.modules.post.recommendation.session_taste import service as interaction_service
 from app.modules.post.recommendation.session_taste.constants import CATEGORY_NAMES
+from app.modules.post.application.use_cases.interact_post import TaskQueue
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,18 @@ def _active_profile_ids(repo: IPostRepository) -> list[int]:
     return repo.active_profile_ids()
 
 
-def _to_post_response(repo: IPostRepository, post: Post, viewer_profile_id: int) -> PostResponse:
-    is_liked, is_saved = repo.get_interaction_state(post.id, viewer_profile_id)
+def _to_post_response(
+    repo: IPostRepository,
+    post: Post,
+    viewer_profile_id: int,
+    interaction_state: tuple[bool, bool] | None = None,
+) -> PostResponse:
+    # Pass interaction_state when the caller already fetched it — get_post
+    # does, and must build this response from fields read before
+    # record_first_view's commit expires `post` (session default
+    # expire_on_commit=True), same reason toggle_like captures fields
+    # before its own commit.
+    is_liked, is_saved = interaction_state or repo.get_interaction_state(post.id, viewer_profile_id)
     return PostResponse(
         id=post.id,
         profile_id=post.profile_id,
@@ -260,25 +271,49 @@ def _get_post_or_raise(repo: IPostRepository, post_id: int) -> Post:
 # Views
 # ----------------------------------------------------------------------------
 
-def _record_view(repo: IPostRepository, post_id: int, profile_id: int) -> None:
-    if not repo.record_first_view(post_id, profile_id):
-        # Already seen — a revisit is its own signal, not another view.
-        interaction_service.record_revisit_event(repo.taste, profile_id, post_id)
+def _record_view(
+    repo: IPostRepository, post_id: int, profile_id: int, background_tasks: TaskQueue
+) -> bool:
+    """Returns True iff this was the viewer's first view (the counter bumped).
+    The counter write is core state (like toggle_like's bump_counter) and
+    stays synchronous; the revisit taste signal is best-effort analytics and
+    is deferred, the same way toggle_like/add_comment defer theirs."""
+    is_first_view = repo.record_first_view(post_id, profile_id)
+    if not is_first_view:
+        def _run():
+            try:
+                interaction_service.record_revisit_event(repo.taste, profile_id, post_id)
+            except Exception:
+                log.exception("record_revisit_event failed for profile %s on post %s", profile_id, post_id)
+        background_tasks.add_task(_run)
+    return is_first_view
 
 
 # ----------------------------------------------------------------------------
 # Get / Feed functions
 # ----------------------------------------------------------------------------
 
-def get_post(repo: IPostRepository, post_id: int, viewer_profile_id: int) -> PostResponse:
+def get_post(
+    repo: IPostRepository, post_id: int, viewer_profile_id: int, background_tasks: TaskQueue
+) -> PostResponse:
     post = _get_post_or_raise(repo, post_id)
-    _record_view(repo, post_id, viewer_profile_id)
-    repo.refresh(post)
-    try:
-        rec_service.record_seen(repo, viewer_profile_id, [post_id])
-    except Exception:
-        log.exception("record_seen failed for profile %s on post %s", viewer_profile_id, post_id)
-    return _to_post_response(repo, post, viewer_profile_id)
+    # Built from fields read now, before record_first_view's commit expires
+    # `post` (session default expire_on_commit=True) — avoids the extra
+    # refresh() round trip this used to need to re-read those same fields.
+    interaction_state = repo.get_interaction_state(post.id, viewer_profile_id)
+    response = _to_post_response(repo, post, viewer_profile_id, interaction_state=interaction_state)
+
+    if _record_view(repo, post_id, viewer_profile_id, background_tasks):
+        response.view_count += 1
+
+    def _run_record_seen():
+        try:
+            rec_service.record_seen(repo, viewer_profile_id, [post_id])
+        except Exception:
+            log.exception("record_seen failed for profile %s on post %s", viewer_profile_id, post_id)
+    background_tasks.add_task(_run_record_seen)
+
+    return response
 
 
 def get_feed(repo: IPostRepository, viewer_profile_id: int, limit: int = 20, offset: int = 0) -> list[PostResponse]:
