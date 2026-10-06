@@ -180,11 +180,12 @@ def get_government_feed(
 def get_article_detail(
     article_id: UUID,
     profile: ProfileContextDep,
+    rc: RedisDep,
     use_case: Annotated[GetArticleDetailUseCase, Depends(get_article_detail_use_case)],
 ):
     """Full article detail with stats and impact breakdown."""
     try:
-        detail = use_case.execute(profile_id=profile.profile_id, article_id=article_id)
+        detail = use_case.execute(profile_id=profile.profile_id, article_id=article_id, rc=rc)
     except ArticleNotFoundError:
         raise HTTPException(status_code=404, detail="Article not found")
     out = NewsCardDetailOut.model_validate(detail)

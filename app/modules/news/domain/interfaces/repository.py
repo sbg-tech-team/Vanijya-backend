@@ -211,12 +211,28 @@ class INewsRepository(ABC):
         """Return the full EnrichedArticle for this raw article_id, or None."""
 
     @abstractmethod
+    def get_article_content(
+        self, article_id: UUID, rc=None
+    ) -> tuple[RawArticle | None, EnrichedArticle | None]:
+        """get_raw_article + get_enriched_article in one call, Redis-cached
+        together when `rc` is given (same cache get_card_assembly_data already
+        populates on every feed fetch — near-immutable once enriched, so a
+        detail view right after seeing the card in a list is usually a cache
+        hit instead of 2 more DB round trips). Falls back to the DB otherwise."""
+
+    @abstractmethod
     def get_like_state(self, profile_id: int, article_id: UUID) -> bool:
         """Return True if this profile has liked this article."""
 
     @abstractmethod
     def get_save_state(self, profile_id: int, article_id: UUID) -> bool:
         """Return True if this profile has saved this article."""
+
+    @abstractmethod
+    def get_article_interaction_state(self, profile_id: int, article_id: UUID) -> tuple[bool, bool]:
+        """get_like_state + get_save_state in one round trip — both are
+        independent single-row lookups against different tables, always
+        called together on article detail. Returns (is_liked, is_saved)."""
 
     # ── Batch reads ───────────────────────────────────────────────────────────
     # Feed card assembly needs these for a whole page of articles at once —

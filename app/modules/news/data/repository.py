@@ -515,6 +515,12 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
             return None
         return _enriched_to_domain(row)
 
+    def get_article_content(
+        self, article_id: UUID, rc=None
+    ) -> tuple[DomainRawArticle | None, DomainEnrichedArticle | None]:
+        raw_by_id, enriched_by_id = self._get_article_content([article_id], rc)
+        return raw_by_id.get(article_id), enriched_by_id.get(article_id)
+
     def get_like_state(self, profile_id: int, article_id: UUID) -> bool:
         result = self._db.execute(
             select(NewsLike.id).where(
@@ -532,6 +538,22 @@ class NewsRepository(AmplifyLookupMixin, INewsRepository):
             )
         ).first()
         return result is not None
+
+    def get_article_interaction_state(self, profile_id: int, article_id: UUID) -> tuple[bool, bool]:
+        """get_like_state + get_save_state in one round trip — same EXISTS
+        pattern as profile's get_relationship_status."""
+        liked_exists = (
+            select(NewsLike.id)
+            .where(NewsLike.profile_id == profile_id, NewsLike.article_id == article_id)
+            .exists()
+        )
+        saved_exists = (
+            select(NewsSave.id)
+            .where(NewsSave.profile_id == profile_id, NewsSave.article_id == article_id)
+            .exists()
+        )
+        row = self._db.execute(select(liked_exists, saved_exists)).one()
+        return bool(row[0]), bool(row[1])
 
     # ── Batch reads ───────────────────────────────────────────────────────────
 

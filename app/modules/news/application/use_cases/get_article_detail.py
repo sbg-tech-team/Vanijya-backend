@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 
 from uuid import UUID
 
+import redis
+
 from app.modules.news.domain.entities import NewsCardDetail
 from app.modules.news.domain.exceptions import ArticleNotFoundError
 from app.modules.news.domain.interfaces.repository import INewsRepository
@@ -24,15 +26,17 @@ class GetArticleDetailUseCase:
     def __init__(self, repo: INewsRepository) -> None:
         self._repo = repo
 
-    def execute(self, profile_id: int, article_id: UUID) -> NewsCardDetail:
-        raw = self._repo.get_raw_article(article_id)
+    def execute(
+        self, profile_id: int, article_id: UUID, rc: redis.Redis | None = None
+    ) -> NewsCardDetail:
+        # raw+enriched: Redis-cached together, same cache every feed fetch
+        # already populates — usually a cache hit instead of 2 DB round trips.
+        raw, enriched = self._repo.get_article_content(article_id, rc)
         if raw is None:
             raise ArticleNotFoundError(str(article_id))
 
-        enriched = self._repo.get_enriched_article(article_id)
         stats = self._repo.get_article_stats(article_id)
-        is_liked = self._repo.get_like_state(profile_id, article_id)
-        is_saved = self._repo.get_save_state(profile_id, article_id)
+        is_liked, is_saved = self._repo.get_article_interaction_state(profile_id, article_id)
 
         return NewsCardDetail(
             article_id=raw.id,
