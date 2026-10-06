@@ -267,11 +267,18 @@ class ProfileRepository(IProfileRepository):
         return _to_profile_entity(profile) if profile else None
 
     def get_profile_by_id(self, profile_id: int) -> ProfileEntity | None:
+        # joinedload(Profile.user) added (2026-10-06): _to_profile_entity always
+        # touches profile.user to build user_entity, even though none of this
+        # method's callers read it off the result — but unlike interests, this
+        # is a single many-to-one lookup, so folding it into the existing JOIN
+        # costs one extra column, not a separate N+1-shaped round trip. Cheaper
+        # to eager-load it than to keep paying for it as a lazy load.
         profile = (
             self._db.query(Profile)
             .options(
                 joinedload(Profile.business),
                 joinedload(Profile.commodities).joinedload(Profile_Commodity.commodity),
+                joinedload(Profile.user),
             )
             .filter(Profile.id == profile_id)
             .first()
@@ -279,11 +286,13 @@ class ProfileRepository(IProfileRepository):
         return _to_profile_entity(profile) if profile else None
 
     def get_profile_by_user_id(self, user_id: UUID) -> ProfileEntity | None:
+        # see get_profile_by_id's note on joinedload(Profile.user)
         profile = (
             self._db.query(Profile)
             .options(
                 joinedload(Profile.business),
                 joinedload(Profile.commodities).joinedload(Profile_Commodity.commodity),
+                joinedload(Profile.user),
             )
             .filter(Profile.users_id == user_id)
             .first()
@@ -594,7 +603,6 @@ class ProfileRepository(IProfileRepository):
         posts = post_query.order_by(Post.id.desc()).limit(limit).all()
         next_cursor = posts[-1].id if len(posts) == limit else None
         return posts, next_cursor, len(posts)
-
 
     # ── Notification preferences ─────────────────────────────────────────────
 
