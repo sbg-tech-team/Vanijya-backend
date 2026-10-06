@@ -62,7 +62,12 @@ class ProfileCreate(BaseModel):
     # Screen 4
     name: str
     commodities: List[int]          # [1=Rice, 2=Cotton, 3=Sugar] — multi-select
-    interests: List[int]            # [1=Connections, 2=Leads, 3=News] — multi-select
+    # Disconnected (2026-10-06): profile_interests drove zero calculations
+    # anywhere in the backend — onboarding/profile capture only, never read
+    # by any scoring or ranking path. Frontend has stopped sending this.
+    # Optional (not removed) so an old client still sending it doesn't break;
+    # the value is accepted but never written. See create_profile.py.
+    interests: Optional[List[int]] = None
     quantity_min: float
     quantity_max: float
 

@@ -53,6 +53,73 @@ def _to_user_entity(user: User) -> UserEntity:
     )
 
 
+# Disconnected (2026-10-06): profile_interests drove zero calculations
+# anywhere in the backend (verified: no scoring/ranking/filtering path reads
+# it, only this converter builds it and every get_profile_by_id caller
+# discarded it unread — the N+1 this caused is what surfaced the audit).
+# Kept here, commented out, instead of deleted — reconnect by restoring this
+# body and the two joinedload/write-path lines noted below if that changes.
+#
+# def _to_profile_entity(profile: Profile) -> ProfileEntity:
+#     business = None
+#     if profile.business:
+#         business = BusinessEntity(
+#             id=profile.business.id,
+#             profile_id=profile.business.profile_id,
+#             latitude=profile.business.latitude,
+#             longitude=profile.business.longitude,
+#             business_name=profile.business.business_name,
+#             city=profile.business.city,
+#             state=profile.business.state,
+#         )
+#
+#     commodities = []
+#     for pc in profile.commodities:
+#         commodity_entity = None
+#         if pc.commodity:
+#             commodity_entity = CommodityEntity(id=pc.commodity.id, name=pc.commodity.name)
+#         commodities.append(ProfileCommodityEntity(
+#             id=pc.id,
+#             profile_id=pc.profile_id,
+#             commodity_id=pc.commodity_id,
+#             commodity=commodity_entity,
+#         ))
+#
+#     interests = []
+#     for pi in profile.interests:
+#         interest_entity = None
+#         if pi.interest:
+#             interest_entity = InterestEntity(id=pi.interest.id, name=pi.interest.name)
+#         interests.append(ProfileInterestEntity(
+#             id=pi.id,
+#             profile_id=pi.profile_id,
+#             interest_id=pi.interest_id,
+#             interest=interest_entity,
+#         ))
+#
+#     user_entity = _to_user_entity(profile.user) if profile.user else None
+#
+#     return ProfileEntity(
+#         id=profile.id,
+#         users_id=profile.users_id,
+#         role_id=profile.role_id,
+#         name=profile.name,
+#         quantity_min=profile.quantity_min,
+#         quantity_max=profile.quantity_max,
+#         is_user_verified=profile.is_user_verified,
+#         is_business_verified=profile.is_business_verified,
+#         followers_count=profile.followers_count,
+#         following_count=profile.following_count,
+#         avatar_url=profile.avatar_url,
+#         created_at=profile.created_at,
+#         updated_at=profile.updated_at,
+#         business=business,
+#         commodities=commodities,
+#         interests=interests,
+#         user=user_entity,
+#     )
+
+
 def _to_profile_entity(profile: Profile) -> ProfileEntity:
     business = None
     if profile.business:
@@ -78,18 +145,6 @@ def _to_profile_entity(profile: Profile) -> ProfileEntity:
             commodity=commodity_entity,
         ))
 
-    interests = []
-    for pi in profile.interests:
-        interest_entity = None
-        if pi.interest:
-            interest_entity = InterestEntity(id=pi.interest.id, name=pi.interest.name)
-        interests.append(ProfileInterestEntity(
-            id=pi.id,
-            profile_id=pi.profile_id,
-            interest_id=pi.interest_id,
-            interest=interest_entity,
-        ))
-
     user_entity = _to_user_entity(profile.user) if profile.user else None
 
     return ProfileEntity(
@@ -108,7 +163,7 @@ def _to_profile_entity(profile: Profile) -> ProfileEntity:
         updated_at=profile.updated_at,
         business=business,
         commodities=commodities,
-        interests=interests,
+        interests=[],  # disconnected — see comment above; ProfileEntity.interests defaults to []
         user=user_entity,
     )
 
@@ -195,12 +250,15 @@ class ProfileRepository(IProfileRepository):
     # ---- Profile — lookups --------------------------------------------------
 
     def get_profile_for_user(self, user_id: UUID) -> ProfileEntity | None:
+        # joinedload(Profile.interests).joinedload(Profile_Interest.interest) removed
+        # (2026-10-06) — _to_profile_entity no longer reads .interests, so eager-loading
+        # it here would just fetch data that gets thrown away. See repository.py's
+        # commented-out _to_profile_entity for the full history.
         profile = (
             self._db.query(Profile)
             .options(
                 joinedload(Profile.user),
                 joinedload(Profile.commodities).joinedload(Profile_Commodity.commodity),
-                joinedload(Profile.interests).joinedload(Profile_Interest.interest),
                 joinedload(Profile.business),
             )
             .filter(Profile.users_id == user_id)
@@ -241,6 +299,60 @@ class ProfileRepository(IProfileRepository):
 
     # ---- Profile — mutations ------------------------------------------------
 
+    # Disconnected (2026-10-06): profile_interests is no longer accepted at
+    # onboarding or edit time (verified unused in any calculation — see the
+    # commented-out _to_profile_entity above for the audit). Kept here,
+    # commented out, instead of deleted.
+    #
+    # def create_profile(
+    #     self,
+    #     user_id: UUID,
+    #     role_id: int,
+    #     name: str,
+    #     qty_min: Decimal,
+    #     qty_max: Decimal,
+    #     business_name: str | None,
+    #     city: str | None,
+    #     state: str | None,
+    #     latitude: float,
+    #     longitude: float,
+    #     commodity_ids: list[int],
+    #     interest_ids: list[int],
+    # ) -> None:
+    #     try:
+    #         profile = Profile(
+    #             users_id=user_id,
+    #             role_id=role_id,
+    #             name=name,
+    #             quantity_min=qty_min,
+    #             quantity_max=qty_max,
+    #         )
+    #         self._db.add(profile)
+    #         self._db.flush()
+    #
+    #         self._db.add(Business(
+    #             profile_id=profile.id,
+    #             business_name=business_name,
+    #             city=city,
+    #             state=state,
+    #             latitude=latitude,
+    #             longitude=longitude,
+    #         ))
+    #         if commodity_ids:
+    #             self._db.add_all([
+    #                 Profile_Commodity(profile_id=profile.id, commodity_id=c)
+    #                 for c in commodity_ids
+    #             ])
+    #         if interest_ids:
+    #             self._db.add_all([
+    #                 Profile_Interest(profile_id=profile.id, interest_id=i)
+    #                 for i in interest_ids
+    #             ])
+    #         self._db.commit()
+    #     except Exception:
+    #         self._db.rollback()
+    #         raise
+
     def create_profile(
         self,
         user_id: UUID,
@@ -254,7 +366,6 @@ class ProfileRepository(IProfileRepository):
         latitude: float,
         longitude: float,
         commodity_ids: list[int],
-        interest_ids: list[int],
     ) -> None:
         try:
             profile = Profile(
@@ -280,15 +391,54 @@ class ProfileRepository(IProfileRepository):
                     Profile_Commodity(profile_id=profile.id, commodity_id=c)
                     for c in commodity_ids
                 ])
-            if interest_ids:
-                self._db.add_all([
-                    Profile_Interest(profile_id=profile.id, interest_id=i)
-                    for i in interest_ids
-                ])
             self._db.commit()
         except Exception:
             self._db.rollback()
             raise
+
+    # def update_profile(
+    #     self,
+    #     user_id: UUID,
+    #     scalar_fields: dict,
+    #     business_fields: dict,
+    #     commodity_to_add: set[int],
+    #     commodity_to_remove: set[int],
+    #     interest_to_add: set[int],
+    #     interest_to_remove: set[int],
+    # ) -> None:
+    #     profile = (
+    #         self._db.query(Profile)
+    #         .options(joinedload(Profile.business))
+    #         .filter(Profile.users_id == user_id)
+    #         .first()
+    #     )
+    #     if not profile:
+    #         raise ProfileNotFoundError("Profile not found")
+    #
+    #     for field, value in scalar_fields.items():
+    #         setattr(profile, field, value)
+    #
+    #     if business_fields and profile.business:
+    #         for field, value in business_fields.items():
+    #             setattr(profile.business, field, value)
+    #
+    #     if commodity_to_remove:
+    #         self._db.query(Profile_Commodity).filter(
+    #             Profile_Commodity.profile_id == profile.id,
+    #             Profile_Commodity.commodity_id.in_(commodity_to_remove),
+    #         ).delete(synchronize_session=False)
+    #     for c_id in commodity_to_add:
+    #         self._db.add(Profile_Commodity(profile_id=profile.id, commodity_id=c_id))
+    #
+    #     if interest_to_remove:
+    #         self._db.query(Profile_Interest).filter(
+    #             Profile_Interest.profile_id == profile.id,
+    #             Profile_Interest.interest_id.in_(interest_to_remove),
+    #         ).delete(synchronize_session=False)
+    #     for i_id in interest_to_add:
+    #         self._db.add(Profile_Interest(profile_id=profile.id, interest_id=i_id))
+    #
+    #     self._db.commit()
 
     def update_profile(
         self,
@@ -297,8 +447,6 @@ class ProfileRepository(IProfileRepository):
         business_fields: dict,
         commodity_to_add: set[int],
         commodity_to_remove: set[int],
-        interest_to_add: set[int],
-        interest_to_remove: set[int],
     ) -> None:
         profile = (
             self._db.query(Profile)
@@ -323,14 +471,6 @@ class ProfileRepository(IProfileRepository):
             ).delete(synchronize_session=False)
         for c_id in commodity_to_add:
             self._db.add(Profile_Commodity(profile_id=profile.id, commodity_id=c_id))
-
-        if interest_to_remove:
-            self._db.query(Profile_Interest).filter(
-                Profile_Interest.profile_id == profile.id,
-                Profile_Interest.interest_id.in_(interest_to_remove),
-            ).delete(synchronize_session=False)
-        for i_id in interest_to_add:
-            self._db.add(Profile_Interest(profile_id=profile.id, interest_id=i_id))
 
         self._db.commit()
 

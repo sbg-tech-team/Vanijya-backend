@@ -77,9 +77,10 @@ class IProfileRepository(ABC):
         latitude: float,
         longitude: float,
         commodity_ids: list[int],
-        interest_ids: list[int],
     ) -> None:
-        """Creates Profile + Business + commodity/interest junctions atomically."""
+        """Creates Profile + Business + commodity junctions atomically.
+        No longer takes interest_ids (2026-10-06) — profile_interests is
+        disconnected, verified unused in any calculation."""
         ...
 
     @abstractmethod
@@ -90,10 +91,10 @@ class IProfileRepository(ABC):
         business_fields: dict,
         commodity_to_add: set[int],
         commodity_to_remove: set[int],
-        interest_to_add: set[int],
-        interest_to_remove: set[int],
     ) -> None:
-        """Applies all field, business, commodity, and interest changes in one transaction."""
+        """Applies all field, business, and commodity changes in one transaction.
+        No longer takes interest_to_add/interest_to_remove (2026-10-06) — see
+        create_profile's note."""
         ...
 
     @abstractmethod
