@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -548,6 +548,35 @@ class ProfileRepository(IProfileRepository):
             )
         ).first()
         return row.status if row else None
+
+    def get_relationship_status(
+        self, viewer_user_id: UUID, target_user_id: UUID
+    ) -> tuple[bool, str | None]:
+        """get_follow_status + get_message_request_status in one round trip —
+        both are independent single-row lookups against different tables,
+        always called together on every profile view. Returns
+        (is_following, message_request_status)."""
+        follow_exists = (
+            select(UserConnection.follower_id)
+            .where(
+                UserConnection.follower_id == viewer_user_id,
+                UserConnection.following_id == target_user_id,
+            )
+            .exists()
+        )
+        msg_status = (
+            select(MessageRequest.status)
+            .where(
+                or_(
+                    and_(MessageRequest.sender_id == viewer_user_id, MessageRequest.receiver_id == target_user_id),
+                    and_(MessageRequest.sender_id == target_user_id, MessageRequest.receiver_id == viewer_user_id),
+                )
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        row = self._db.execute(select(follow_exists, msg_status)).one()
+        return bool(row[0]), row[1]
 
     def get_profile_posts_feed(
         self,

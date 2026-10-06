@@ -142,6 +142,14 @@ class IProfileRepository(ABC):
     def get_message_request_status(self, user_a_id: UUID, user_b_id: UUID) -> str | None: ...
 
     @abstractmethod
+    def get_relationship_status(
+        self, viewer_user_id: UUID, target_user_id: UUID
+    ) -> tuple[bool, str | None]:
+        """get_follow_status + get_message_request_status in one round trip.
+        Returns (is_following, message_request_status)."""
+        ...
+
+    @abstractmethod
     def get_profile_posts_feed(
         self,
         profile_id: int,

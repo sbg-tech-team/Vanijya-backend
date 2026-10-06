@@ -56,8 +56,7 @@ def get_profile_by_id(
     is_following = False
     message_request_status = None
     if viewer_user_id and viewer_user_id != profile.users_id:
-        is_following = repo.get_follow_status(viewer_user_id, profile.users_id)
-        message_request_status = repo.get_message_request_status(viewer_user_id, profile.users_id)
+        is_following, message_request_status = repo.get_relationship_status(viewer_user_id, profile.users_id)
 
     posts, posts_next_cursor, page_count = repo.get_profile_posts_feed(
         profile_id=profile_id, cursor=posts_cursor, limit=posts_limit,
@@ -104,8 +103,7 @@ def get_profile_by_user_id(
     is_following = False
     message_request_status = None
     if viewer_user_id and viewer_user_id != user_id:
-        is_following = repo.get_follow_status(viewer_user_id, user_id)
-        message_request_status = repo.get_message_request_status(viewer_user_id, user_id)
+        is_following, message_request_status = repo.get_relationship_status(viewer_user_id, user_id)
 
     posts, posts_next_cursor, page_count = repo.get_profile_posts_feed(
         profile_id=profile.id, cursor=posts_cursor, limit=posts_limit,
