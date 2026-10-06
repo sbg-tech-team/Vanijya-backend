@@ -75,10 +75,13 @@ def toggle_like(
     profile: ProfileContextDep,
     use_case: Annotated[RecordInteractionUseCase, Depends(get_record_interaction_use_case)],
     rc: RedisDep,
+    background_tasks: BackgroundTasks,
 ):
     """Toggle like on an article. Returns the new like state."""
     try:
-        result = use_case.toggle_like(profile_id=profile.profile_id, article_id=article_id, rc=rc)
+        result = use_case.toggle_like(
+            profile_id=profile.profile_id, article_id=article_id, background_tasks=background_tasks, rc=rc
+        )
     except ArticleNotFoundError:
         raise HTTPException(status_code=404, detail="Article not found")
     out = ToggleLikeOut(article_id=article_id, is_liked=result["is_liked"])
@@ -91,10 +94,13 @@ def toggle_save(
     profile: ProfileContextDep,
     use_case: Annotated[RecordInteractionUseCase, Depends(get_record_interaction_use_case)],
     rc: RedisDep,
+    background_tasks: BackgroundTasks,
 ):
     """Toggle save on an article. Returns the new save state."""
     try:
-        result = use_case.toggle_save(profile_id=profile.profile_id, article_id=article_id, rc=rc)
+        result = use_case.toggle_save(
+            profile_id=profile.profile_id, article_id=article_id, background_tasks=background_tasks, rc=rc
+        )
     except ArticleNotFoundError:
         raise HTTPException(status_code=404, detail="Article not found")
     out = ToggleSaveOut(article_id=article_id, is_saved=result["is_saved"])
@@ -107,13 +113,17 @@ def record_share(
     profile: ProfileContextDep,
     use_case: Annotated[RecordInteractionUseCase, Depends(get_record_interaction_use_case)],
     rc: RedisDep,
+    background_tasks: BackgroundTasks,
     platform: str | None = Query(None, description="Platform the user shared to (whatsapp, copy, etc.)"),
 ):
     """External share only — increments share_count without delivering any
     in-app message. Use when the user shares via WhatsApp, copy link, or any
     channel outside the app."""
     try:
-        use_case.record_share(profile_id=profile.profile_id, article_id=article_id, platform=platform, rc=rc)
+        use_case.record_share(
+            profile_id=profile.profile_id, article_id=article_id, background_tasks=background_tasks,
+            platform=platform, rc=rc,
+        )
     except ArticleNotFoundError:
         raise HTTPException(status_code=404, detail="Article not found")
     out = NewsShareOut(article_id=article_id, platform=platform)

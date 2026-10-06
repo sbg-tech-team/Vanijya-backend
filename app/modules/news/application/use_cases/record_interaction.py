@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 from uuid import UUID
 
 import redis
@@ -35,6 +36,14 @@ from app.recommendation.amplify import commodity_ids_for, write_news_signals
 from app.recommendation.session_taste import ActionType
 
 log = logging.getLogger(__name__)
+
+
+class TaskQueue(Protocol):
+    """Shaped like fastapi.BackgroundTasks' add_task — the application layer
+    stays framework-free, so it depends on this shape, not on FastAPI; the
+    presentation layer passes the real BackgroundTasks object in. Same
+    convention as the posts module's interact_post.TaskQueue."""
+    def add_task(self, func, *args, **kwargs) -> None: ...
 
 # -- Interaction signal constants (ported from app_v1_backup) ------------------
 
@@ -157,33 +166,39 @@ class RecordInteractionUseCase:
 
     # -- Synchronous actions ----------------------------------------------------
 
-    def toggle_like(self, profile_id: int, article_id: UUID, rc: redis.Redis | None = None) -> dict:
+    def toggle_like(
+        self, profile_id: int, article_id: UUID, background_tasks: TaskQueue, rc: redis.Redis | None = None
+    ) -> dict:
         if not self._repo.article_exists(article_id):
             raise ArticleNotFoundError(str(article_id))
 
         is_liked = self._repo.toggle_like(profile_id, article_id)
         delta = 1 if is_liked else -1
         self._repo.adjust_article_stats(article_id, "like_count", delta)
+        self._repo.commit()
 
         if is_liked:
-            self._taste_from_article(profile_id, article_id, "like", rc=rc, session_action=ActionType.LIKE)
-            self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
-        self._repo.commit()
+            self._defer_taste_and_cache_invalidation(
+                background_tasks, profile_id, article_id, "like", ActionType.LIKE, rc, invalidate_cache=True,
+            )
 
         return {"is_liked": is_liked}
 
-    def toggle_save(self, profile_id: int, article_id: UUID, rc: redis.Redis | None = None) -> dict:
+    def toggle_save(
+        self, profile_id: int, article_id: UUID, background_tasks: TaskQueue, rc: redis.Redis | None = None
+    ) -> dict:
         if not self._repo.article_exists(article_id):
             raise ArticleNotFoundError(str(article_id))
 
         is_saved = self._repo.toggle_save(profile_id, article_id)
         delta = 1 if is_saved else -1
         self._repo.adjust_article_stats(article_id, "save_count", delta)
+        self._repo.commit()
 
         if is_saved:
-            self._taste_from_article(profile_id, article_id, "save", rc=rc, session_action=ActionType.SAVE)
-            self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
-        self._repo.commit()
+            self._defer_taste_and_cache_invalidation(
+                background_tasks, profile_id, article_id, "save", ActionType.SAVE, rc, invalidate_cache=True,
+            )
 
         return {"is_saved": is_saved}
 
@@ -191,6 +206,7 @@ class RecordInteractionUseCase:
         self,
         profile_id: int,
         article_id: UUID,
+        background_tasks: TaskQueue,
         platform: str | None = None,
         rc: redis.Redis | None = None,
     ) -> None:
@@ -199,8 +215,41 @@ class RecordInteractionUseCase:
 
         self._repo.record_share(profile_id, article_id, platform=platform)
         self._repo.adjust_article_stats(article_id, "share_count", 1)
-        self._taste_from_article(profile_id, article_id, "share_tap", rc=rc, session_action=ActionType.SHARE)
         self._repo.commit()
+
+        self._defer_taste_and_cache_invalidation(
+            background_tasks, profile_id, article_id, "share_tap", ActionType.SHARE, rc, invalidate_cache=False,
+        )
+
+    def _defer_taste_and_cache_invalidation(
+        self,
+        background_tasks: TaskQueue,
+        profile_id: int,
+        article_id: UUID,
+        signal_type: str,
+        session_action: ActionType,
+        rc: redis.Redis | None,
+        invalidate_cache: bool,
+    ) -> None:
+        """Taste write + session signal (+ feed-ranking cache invalidation for
+        like/save) is best-effort analytics, not something the caller's
+        response should wait on — runs after the response goes out instead of
+        blocking it, same convention as the posts module's deferred taste
+        writes (interact_post._defer_record_interaction). The core state
+        change (the like/save/share row + its counter) already committed
+        before this is scheduled, so this only needs its own commit."""
+        def _run():
+            try:
+                self._taste_from_article(profile_id, article_id, signal_type, rc=rc, session_action=session_action)
+                if invalidate_cache:
+                    self._repo.invalidate_feed_ranking_cache(profile_id)  # commits
+                self._repo.commit()
+            except Exception:
+                log.exception(
+                    "deferred taste/cache update failed for %s on article %s by profile %s",
+                    signal_type, article_id, profile_id,
+                )
+        background_tasks.add_task(_run)
 
     # -- Taste helpers ------------------------------------------------------------
 
