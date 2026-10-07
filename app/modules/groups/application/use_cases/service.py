@@ -38,6 +38,7 @@ from app.modules.groups.application.use_cases.create_group import (
     _build_group_out,
     _store_embedding,
     _parse_group_search_intent,
+    _cleanup_group_storage,
     _GROUP_IMAGE_BUCKET,
 )
 

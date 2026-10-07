@@ -134,6 +134,16 @@ class GroupsRepository(AmplifyLookupMixin, IGroupsRepository):
             .first()
         )
 
+    def get_existing_member_ids(self, group_id: UUID, user_ids: list[UUID]) -> set[UUID]:
+        if not user_ids:
+            return set()
+        rows = (
+            self.db.query(GroupMember.user_id)
+            .filter(GroupMember.group_id == group_id, GroupMember.user_id.in_(user_ids))
+            .all()
+        )
+        return {row.user_id for row in rows}
+
     def get_other_admin(self, group_id: UUID, user_id: UUID) -> Optional[GroupMember]:
         return (
             self.db.query(GroupMember)

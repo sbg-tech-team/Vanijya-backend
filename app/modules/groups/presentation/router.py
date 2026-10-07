@@ -49,6 +49,7 @@ from app.modules.groups.application.use_cases.service import (
     create_group,
 
     delete_group,
+    _cleanup_group_storage,
     delete_group_media,
     get_group,
     get_group_deal,
@@ -129,6 +130,7 @@ async def group_image_upload_url_api(
 @router.post("/view", status_code=204)
 def record_group_view_api(
     payload: GroupViewSignal,
+    background_tasks: BackgroundTasks,
     user: CurrentUser = Depends(get_current_user),
     r: redis_lib.Redis = Depends(get_redis),
 ):
@@ -138,6 +140,7 @@ def record_group_view_api(
         r,
         viewer_profile_id=user.profile_id,
         commodity_ids=payload.commodity_ids,
+        background_tasks=background_tasks,
     )
 
 
@@ -268,7 +271,7 @@ update_permissions, repo, group_id, user_id, payload)
 # ── 22. DELETE /:id — delete group (admin only) ───────────────────────────────
 
 @router.delete("/{group_id}")
-async def delete_group_api(
+def delete_group_api(
     group_id: UUID,
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
@@ -276,20 +279,17 @@ async def delete_group_api(
 ):
     from app.core.realtime import emit_to_group, evict_from_group_room
 
-    try:
-        member_ids = await delete_group(repo, group_id, user_id)
-    except (GroupPermissionError, GroupMemberFrozenError,
-            GroupMediaDeleteForbiddenError) as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except (GroupNotFoundError, GroupMemberNotFoundError,
-            GroupMediaNotFoundError, GroupProfileNotFoundError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = _handle(delete_group, repo, group_id, user_id)
 
     # Tell whoever's still connected, then drop their sockets out of the room
     # — otherwise they keep receiving events for a group that no longer exists.
     background_tasks.add_task(emit_to_group, group_id, "group_deleted", {"group_id": str(group_id)})
-    for member_id in member_ids:
+    for member_id in result["member_ids"]:
         background_tasks.add_task(evict_from_group_room, member_id, group_id)
+    # Storage cleanup deferred too — a group can carry up to 10,000 media
+    # rows, each its own sequential network delete; the response shouldn't
+    # wait on that.
+    background_tasks.add_task(_cleanup_group_storage, result["image_url"], result["media_paths"], group_id)
 
     return ok(message="Group deleted")
 
@@ -299,14 +299,15 @@ async def delete_group_api(
 @router.post("/{group_id}/join")
 def join_group_api(
     group_id: UUID,
+    background_tasks: BackgroundTasks,
     user: CurrentUser = Depends(get_current_user),
     repo: IGroupsRepository = Depends(get_groups_repo),
     r: redis_lib.Redis = Depends(get_redis),
 ):
     result = _handle(
-        
+
 join_group, repo, group_id, user.user_id,
-        rc=r, actor_profile_id=user.profile_id,
+        rc=r, actor_profile_id=user.profile_id, background_tasks=background_tasks,
     )
     return ok(result, "Joined group")
 

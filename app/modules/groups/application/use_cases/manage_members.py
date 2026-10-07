@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Protocol
 from uuid import UUID
 
 
 from app.modules.groups.application.use_cases.record_view import MODULE
 from app.recommendation.amplify import commodity_ids_for, write_commodity_signals
 from app.recommendation.session_taste import ActionType
+
+
+class TaskQueue(Protocol):
+    """Shaped like fastapi.BackgroundTasks' add_task — the application layer
+    stays framework-free, so it depends on this shape, not on FastAPI; the
+    presentation layer passes the real BackgroundTasks object in. Same
+    convention as the posts/news modules' TaskQueue."""
+    def add_task(self, func, *args, **kwargs) -> None: ...
 from app.modules.groups.data.models import (
     Group,
     GroupJoinRequest,
@@ -59,9 +67,13 @@ def join_group(
     user_id: UUID,
     rc=None,
     actor_profile_id: int | None = None,
+    background_tasks: TaskQueue | None = None,
 ) -> dict:
     """`rc`/`actor_profile_id` drive the app_old GROUP_JOIN taste signal; both
-    optional so existing callers keep working (signal is simply skipped)."""
+    optional so existing callers keep working (signal is simply skipped).
+    `background_tasks`, when given, defers that signal instead of writing it
+    inline — it's best-effort analytics, not something the response needs to
+    wait on, same as the deferred taste writes elsewhere in this session."""
     group = _get_group_or_raise(repo, group_id)
 
     if group.accessibility == "invite_only":
@@ -71,15 +83,26 @@ def join_group(
     if existing:
         raise GroupAlreadyMemberError("Already a member of this group")
 
+    # Captured now — group.commodity is read either inline or from a
+    # background task, and the group row may be touched again by a commit
+    # before that task runs.
+    group_commodities = group.commodity or []
+
     def _record() -> None:
         # group_join — strong intent. Commodities resolved from the group itself.
         # app_old fires this on BOTH the request-sent and joined paths.
         if actor_profile_id is not None:
             write_commodity_signals(
                 rc, actor_profile_id, MODULE,
-                commodity_ids_for(repo, group.commodity or []),
+                commodity_ids_for(repo, group_commodities),
                 ActionType.GROUP_JOIN,
             )
+
+    def _defer_or_run() -> None:
+        if background_tasks is not None:
+            background_tasks.add_task(_record)
+        else:
+            _record()
 
     if group.accessibility == "private":
         existing_req = repo.get_pending_join_request(group_id, user_id)
@@ -93,7 +116,7 @@ def join_group(
             repo.rollback()
             raise
 
-        _record()
+        _defer_or_run()
         return {"status": "pending", "message": "Join request sent. Waiting for admin approval."}
 
     try:
@@ -104,7 +127,7 @@ def join_group(
         repo.rollback()
         raise
 
-    _record()
+    _defer_or_run()
     return {"status": "joined", "role": "member", "joined_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -175,9 +198,12 @@ def add_members(
     _require_admin(repo, group_id, requester_id)
     group = _get_group_or_raise(repo, group_id)
 
+    # One query for the whole batch instead of one get_membership() call per
+    # user_id — adding 50 members used to cost 50 extra SELECTs.
+    existing_ids = repo.get_existing_member_ids(group_id, user_ids)
     added = []
     for uid in user_ids:
-        if not _get_membership(repo, group_id, uid):
+        if uid not in existing_ids:
             repo.add(GroupMember(group_id=group_id, user_id=uid, role="member"))
             added.append(str(uid))
 
@@ -226,9 +252,13 @@ def toggle_mute(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> dict:
     if not membership:
         raise GroupMemberNotFoundError("Not a member of this group")
 
-    membership.is_muted = not membership.is_muted
+    is_muted = not membership.is_muted
+    membership.is_muted = is_muted
     repo.commit()
-    return {"is_muted": membership.is_muted}
+    # Returns the local, not membership.is_muted — expire_on_commit=True means
+    # touching the ORM object's attribute post-commit would silently re-SELECT
+    # the row just to re-read a value already known.
+    return {"is_muted": is_muted}
 
 
 def toggle_favorite(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> dict:
@@ -236,9 +266,10 @@ def toggle_favorite(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> d
     if not membership:
         raise GroupMemberNotFoundError("Not a member of this group")
 
-    membership.is_favorite = not membership.is_favorite
+    is_favorite = not membership.is_favorite
+    membership.is_favorite = is_favorite
     repo.commit()
-    return {"is_favorite": membership.is_favorite}
+    return {"is_favorite": is_favorite}
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +282,16 @@ def get_or_create_invite_link(
     _require_member(repo, group_id, user_id)
     group = _get_group_or_raise(repo, group_id)
 
-    if not group.invite_link_token:
-        group.invite_link_token = secrets.token_urlsafe(16)
+    token = group.invite_link_token
+    if not token:
+        # Generated in Python — there's no DB-side value a refresh would add.
+        token = secrets.token_urlsafe(16)
+        group.invite_link_token = token
         repo.commit()
-        repo.refresh(group)
 
     return InviteLinkOut(
-        invite_link_token=group.invite_link_token,
-        join_url=f"{base_url}/api/v1/groups/join-by-link/{group.invite_link_token}",
+        invite_link_token=token,
+        join_url=f"{base_url}/api/v1/groups/join-by-link/{token}",
     )
 
 
@@ -271,6 +304,11 @@ def join_by_invite_link(repo: IGroupsRepository, token: str, user_id: UUID) -> d
     if existing:
         raise GroupAlreadyMemberError("Already a member of this group")
 
+    # Captured before commit — group was already loaded above and these
+    # fields are unchanged by this operation, so there's nothing a reload
+    # would add, only a round trip to re-fetch what's already known.
+    group_id_str, group_name = str(group.id), group.name
+
     try:
         repo.add(GroupMember(group_id=group.id, user_id=user_id, role="member"))
         group.member_count += 1
@@ -280,8 +318,8 @@ def join_by_invite_link(repo: IGroupsRepository, token: str, user_id: UUID) -> d
         raise
 
     return {
-        "group_id": str(group.id),
-        "group_name": group.name,
+        "group_id": group_id_str,
+        "group_name": group_name,
         "role": "member",
         "joined_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -330,7 +368,8 @@ def resolve_join_request(
     if req.status != "pending":
         raise GroupJoinRequestAlreadyResolvedError(f"Request already {req.status}")
 
-    req.status = "approved" if action == "approve" else "rejected"
+    new_status = "approved" if action == "approve" else "rejected"
+    req.status = new_status
     req.resolved_at = datetime.now(timezone.utc)
     req.resolved_by = admin_id
 
@@ -346,7 +385,9 @@ def resolve_join_request(
         repo.rollback()
         raise
 
-    return {"request_id": str(request_id), "status": req.status}
+    # Returns the local, not req.status — same expire_on_commit reasoning as
+    # toggle_mute/toggle_favorite above.
+    return {"request_id": str(request_id), "status": new_status}
 
 
 def get_my_admin_pending_requests(

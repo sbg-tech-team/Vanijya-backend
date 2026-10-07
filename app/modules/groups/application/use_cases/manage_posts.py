@@ -106,14 +106,23 @@ def _deal_to_response(deal: GroupDeal) -> GroupDealResponse:
     )
 
 
-def _create_post_from_deal(repo: IGroupsRepository, deal: GroupDeal, profile_id: int, is_public: bool):
-    """Mirror a published group deal as a Post and index it for the rec engine."""
+def _create_post_from_deal(
+    repo: IGroupsRepository, deal: GroupDeal, profile_id: int, is_public: bool, profile=None
+):
+    """Mirror a published group deal as a Post and index it for the rec engine.
+
+    `profile` lets a caller that already loaded the Profile (with business
+    eager-loaded) pass it straight through instead of this function
+    re-fetching the same row by id — create_group_deal already has it;
+    publish_group_deal doesn't, so it's fetched here when omitted.
+    """
     from app.modules.post.recommendation import service as rec_service
 
     post = repo.create_post_from_deal(deal, profile_id, is_public)
 
     # resolve location for rec vector
-    profile = repo.get_profile_by_id(profile_id)
+    if profile is None:
+        profile = repo.get_profile_by_id(profile_id)
     lat, lon = 0.0, 0.0
     if profile and profile.business:
         lat = float(profile.business.latitude or 0.0)
@@ -296,11 +305,11 @@ def create_group_deal(
             profile = repo.get_profile_by_user(user_id)
             if profile is None:
                 raise GroupProfileNotFoundError("Profile not found")
-            post = _create_post_from_deal(repo, deal, profile.id, payload.feed_is_public)
+            post = _create_post_from_deal(repo, deal, profile.id, payload.feed_is_public, profile=profile)
             deal.post_id = post.id
 
+        result = _deal_to_response(deal)
         repo.commit()
-        repo.refresh(deal)
     except (GroupPermissionError, GroupProfileNotFoundError, GroupMemberFrozenError):
         repo.rollback()
         raise
@@ -308,7 +317,7 @@ def create_group_deal(
         repo.rollback()
         raise
 
-    return _deal_to_response(deal)
+    return result
 
 
 def list_group_deals(
@@ -361,9 +370,12 @@ def update_group_deal(
         setattr(deal, field, value)
     deal.updated_at = datetime.now(timezone.utc)
 
+    # Built from the just-assigned in-memory fields, before commit() expires
+    # `deal` (session default expire_on_commit=True) — nothing _deal_to_response
+    # reads here is server-generated, so a refresh after would be a wasted round trip.
+    result = _deal_to_response(deal)
     repo.commit()
-    repo.refresh(deal)
-    return _deal_to_response(deal)
+    return result
 
 
 def close_group_deal(repo: IGroupsRepository, group_id: UUID, deal_id: UUID, user_id: UUID) -> GroupDealResponse:
@@ -376,9 +388,9 @@ def close_group_deal(repo: IGroupsRepository, group_id: UUID, deal_id: UUID, use
 
     deal.is_closed = not deal.is_closed
     deal.updated_at = datetime.now(timezone.utc)
+    result = _deal_to_response(deal)
     repo.commit()
-    repo.refresh(deal)
-    return _deal_to_response(deal)
+    return result
 
 
 def publish_group_deal(
@@ -402,8 +414,8 @@ def publish_group_deal(
         post = _create_post_from_deal(repo, deal, profile_id, is_public)
         deal.post_id = post.id
         deal.updated_at = datetime.now(timezone.utc)
+        result = _deal_to_response(deal)
         repo.commit()
-        repo.refresh(deal)
     except (GroupPermissionError, GroupNotFoundError, GroupDealAlreadyPublishedError, GroupDealEditForbiddenError):
         repo.rollback()
         raise
@@ -411,4 +423,4 @@ def publish_group_deal(
         repo.rollback()
         raise
 
-    return _deal_to_response(deal)
+    return result

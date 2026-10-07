@@ -229,14 +229,22 @@ def create_group(repo: IGroupsRepository, user_id: UUID, payload: GroupCreate) -
         # Build & store embedding
         _store_embedding(repo, group)
 
+        # Built before commit() expires `group`'s attributes. The creator's
+        # own membership doesn't need a DB round trip either — it was just
+        # created above with known values (admin role, default is_muted/
+        # is_favorite), so a throwaway (never repo.add()'d) GroupMember
+        # carries them into _build_group_out instead of re-querying the row
+        # just inserted.
+        result = _build_group_out(
+            group, GroupMember(role="admin", is_muted=False, is_favorite=False)
+        )
+
         repo.commit()
-        repo.refresh(group)
     except Exception:
         repo.rollback()
         raise
 
-    membership = _get_membership(repo, group.id, user_id)
-    return _build_group_out(group, membership)
+    return result
 
 
 def list_groups(
@@ -285,6 +293,7 @@ def update_group(
 ) -> GroupOut:
     _require_admin(repo, group_id, user_id)
     group = _get_group_or_raise(repo, group_id)
+    membership = _get_membership(repo, group_id, user_id)
 
     data = payload.model_dump(exclude_unset=True)
     if "commodities" in data:
@@ -296,10 +305,13 @@ def update_group(
     if any(k in data for k in ("commodities", "region_lat", "region_lon")):
         _store_embedding(repo, group)
 
+    # Built from the just-assigned in-memory fields, before commit() expires
+    # `group`/`membership` (session default expire_on_commit=True) — nothing
+    # read here is server-generated, so a refresh after would only re-read
+    # values already known.
+    result = _build_group_out(group, membership)
     repo.commit()
-    repo.refresh(group)
-    membership = _get_membership(repo, group_id, user_id)
-    return _build_group_out(group, membership)
+    return result
 
 
 def update_permissions(
@@ -307,27 +319,29 @@ def update_permissions(
 ) -> GroupOut:
     _require_admin(repo, group_id, user_id)
     group = _get_group_or_raise(repo, group_id)
+    membership = _get_membership(repo, group_id, user_id)
 
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(group, field, value)
 
+    result = _build_group_out(group, membership)
     repo.commit()
-    repo.refresh(group)
-    membership = _get_membership(repo, group_id, user_id)
-    return _build_group_out(group, membership)
+    return result
 
 
-async def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> list[UUID]:
-    """Deletes the group and, best-effort, the storage objects nothing else
-    owns (the cover image, every GroupMedia file — group_members/activity_cache/
-    embedding/media rows themselves are handled by the existing ORM cascade +
-    DB-level ON DELETE CASCADE on group_deals/group_join_requests).
+def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> dict:
+    """Deletes the group. group_members/activity_cache/embedding/media rows
+    are handled by the existing ORM cascade + DB-level ON DELETE CASCADE on
+    group_deals/group_join_requests — nothing to do for those here.
 
-    Returns the member user_ids as they were immediately before deletion, so
-    the router can evict their sockets from the group's realtime room — once
-    the group is gone, GroupMember rows (and with them repo.list_members) are
-    gone too.
+    Returns member_ids (for the router to evict sockets from the group's
+    realtime room — once the group is gone, GroupMember rows and with them
+    repo.list_members are gone too) and image_url/media_paths (for the
+    router to defer storage cleanup to a background task instead of awaiting
+    it here: a group can hold up to 10,000 media rows, and deleting them one
+    sequential network call at a time would gate the response on however
+    many happen to exist).
 
     Note: group chat messages (chat.messages with context_type='group',
     context_id=group_id) are NOT cleaned up here — there is no FK from chat's
@@ -353,6 +367,14 @@ async def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -
         repo.rollback()
         raise
 
+    return {"member_ids": member_ids, "image_url": image_url, "media_paths": media_paths}
+
+
+async def _cleanup_group_storage(image_url: str | None, media_paths: list[str], group_id: UUID) -> None:
+    """Best-effort storage cleanup for a just-deleted group — run as a
+    background task (see delete_group's docstring) rather than awaited
+    inline, since media_paths can be large and each delete is its own
+    network round trip."""
     if image_url:
         try:
             old_path = path_from_url(_GROUP_IMAGE_BUCKET, image_url)
@@ -366,8 +388,6 @@ async def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -
             await delete_object(_GROUP_MEDIA_BUCKET, storage_path)
         except StorageError:
             log.warning("could not delete group media %s for deleted group %s", storage_path, group_id)
-
-    return member_ids
 
 
 # ---------------------------------------------------------------------------

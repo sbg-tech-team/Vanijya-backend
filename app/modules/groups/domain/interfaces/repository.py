@@ -87,6 +87,13 @@ class IGroupsRepository(ABC):
         ...
 
     @abstractmethod
+    def get_existing_member_ids(self, group_id: UUID, user_ids: list[UUID]) -> set[UUID]:
+        """Which of these user_ids are already members of this group — one
+        query for the whole batch instead of one get_membership() call per
+        user_id."""
+        ...
+
+    @abstractmethod
     def get_other_admin(self, group_id: UUID, user_id: UUID) -> Optional[GroupMember]:
         ...
 
