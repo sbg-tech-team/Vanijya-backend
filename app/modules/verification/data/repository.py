@@ -75,19 +75,26 @@ class VerificationRepository(IVerificationRepository):
         record.updated_at = now
 
         if mark_profile_verified:
-            profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
-            if profile is not None:
-                if category == "kyc":
-                    profile.is_user_verified = True
-                elif category == "kyb":
-                    profile.is_business_verified = True
+            # Direct UPDATE, no SELECT first — this only ever flips one
+            # column, it never needs to read the row. (get_profile_by_user
+            # loaded this same profile earlier in the request, but only
+            # returns a ProfileRef DTO — the ORM object has no strong
+            # reference left by the time this runs, so the session's
+            # weak-referencing identity map has already dropped it; a
+            # db.get() here would still issue its own SELECT in practice.)
+            field = {"kyc": "is_user_verified", "kyb": "is_business_verified"}.get(category)
+            if field:
+                self.db.query(Profile).filter(Profile.id == profile_id).update({field: True})
 
         self.db.commit()
-        self.db.refresh(record)
+        # No refresh() — document_type/status/verified_at are this
+        # function's own parameters, already known, not server-generated.
+        # Reading them off `record` instead would re-SELECT it anyway
+        # (session default expire_on_commit=True).
         return VerificationOutcome(
-            document_type=record.document_type,
-            status=record.status,
-            verified_at=record.verified_at,
+            document_type=document_type,
+            status=status,
+            verified_at=verified_at,
         )
 
     def list_records(self, profile_id: int) -> list[DocRecord]:

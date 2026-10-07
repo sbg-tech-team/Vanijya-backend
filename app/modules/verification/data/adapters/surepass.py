@@ -18,6 +18,13 @@ from app.modules.verification.domain.interfaces.verifier import IDocumentVerifie
 # production -> https://kyc-api.surepass.io/api/v1
 _SUREPASS_BASE_URL = os.getenv("SUREPASS_BASE_URL", "https://sandbox.surepass.io/api/v1")
 
+# (connect, read) — none of these calls had a timeout at all, so a hung or
+# slow-dropping connection to Surepass could block a threadpool worker
+# indefinitely. Observed real latencies top out around 1.5s (GST); this
+# leaves generous headroom without bounding a request that's genuinely just
+# waiting on Surepass's own corporate-lookup providers.
+_TIMEOUT = (5, 15)
+
 
 def _headers() -> dict:
     return {
@@ -46,6 +53,7 @@ class SurepassVerifier(IDocumentVerifier):
             f"{_SUREPASS_BASE_URL}/pan/pan-adv-v3",
             headers=_headers(),
             json={"id_number": id_number, "name": name, "dob": dob},
+            timeout=_TIMEOUT,
         )
         body = response.json()
         if not body.get("success"):
@@ -62,6 +70,7 @@ class SurepassVerifier(IDocumentVerifier):
             f"{_SUREPASS_BASE_URL}/corporate/gstin",
             headers=_headers(),
             json={"id_number": gstin},
+            timeout=_TIMEOUT,
         )
         body = response.json()
         if not body.get("success"):
@@ -78,6 +87,7 @@ class SurepassVerifier(IDocumentVerifier):
             f"{_SUREPASS_BASE_URL}/corporate/iec-details",
             headers=_headers(),
             json={"iec_number": iec_number},
+            timeout=_TIMEOUT,
         )
         body = response.json()
         if not body.get("success"):

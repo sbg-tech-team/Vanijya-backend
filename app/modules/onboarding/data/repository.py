@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.modules.onboarding.data.models import UserSession
 from app.modules.onboarding.domain.entities import DevProfileRef, SessionRef, UserRef
@@ -25,8 +25,13 @@ class OnboardingRepository(IOnboardingRepository):
     # -- users ----------------------------------------------------------------
 
     def find_user_by_phone(self, country_code: str, phone_number: str) -> UserRef | None:
+        # joinedload(User.profile): this runs on every POST /auth/firebase-verify
+        # call — every sign-in, new or returning user. user.profile below is a
+        # many-to-one with no lazy= override, so without this it was a second
+        # sequential SELECT on every single call to the busiest auth endpoint.
         user = (
             self.db.query(User)
+            .options(joinedload(User.profile))
             .filter(User.country_code == country_code, User.phone_number == phone_number)
             .first()
         )
