@@ -41,6 +41,14 @@ class ICallingRepository(ABC):
         ...
 
     @abstractmethod
+    def either_blocked_many(self, user_id: UUID, other_ids: list[UUID]) -> set[UUID]:
+        """either_blocked for many candidates in one query — which of other_ids
+        have a block relationship (either direction) with user_id. Used by
+        group-call ring-list prep instead of one either_blocked() call per
+        member."""
+        ...
+
+    @abstractmethod
     def get_or_create_dm_id(self, user_a: UUID, user_b: UUID) -> UUID:
         """Conversation id for the pair, creating an ACTIVE DM if none exists.
         A call is itself consent to converse, matching message-request accept."""
@@ -89,6 +97,15 @@ class ICallingRepository(ABC):
 
     @abstractmethod
     def get_call(self, call_id: UUID) -> CallEntity | None: ...
+
+    @abstractmethod
+    def get_call_heartbeat_state(self, call_id: UUID, user_id: UUID) -> tuple[str, bool] | None:
+        """(status, is_participant), or None if the call doesn't exist — just
+        enough for the heartbeat check. Skips the full get_call()/_build_call()
+        rebuild (participants + a user-snap join), which heartbeat never reads;
+        it's the highest-frequency call in this module (every ~30s per
+        participant), so that join is a steady, avoidable tax."""
+        ...
 
     @abstractmethod
     def busy_call_id(self, user_id: UUID) -> UUID | None:

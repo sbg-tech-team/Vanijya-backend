@@ -30,9 +30,21 @@ class PushMessage:
     data: dict
 
 
+@dataclass(frozen=True)
+class ProviderCall:
+    """A call to the video provider whose result the caller never needs —
+    run after the response via background_tasks instead of inline/blocking
+    it. See initiate_call's provision_call and reject_call's DM-branch
+    end_call_remote: both are already best-effort, their return value was
+    never checked even when called synchronously."""
+    method: str
+    kwargs: dict = field(default_factory=dict)
+
+
 @dataclass
 class CallDispatch:
     """Whatever the caller should return, plus the side effects to fire after."""
     result: object
     socket_events: list[SocketEvent] = field(default_factory=list)
     pushes: list[PushMessage] = field(default_factory=list)
+    provider_calls: list[ProviderCall] = field(default_factory=list)

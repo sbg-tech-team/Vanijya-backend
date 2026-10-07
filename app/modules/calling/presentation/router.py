@@ -91,8 +91,11 @@ def _translate(exc: CallingError) -> HTTPException:
     return HTTPException(status_code=status, detail=str(exc) or "Call error")
 
 
-def _dispatch(background: BackgroundTasks, result: CallDispatch):
-    """Queue the socket emits and pushes a use case asked for."""
+def _dispatch(
+    background: BackgroundTasks, result: CallDispatch, provider: IVideoProvider | None = None
+):
+    """Queue the socket emits, pushes, and best-effort provider calls a use
+    case asked for."""
     from app.core.realtime import emit_to_group, emit_to_user
 
     for ev in result.socket_events:
@@ -106,6 +109,9 @@ def _dispatch(background: BackgroundTasks, result: CallDispatch):
         # the master switch only.
         category = "group" if msg.data.get("call_type") == "group" else "push"
         background.add_task(push_task, msg.user_ids, msg.data, category)
+
+    for pc in result.provider_calls:
+        background.add_task(getattr(provider, pc.method), **pc.kwargs)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -151,7 +157,7 @@ def create_call(
 
     set_call_context(result.result.call_id, call_type=payload.call_type,
                      status=result.result.status, caller=str(me))
-    _dispatch(background_tasks, result)
+    _dispatch(background_tasks, result, provider)
     return ok(result.result.model_dump(mode="json"), "Call initiated")
 
 
@@ -170,7 +176,7 @@ def accept_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result)
+    _dispatch(background_tasks, result, provider)
     return ok(result.result.model_dump(mode="json"), "Call accepted")
 
 
@@ -189,7 +195,7 @@ def reject_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result)
+    _dispatch(background_tasks, result, provider)
     return ok(result.result.model_dump(mode="json"), "Call rejected")
 
 
@@ -215,7 +221,7 @@ def end_call(
         raise _translate(exc) from exc
 
     set_call_context(call_id, status=result.result.status, actor=str(me))
-    _dispatch(background_tasks, result)
+    _dispatch(background_tasks, result, provider)
     return ok(result.result.model_dump(mode="json"), "Call ended")
 
 

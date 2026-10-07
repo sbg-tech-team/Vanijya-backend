@@ -16,7 +16,12 @@ from uuid import UUID, uuid4
 import redis as redis_lib
 
 from app.modules.calling.application.budget import check_budget
-from app.modules.calling.application.dispatch import CallDispatch, PushMessage, SocketEvent
+from app.modules.calling.application.dispatch import (
+    CallDispatch,
+    ProviderCall,
+    PushMessage,
+    SocketEvent,
+)
 from app.modules.calling.application.presenters import to_call_out
 from app.modules.calling.domain.exceptions import (
     CallBlockedError,
@@ -108,18 +113,11 @@ def initiate_call(
         repo.rollback()
         raise
 
-    # Provision AFTER the row exists, so a failed DB write cannot leave an
-    # orphaned session on the provider. Carries the hard duration cap — the only
-    # guardrail that still works if our backend dies mid-call, since the provider
-    # ends the session itself once the limit is hit. Best-effort: a provider blip
-    # must not stop people calling, it only means our own sweeps become the outer
-    # bound instead.
-    provider.provision_call(
-        stream_call_type=stream_call_type,
-        stream_call_id=stream_call_id,
-        created_by_id=caller_id,
-        max_duration_seconds=MAX_CALL_DURATION_SECONDS,
-    )
+    # Provisioning is deferred (see provider_calls below) — issue_token just
+    # past this point signs a local JWT and never calls Stream at all, so it
+    # does not depend on provisioning having completed. Best-effort either
+    # way: a provider blip must not stop people calling, it only means our
+    # own sweeps become the outer bound instead.
 
     try:
         creds = provider.issue_token(caller_id, stream_call_type, stream_call_id)
@@ -156,6 +154,12 @@ def initiate_call(
                 "ring_timeout_seconds": str(RING_TIMEOUT_SECONDS),
             },
         )],
+        provider_calls=[ProviderCall("provision_call", {
+            "stream_call_type": stream_call_type,
+            "stream_call_id": stream_call_id,
+            "created_by_id": caller_id,
+            "max_duration_seconds": MAX_CALL_DURATION_SECONDS,
+        })],
     )
 
 
@@ -194,11 +198,11 @@ def _prepare_group(repo: ICallingRepository, caller_id: UUID, group_id: UUID | N
     member_ids = repo.group_member_ids(group_id)
 
     # Members who have blocked the caller (or are blocked by them) are simply
-    # not rung. The call still happens for everyone else.
-    ringable = [
-        uid for uid in member_ids
-        if uid == caller_id or not repo.either_blocked(caller_id, uid)
-    ]
+    # not rung. The call still happens for everyone else. One batched query
+    # instead of one either_blocked() call per member — up to
+    # MAX_CALL_PARTICIPANTS round trips otherwise.
+    blocked_ids = repo.either_blocked_many(caller_id, [uid for uid in member_ids if uid != caller_id])
+    ringable = [uid for uid in member_ids if uid == caller_id or uid not in blocked_ids]
     if caller_id not in ringable:
         ringable.insert(0, caller_id)
 

@@ -9,7 +9,12 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.modules.calling.application.dispatch import CallDispatch, PushMessage, SocketEvent
+from app.modules.calling.application.dispatch import (
+    CallDispatch,
+    ProviderCall,
+    PushMessage,
+    SocketEvent,
+)
 from app.modules.calling.application.presenters import to_call_out
 from app.modules.calling.application.schemas import CallRejectedOut
 from app.modules.calling.domain.exceptions import (
@@ -69,7 +74,11 @@ def accept_call(
     elif user_id != call.initiator_id and repo.either_blocked(user_id, call.initiator_id):
         raise CallBlockedError("You cannot join this call.")
 
-    if repo.active_participant_count(call_id) >= MAX_CALL_PARTICIPANTS:
+    # Computed from call.participants (already loaded by get_call() above)
+    # instead of a fresh COUNT(*) query — the two can't disagree since
+    # nothing has touched participant state since that load.
+    active_count = sum(1 for p in call.participants if p.state == ParticipantState.JOINED.value)
+    if active_count >= MAX_CALL_PARTICIPANTS:
         raise CallFullError("Call is full.")
 
     if not provider.is_configured:
@@ -165,6 +174,7 @@ def reject_call(
         raise CallNotRingingError("Call is no longer ringing.")
 
     now = datetime.now(timezone.utc)
+    provider_calls: list[ProviderCall] = []
     try:
         repo.mark_participant_rejected(call_id, user_id, now)
 
@@ -172,12 +182,18 @@ def reject_call(
         pushes: list[PushMessage] = []
 
         if call.call_type == CallType.DM.value:
+            new_status = CallStatus.REJECTED.value
             # 1:1 — one refusal ends it. Terminate on Stream too: nobody should
             # be billing yet, but a client that raced into the session before
-            # the reject landed must be kicked out of it.
+            # the reject landed must be kicked out of it. Best-effort and the
+            # result was never checked even when this ran inline, so it's
+            # deferred the same way initiate_call's provisioning is.
             if provider is not None:
-                provider.end_call_remote(call.stream_call_type, call.stream_call_id)
-            repo.end_call(call_id, CallStatus.REJECTED.value, EndReason.REJECTED.value, now)
+                provider_calls.append(ProviderCall("end_call_remote", {
+                    "stream_call_type": call.stream_call_type,
+                    "stream_call_id": call.stream_call_id,
+                }))
+            repo.end_call(call_id, new_status, EndReason.REJECTED.value, now)
             events.append(SocketEvent(
                 event="call_rejected",
                 payload={"call_id": str(call_id), "rejected_by": str(user_id)},
@@ -188,7 +204,8 @@ def reject_call(
                 data={"type": "call_ended", "call_id": str(call_id), "end_reason": EndReason.REJECTED.value},
             ))
         else:
-            # Group — you drop out, the call survives.
+            # Group — you drop out, the call survives, status is unchanged.
+            new_status = call.status
             events.append(SocketEvent(
                 event="call_participant_left",
                 payload={"call_id": str(call_id), "user_id": str(user_id)},
@@ -200,12 +217,12 @@ def reject_call(
         repo.rollback()
         raise
 
-    fresh = repo.get_call(call_id)
+    # new_status is already known locally (the DM branch's literal, or the
+    # group branch's unchanged call.status) — no need to re-fetch the call
+    # just to read back a value that was never in question.
     return CallDispatch(
-        result=CallRejectedOut(
-            call_id=call_id,
-            status=fresh.status if fresh else CallStatus.REJECTED.value,
-        ),
+        result=CallRejectedOut(call_id=call_id, status=new_status),
         socket_events=events,
         pushes=pushes,
+        provider_calls=provider_calls,
     )

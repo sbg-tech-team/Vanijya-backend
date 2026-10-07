@@ -23,7 +23,10 @@ from app.modules.calling.domain.exceptions import (
     NotParticipantError,
 )
 from app.modules.calling.domain.interfaces.repository import ICallingRepository
-from app.modules.calling.domain.value_objects import HEARTBEAT_INTERVAL_SECONDS
+from app.modules.calling.domain.value_objects import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    TERMINAL_STATUSES,
+)
 
 
 def heartbeat(
@@ -33,12 +36,17 @@ def heartbeat(
     user_id: UUID,
     rc: "redis_lib.Redis | None" = None,
 ) -> CallHeartbeatOut:
-    call = repo.get_call(call_id)
-    if call is None:
+    # get_call_heartbeat_state, not get_call: this is the highest-frequency
+    # call in the module (every ~30s per participant), and all it needs is
+    # status + participant existence — get_call()'s full rebuild also joins
+    # every participant's name/avatar, which heartbeat never reads.
+    state = repo.get_call_heartbeat_state(call_id, user_id)
+    if state is None:
         raise CallNotFoundError("Call not found.")
-    if call.participant(user_id) is None:
+    status, is_participant = state
+    if not is_participant:
         raise NotParticipantError("You are not a participant in this call.")
-    if call.is_terminal():
+    if status in TERMINAL_STATUSES:
         # Tells a client whose socket and push both missed the teardown that the
         # call is over, so it can stop the media session instead of billing on.
         raise CallAlreadyEndedError("Call has already ended.")
@@ -52,6 +60,6 @@ def heartbeat(
         repo.commit()
     return CallHeartbeatOut(
         call_id=call_id,
-        status=call.status,
+        status=status,
         next_heartbeat_in_seconds=HEARTBEAT_INTERVAL_SECONDS,
     )

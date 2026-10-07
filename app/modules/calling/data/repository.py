@@ -130,6 +130,20 @@ class CallingRepository(ICallingRepository):
             )
         ).first() is not None
 
+    def either_blocked_many(self, user_id: UUID, other_ids: list[UUID]) -> set[UUID]:
+        if not other_ids:
+            return set()
+        rows = self.db.query(UserBlock.blocker_id, UserBlock.blocked_id).filter(
+            or_(
+                and_(UserBlock.blocker_id == user_id, UserBlock.blocked_id.in_(other_ids)),
+                and_(UserBlock.blocker_id.in_(other_ids), UserBlock.blocked_id == user_id),
+            )
+        ).all()
+        return {
+            blocked_id if blocker_id == user_id else blocker_id
+            for blocker_id, blocked_id in rows
+        }
+
     def get_or_create_dm_id(self, user_a: UUID, user_b: UUID) -> UUID:
         cm_a = aliased(ConversationMember)
         cm_b = aliased(ConversationMember)
@@ -221,6 +235,21 @@ class CallingRepository(ICallingRepository):
 
     def get_call(self, call_id: UUID) -> CallEntity | None:
         return self._build_call(call_id)
+
+    def get_call_heartbeat_state(self, call_id: UUID, user_id: UUID) -> tuple[str, bool] | None:
+        row = (
+            self.db.query(Call.status, CallParticipant.user_id)
+            .outerjoin(
+                CallParticipant,
+                and_(CallParticipant.call_id == Call.id, CallParticipant.user_id == user_id),
+            )
+            .filter(Call.id == call_id)
+            .first()
+        )
+        if row is None:
+            return None
+        status, participant_user_id = row
+        return status, participant_user_id is not None
 
     def busy_call_id(self, user_id: UUID) -> UUID | None:
         """A call only makes you busy while it could plausibly still be live.
