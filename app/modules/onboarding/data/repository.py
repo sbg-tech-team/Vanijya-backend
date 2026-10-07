@@ -89,17 +89,20 @@ class OnboardingRepository(IOnboardingRepository):
     def rotate_refresh_token(
         self, session_id: UUID, new_hash: str, last_used_at: datetime
     ) -> None:
-        session = self.db.query(UserSession).filter(UserSession.id == session_id).first()
-        if session:
-            session.refresh_token_hash = new_hash
-            session.last_used_at = last_used_at
-            self.db.commit()
+        # get_active_session_by_refresh_hash already fetched this exact row
+        # by refresh_token_hash just before this call — a plain UPDATE
+        # instead of SELECT-then-mutate avoids re-fetching it a second time,
+        # same style already used by deactivate_all_sessions below.
+        self.db.query(UserSession).filter(UserSession.id == session_id).update(
+            {"refresh_token_hash": new_hash, "last_used_at": last_used_at}
+        )
+        self.db.commit()
 
     def deactivate_session(self, session_id: UUID) -> None:
-        session = self.db.query(UserSession).filter(UserSession.id == session_id).first()
-        if session:
-            session.is_active = False
-            self.db.commit()
+        self.db.query(UserSession).filter(UserSession.id == session_id).update(
+            {"is_active": False}
+        )
+        self.db.commit()
 
     def deactivate_all_sessions(self, user_id: UUID) -> None:
         self.db.query(UserSession).filter(

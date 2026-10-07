@@ -2,7 +2,7 @@ import logging
 import os
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.config import settings
@@ -190,6 +190,7 @@ def refresh_tokens(
 @router.post("/logout", status_code=200)
 def logout(
     payload: LogoutRequest,
+    background_tasks: BackgroundTasks,
     repo: IOnboardingRepository = Depends(get_onboarding_repo),
     calling_repo: ICallingRepository = Depends(get_calling_repo),
     token: str = Depends(_bearer),
@@ -214,12 +215,15 @@ def logout(
     if payload.fcm_token:
         # Best-effort: a push row that outlives the session is a privacy
         # problem, but failing to remove it must not fail the logout itself —
-        # the client has already been told the session is gone.
-        try:
-            calling_service.unregister_device(
-                calling_repo, user_id=claims.user_id, fcm_token=payload.fcm_token,
-            )
-        except Exception:
-            log.warning("logout: could not unregister device for %s", claims.user_id)
+        # the client has already been told the session is gone. Deferred so
+        # the response doesn't wait on it either.
+        def _unregister():
+            try:
+                calling_service.unregister_device(
+                    calling_repo, user_id=claims.user_id, fcm_token=payload.fcm_token,
+                )
+            except Exception:
+                log.warning("logout: could not unregister device for %s", claims.user_id)
+        background_tasks.add_task(_unregister)
 
     return ok(None, "Logged out successfully.")

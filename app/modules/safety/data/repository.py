@@ -117,9 +117,14 @@ class SafetyRepository(ISafetyRepository):
             description=description,
         )
         self.db.add(report)
+        self.db.flush()  # assigns id; status/created_at are Python-side defaults, already set
+        # Built before commit() expires `report` (session default
+        # expire_on_commit=True) — every field here is already known, so a
+        # refresh (or touching `report` again after commit) would only
+        # re-SELECT a row whose values haven't changed.
+        result = _to_report(report)
         self.db.commit()
-        self.db.refresh(report)
-        return _to_report(report)
+        return result
 
     def list_reports(
         self, reporter_id: UUID, page: int, limit: int
