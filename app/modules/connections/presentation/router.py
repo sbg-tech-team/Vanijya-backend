@@ -83,6 +83,7 @@ def suggestions(
 @connections_router.post("/follow/{target_id}", status_code=201)
 def follow(
     target_id: UUID,
+    background_tasks: BackgroundTasks,
     payload: FollowCreate | None = None,
     user: CurrentUser = Depends(get_current_user),
     repo: IConnectionsRepository = Depends(get_connections_repo),
@@ -99,6 +100,7 @@ def follow(
             actor_profile_id=user.profile_id,
             commodity_ids=payload.commodity_ids if payload else [],
             role_id=payload.role_id if payload else None,
+            background_tasks=background_tasks,
         )
     except Exception as exc:
         raise _translate(exc) from exc
@@ -165,6 +167,7 @@ def list_following(
 @connections_router.post("/message-request/{target_id}", status_code=201)
 def send_request(
     target_id: UUID,
+    background_tasks: BackgroundTasks,
     payload: MessageRequestCreate | None = None,
     user: CurrentUser = Depends(get_current_user),
     repo: IConnectionsRepository = Depends(get_connections_repo),
@@ -183,6 +186,7 @@ def send_request(
             actor_profile_id=user.profile_id,
             commodity_ids=payload.commodity_ids if payload else [],
             role_id=payload.role_id if payload else None,
+            background_tasks=background_tasks,
         )
     except Exception as exc:
         raise _translate(exc) from exc
@@ -319,6 +323,7 @@ def get_share_recipients(
 @connections_router.post("/view", status_code=204)
 def record_view(
     payload: ProfileViewSignal,
+    background_tasks: BackgroundTasks,
     user: CurrentUser = Depends(get_current_user),
     r: redis_lib.Redis = Depends(get_redis),
 ):
@@ -331,6 +336,7 @@ def record_view(
         viewer_profile_id=user.profile_id,
         commodity_ids=payload.commodity_ids,
         role_id=payload.role_id,
+        background_tasks=background_tasks,
     )
 
 

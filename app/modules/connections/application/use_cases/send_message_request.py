@@ -12,6 +12,7 @@ from uuid import UUID
 import redis as redis_lib
 
 from app.modules.connections.application.formatters import fmt_profile
+from app.modules.connections.application.use_cases.follow_user import TaskQueue
 from app.modules.connections.domain.interfaces.repository import IConnectionsRepository
 from app.modules.connections.domain.exceptions import (
     AlreadyConnectedError,
@@ -42,11 +43,17 @@ def send_message_request(
     actor_profile_id: int | None = None,
     commodity_ids: list[int] | None = None,
     role_id: int | None = None,
+    background_tasks: TaskQueue | None = None,
 ) -> dict:
     def _record() -> None:
         if actor_profile_id is not None:
-            write_commodity_signals(rc, actor_profile_id, _MODULE,
-                commodity_ids or [], ActionType.CONNECTION_MSG, role_id)
+            def _signal():
+                write_commodity_signals(rc, actor_profile_id, _MODULE,
+                    commodity_ids or [], ActionType.CONNECTION_MSG, role_id)
+            if background_tasks is not None:
+                background_tasks.add_task(_signal)
+            else:
+                _signal()
 
     if sender_id == receiver_id:
         raise SelfRequestError()

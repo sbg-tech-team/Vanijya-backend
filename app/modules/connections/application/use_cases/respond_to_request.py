@@ -46,8 +46,12 @@ def respond_to_request(
         if req.first_message:
             repo.seed_first_message(conv_id, sender_id=req.sender_id, body=req.first_message)
 
+    # Captured before commit() expires `req` (session default
+    # expire_on_commit=True) — touching req.sender_id afterward would
+    # silently re-SELECT the row just to re-read a value already known.
+    sender_id = req.sender_id
     repo.commit()
-    result = {"id": request_id, "status": action, "sender_id": str(req.sender_id)}
+    result = {"id": request_id, "status": action, "sender_id": str(sender_id)}
     if conv_id is not None:
         result["conversation_id"] = str(conv_id)
     return result

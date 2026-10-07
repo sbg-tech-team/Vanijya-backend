@@ -7,6 +7,7 @@ Domain exceptions are raised instead of HTTPException.
 """
 from __future__ import annotations
 
+from typing import Protocol
 from uuid import UUID
 
 import redis as redis_lib
@@ -25,6 +26,14 @@ from app.recommendation.session_taste import ActionType
 _MODULE = "connections"
 
 
+class TaskQueue(Protocol):
+    """Shaped like fastapi.BackgroundTasks' add_task — the application layer
+    stays framework-free, so it depends on this shape, not on FastAPI; the
+    presentation layer passes the real BackgroundTasks object in. Shared by
+    follow_user.py and send_message_request.py, both in this module."""
+    def add_task(self, func, *args, **kwargs) -> None: ...
+
+
 # ---------------------------------------------------------------------------
 # A. Follow graph
 # ---------------------------------------------------------------------------
@@ -38,6 +47,7 @@ def follow_user(
     actor_profile_id: int | None = None,
     commodity_ids: list[int] | None = None,
     role_id: int | None = None,
+    background_tasks: TaskQueue | None = None,
 ) -> dict:
     if follower_id == following_id:
         raise SelfFollowError()
@@ -49,8 +59,13 @@ def follow_user(
         raise AlreadyFollowingError(following_id)
     repo.add_follow(follower_id, following_id)
     if actor_profile_id is not None:
-        write_commodity_signals(rc, actor_profile_id, _MODULE,
-            commodity_ids or [], ActionType.CONNECTION_FOLLOW, role_id)
+        def _signal():
+            write_commodity_signals(rc, actor_profile_id, _MODULE,
+                commodity_ids or [], ActionType.CONNECTION_FOLLOW, role_id)
+        if background_tasks is not None:
+            background_tasks.add_task(_signal)
+        else:
+            _signal()
     return {"status": "following", "following_id": str(following_id)}
 
 
@@ -59,10 +74,17 @@ def record_profile_view(
     viewer_profile_id: int,
     commodity_ids: list[int],
     role_id: int | None = None,
+    background_tasks: TaskQueue | None = None,
 ) -> None:
-    """Redis-only taste signal — the viewer opened a profile card. No DB write."""
-    write_commodity_signals(rc, viewer_profile_id, _MODULE,
-        commodity_ids, ActionType.CONNECTION_VIEW, role_id)
+    """Redis-only taste signal — the viewer opened a profile card. No DB
+    write. Best-effort, so it's deferred when background_tasks is given."""
+    def _run():
+        write_commodity_signals(rc, viewer_profile_id, _MODULE,
+            commodity_ids, ActionType.CONNECTION_VIEW, role_id)
+    if background_tasks is not None:
+        background_tasks.add_task(_run)
+    else:
+        _run()
 
 
 def unfollow_user(repo: IConnectionsRepository, follower_id: UUID, following_id: UUID) -> dict:

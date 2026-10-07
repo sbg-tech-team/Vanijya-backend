@@ -179,8 +179,15 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
             sender_id=sender_id, receiver_id=receiver_id, first_message=message
         )
         self.db.add(req)
+        self.db.flush()  # assigns id; status/sent_at are Python-side defaults, already set
+        req_id, status, sent_at = req.id, req.status, req.sent_at
         self.db.commit()
-        self.db.refresh(req)
+        # Session default is expire_on_commit=True — the caller reads
+        # req.id/.status/.sent_at right after this returns, which would
+        # otherwise silently re-SELECT the row to re-fetch values already
+        # known above. Writing them back repopulates the instance so that
+        # read is free.
+        req.id, req.status, req.sent_at = req_id, status, sent_at
         return req
 
     def delete_withdrawable_request(self, sender_id: UUID, receiver_id: UUID) -> bool:
@@ -206,8 +213,10 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
         request.sent_at = datetime.now(timezone.utc)
         request.acted_at = None
         request.first_message = message
+        req_id, status, sent_at = request.id, request.status, request.sent_at
         self.db.commit()
-        self.db.refresh(request)
+        # Same expire_on_commit reasoning as add_message_request above.
+        request.id, request.status, request.sent_at = req_id, status, sent_at
         return request
 
     def list_received_requests(self, me: UUID) -> list:
@@ -256,11 +265,19 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
                 return [], 0
             query = query.filter(Profile.role_id == role_row.id)
         if commodity:
-            query = (
-                query
-                .join(Profile.commodities)
-                .join(Profile_Commodity.commodity)
-                .filter(Commodity.name.ilike(f"%{commodity}%"))
+            # Profile.id.in_(subquery), not a join — a profile dealing in
+            # multiple commodities matching the ILIKE pattern (e.g. "Basmati
+            # Rice" and "Brown Rice" under commodity="rice") would otherwise
+            # produce duplicate rows: query.count() over-counts `total`, and
+            # OFFSET/LIMIT apply to the undeduplicated row stream, so a page
+            # can skip or repeat a profile. Same subquery style as the q/city
+            # filters below, which don't have this bug.
+            query = query.filter(
+                Profile.id.in_(
+                    self.db.query(Profile_Commodity.profile_id)
+                    .join(Commodity, Commodity.id == Profile_Commodity.commodity_id)
+                    .filter(Commodity.name.ilike(f"%{commodity}%"))
+                )
             )
         if q:
             query = query.filter(
