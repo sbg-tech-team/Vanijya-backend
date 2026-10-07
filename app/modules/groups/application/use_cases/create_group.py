@@ -6,6 +6,7 @@ Domain exceptions from app.modules.groups.domain.exceptions are raised on error.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import uuid
@@ -38,13 +39,18 @@ from app.modules.groups.domain.exceptions import (
 from app.shared.utils.storage import (
     ALLOWED_IMAGE_TYPES,
     StorageError,
+    delete_object,
     ext_for,
     generate_signed_upload_url,
+    path_from_url,
     public_url,
 )
 from app.modules.groups.recommendation.vectors import build_group_vector
 
+log = logging.getLogger(__name__)
+
 _GROUP_IMAGE_BUCKET = os.environ.get("GROUP_IMAGE_BUCKET", "group-image")
+_GROUP_MEDIA_BUCKET = os.environ.get("GROUP_MEDIA_BUCKET", "group-media")
 
 # ---------------------------------------------------------------------------
 # Search intent parsing
@@ -312,15 +318,56 @@ def update_permissions(
     return _build_group_out(group, membership)
 
 
-def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> None:
+async def delete_group(repo: IGroupsRepository, group_id: UUID, user_id: UUID) -> list[UUID]:
+    """Deletes the group and, best-effort, the storage objects nothing else
+    owns (the cover image, every GroupMedia file — group_members/activity_cache/
+    embedding/media rows themselves are handled by the existing ORM cascade +
+    DB-level ON DELETE CASCADE on group_deals/group_join_requests).
+
+    Returns the member user_ids as they were immediately before deletion, so
+    the router can evict their sockets from the group's realtime room — once
+    the group is gone, GroupMember rows (and with them repo.list_members) are
+    gone too.
+
+    Note: group chat messages (chat.messages with context_type='group',
+    context_id=group_id) are NOT cleaned up here — there is no FK from chat's
+    tables to groups.id (chat stores context_id as a bare UUID, not a foreign
+    key), and reaching into chat's tables from this module would cross the
+    module boundary chat's own data layer owns. Pre-existing gap, not
+    introduced by this endpoint; needs a chat-side interface if it's ever
+    fixed, not a direct table write from here.
+    """
     _require_admin(repo, group_id, user_id)
     group = _get_group_or_raise(repo, group_id)
+
+    # Captured before delete — the group row (and everything that cascades
+    # with it) is gone once committed below.
+    image_url = group.image_url
+    media_paths = [m.storage_path for m in repo.list_media(group_id, page=1, limit=10_000)]
+    member_ids = [m.user_id for m in repo.list_members(group_id, page=1, limit=10_000)]
+
     try:
         repo.delete(group)
         repo.commit()
     except Exception:
         repo.rollback()
         raise
+
+    if image_url:
+        try:
+            old_path = path_from_url(_GROUP_IMAGE_BUCKET, image_url)
+            await delete_object(_GROUP_IMAGE_BUCKET, old_path)
+        except StorageError:
+            # Orphaned object — the row is gone, the bytes are not. Billable.
+            log.warning("could not delete group image for deleted group %s", group_id)
+
+    for storage_path in media_paths:
+        try:
+            await delete_object(_GROUP_MEDIA_BUCKET, storage_path)
+        except StorageError:
+            log.warning("could not delete group media %s for deleted group %s", storage_path, group_id)
+
+    return member_ids
 
 
 # ---------------------------------------------------------------------------
