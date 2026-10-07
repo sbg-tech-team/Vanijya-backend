@@ -56,6 +56,7 @@ from app.modules.translation.domain.exceptions import (
     TranslationEngineUnavailableError,
 )
 from app.modules.translation.domain.exceptions import MessageNotFoundError as TranslationMessageNotFoundError
+from app.modules.translation.domain.exceptions import TranslationRejectedError
 from app.modules.translation.presentation.dependencies import (
     get_handle_incoming_message_uc,
     get_toggle_continuous_uc,
@@ -120,7 +121,7 @@ def _translate_incoming_for_receiver(receiver_id: UUID, message_id: UUID) -> Non
     try:
         repo = get_translation_repo(db)
         pipeline = get_translation_pipeline(repo)
-        uc = get_handle_incoming_message_uc(repo, pipeline)
+        uc = get_handle_incoming_message_uc(repo, pipeline, get_redis())
         try:
             result = uc.execute(receiver_id, message_id)
         except TranslationEngineUnavailableError:
@@ -297,6 +298,11 @@ def translate_message(
         raise HTTPException(status_code=403, detail=str(e))
     except TranslationEngineUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except TranslationRejectedError:
+        # The engine answered, twice, with something the checks would not
+        # let through. Nothing was stored; tapping again may succeed.
+        raise HTTPException(status_code=502,
+                            detail="Couldn't translate this message reliably. Try again.")
 
 
 @router.get("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)

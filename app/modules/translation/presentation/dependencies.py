@@ -19,6 +19,7 @@ from app.modules.translation.application.use_cases.translation_preference import
 from app.modules.translation.data.adapters.gemini_engine import GeminiTranslationEngine
 from app.modules.translation.data.adapters.inmemory_cache import InMemoryTranslationCache
 from app.modules.translation.data.adapters.redis_lock import RedisTranslationLock
+from app.modules.translation.data.adapters.redis_rejection_memo import RedisRejectionMemo
 from app.modules.translation.data.content_repository import ContentTranslationRepository
 from app.modules.translation.data.repository import TranslationRepository
 
@@ -65,8 +66,12 @@ def get_translate_message_uc(
 def get_handle_incoming_message_uc(
     repo: TranslationRepository = Depends(get_translation_repo),
     pipeline: TranslationPipeline = Depends(get_translation_pipeline),
+    rc: redis.Redis = Depends(get_redis),
 ) -> HandleIncomingMessageUseCase:
-    return HandleIncomingMessageUseCase(repository=repo, context_store=repo, pipeline=pipeline)
+    """Also called directly (not through Depends) by chat's background task,
+    which must then pass `rc` itself."""
+    return HandleIncomingMessageUseCase(repository=repo, context_store=repo, pipeline=pipeline,
+                                        rejection_memo=RedisRejectionMemo(rc))
 
 
 def get_toggle_continuous_uc(
@@ -121,6 +126,7 @@ def run_translation_retry_job() -> dict:
         uc = HandleIncomingMessageUseCase(
             repository=repo, context_store=repo,
             pipeline=TranslationPipeline(repository=repo, context_store=repo, engine=_engine),
+            rejection_memo=RedisRejectionMemo(get_redis()),
         )
         return run_translation_retry(repo, uc.execute)
     finally:

@@ -209,10 +209,16 @@ def _without_codes(text: str) -> str:
     return _CODE.sub(lambda m: "" if len(m.group()) >= 2 else m.group(), text)
 
 
+# Links and email addresses are copied, not translated: "check https://..."
+# translated into Hindi keeps the URL, which must not count as English left in.
+_LINK = re.compile(r"(?:https?://|www\.)\S+|[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
 def script_problem(value: FieldValue, target_lang: str) -> Optional[str]:
     """Why this translated field is not in the target script, or None if it is."""
     texts = value if isinstance(value, list) else [value]
     for text in texts:
+        text = _LINK.sub(" ", text)
         target = latin = other = 0
         own = _SCRIPT_RANGES.get(target_lang)
         if own is not None:

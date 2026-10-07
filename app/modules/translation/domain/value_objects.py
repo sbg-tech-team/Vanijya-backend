@@ -45,3 +45,10 @@ CONTENT_WAIT_POLL_SECONDS: float = 0.5
 # never rate limited.
 CONTENT_TRANSLATE_RATE_LIMIT: int = 60
 CONTENT_TRANSLATE_RATE_WINDOW_SECONDS: int = 3600
+
+
+# ── Chat translation checks ───────────────────────────────────────────────────
+# After a continuous-mode message fails the checks twice, skip it for this
+# long. The 5-minute recovery job looks back 60 minutes, so without this a
+# message the engine cannot translate cleanly would be re-sent ~24 times.
+CHAT_REJECTION_MEMO_TTL_SECONDS: int = 2 * 3600

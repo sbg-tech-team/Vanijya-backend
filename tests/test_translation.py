@@ -649,3 +649,120 @@ def test_retry_caps_each_run():
     result = jobs.run_translation_retry(repo, lambda **_: True)
     assert repo.asked[1] == jobs.MAX_PER_RUN
     assert result["translated"] == jobs.MAX_PER_RUN
+
+
+# ── Quality checks on chat output ───────────────────────────────────────────────
+
+from app.modules.translation.domain.exceptions import TranslationRejectedError  # noqa: E402
+
+
+@dataclass
+class SeqEngine:
+    """Returns the given responses in order, one per call."""
+    responses: list
+    calls: list = field(default_factory=list)
+
+    def translate(self, prompt):
+        self.calls.append(prompt)
+        return self.responses[min(len(self.calls), len(self.responses)) - 1]
+
+
+class FakeMemo:
+    def __init__(self):
+        self.keys = {}
+
+    def seen(self, key):
+        return key in self.keys
+
+    def remember(self, key, ttl_seconds):
+        self.keys[key] = ttl_seconds
+
+
+def _pipeline(repo, engine):
+    return TranslationPipeline(repo, repo, engine)
+
+
+def test_pipeline_retries_once_and_accepts_a_clean_second_answer():
+    repo = FakeRepo()
+    message = make_message(body="kal 40 MT bhejna hai")
+    engine = SeqEngine([EngineResponse("कल 40 MT भेजना ہے"),           # stray Urdu letters
+                        EngineResponse("कल 40 MT भेजना है")])
+    got = _pipeline(repo, engine).run(message, "hi", ContextSnapshot(summary=None, due_for_refresh=False))
+    assert got.translated_text == "कल 40 MT भेजना है" and len(engine.calls) == 2
+
+
+def test_pipeline_rejects_after_two_bad_answers_and_keeps_no_summary():
+    repo = FakeRepo()
+    message = make_message(body="rate 2850 final")
+    bad = EngineResponse("रेट 2580 फाइनल", updated_summary="should not be saved")   # price changed
+    engine = SeqEngine([bad, bad])
+    with pytest.raises(TranslationRejectedError):
+        _pipeline(repo, engine).run(message, "hi", ContextSnapshot(summary=None, due_for_refresh=True))
+    assert len(engine.calls) == 2
+    assert repo.save_summary_calls == []
+
+
+def test_pipeline_normalizes_digits_and_checks_auto_mode_language():
+    repo = FakeRepo()
+    message = make_message(body="need 40 MT")
+    ok = _pipeline(repo, SeqEngine([EngineResponse("४० MT चाहिए", chosen_target_lang="hi")])).run(
+        message, None, ContextSnapshot(summary=None, due_for_refresh=False))
+    assert ok.translated_text == "40 MT चाहिए"
+    # Auto mode said Hindi but answered in Gujarati script: rejected.
+    with pytest.raises(TranslationRejectedError):
+        _pipeline(repo, SeqEngine([EngineResponse("40 MT જોઈએ છે", chosen_target_lang="hi")])).run(
+            message, None, ContextSnapshot(summary=None, due_for_refresh=False))
+
+
+def test_links_do_not_count_as_untranslated():
+    from app.modules.translation.domain.content import script_problem
+    assert script_problem("रेट यहाँ देखें https://vanijyaa.example.com/rates/today-wheat-indore", "hi") is None
+    assert script_problem("मेल करें sales.team@ankultraders.example.com पर", "hi") is None
+
+
+def test_single_tap_rejection_raises_and_stores_nothing():
+    repo = FakeRepo()
+    message = make_message(body="rate 2850 final")
+    repo.messages[message.id] = message
+    cache = InMemoryTranslationCache()
+    bad = EngineResponse("रेट 2580 फाइनल")
+    uc = TranslateMessageUseCase(
+        repository=repo, context_store=repo, translation_cache=cache,
+        pipeline=_pipeline(repo, SeqEngine([bad, bad])),
+        resolve_target_language=ResolveTargetLanguageUseCase(repo),
+    )
+    with pytest.raises(TranslationRejectedError):
+        uc.execute(reader_id=uuid4(), message_id=message.id, explicit_target_lang="hi")
+    assert repo.saved_translations == {}
+    assert cache.get("rate 2850 final", "hi", "") is None
+
+
+def test_continuous_rejection_leaves_original_and_is_not_retried_for_a_while():
+    repo = FakeRepo()
+    message = make_message(context_type="dm", body="rate 2850 final")
+    repo.messages[message.id] = message
+    receiver = uuid4()
+    repo.conv_prefs[(receiver, message.context_id)] = ReaderConversationPrefs(
+        receiver, message.context_id, "hi", continuous_enabled=True)
+    bad = EngineResponse("रेट 2580 फाइनल")
+    engine, memo = SeqEngine([bad, bad]), FakeMemo()
+    uc = HandleIncomingMessageUseCase(repo, repo, _pipeline(repo, engine), rejection_memo=memo)
+
+    assert uc.execute(receiver, message.id) is None
+    assert repo.saved_translations == {} and len(engine.calls) == 2
+    assert memo.keys == {f"chat:{message.id}:hi": 7200}
+
+    # The recovery job comes back: skipped without another engine call.
+    assert uc.execute(receiver, message.id) is None
+    assert len(engine.calls) == 2
+
+
+def test_translate_endpoint_502s_when_translation_rejected(http_client):
+    class StubUC:
+        def execute(self, reader_id, message_id, explicit_target_lang=None, before_engine_call=None):
+            raise TranslationRejectedError("failed twice")
+
+    _fastapi_app.dependency_overrides[get_translate_message_uc] = lambda: StubUC()
+    resp = http_client.post(f"/chat/messages/{uuid4()}/translate", json={})
+    assert resp.status_code == 502
+    assert "Try again" in resp.json()["detail"]
