@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.modules.deeplink.domain.entities import ShareArticle, SharePost, ShareProfile
 from app.modules.deeplink.domain.interfaces.repository import IDeepLinkRepository
@@ -50,7 +50,17 @@ class DeepLinkRepository(IDeepLinkRepository):
         )
 
     def get_profile(self, profile_id: int) -> ShareProfile | None:
-        profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
+        # joinedload(Profile.business): this is an unauthenticated, public
+        # share endpoint — profile.business below was a lazy-loaded,
+        # avoidable second round trip (Profile.business is a many-to-one,
+        # so folding it into this query's join is cheap, same reasoning as
+        # the profile module's own profile.user eager-load fix).
+        profile = (
+            self.db.query(Profile)
+            .options(joinedload(Profile.business))
+            .filter(Profile.id == profile_id)
+            .first()
+        )
         if not profile:
             return None
         # business is a 1:1 that may legitimately be absent; app_old dereferenced
