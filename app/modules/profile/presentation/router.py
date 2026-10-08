@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from uuid import UUID
 
@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.modules.onboarding.application.use_cases.service import create_session
 from app.modules.onboarding.domain.interfaces.repository import IOnboardingRepository
 from app.modules.onboarding.presentation.dependencies import get_onboarding_repo
+from app.modules.translation.presentation.dependencies import generate_names_for_profile
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.profile.presentation.dependencies import (
@@ -76,6 +77,7 @@ def create_user_api(
 def create_profile_api(
     payload: ProfileCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user_id: UUID = Depends(get_onboarding_user_id),
     repo: IProfileRepository = Depends(_get_repo),
     onboarding_repo: IOnboardingRepository = Depends(get_onboarding_repo),
@@ -88,6 +90,10 @@ def create_profile_api(
         raise HTTPException(status_code=409, detail=str(e))
     except ProfileValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # The name in the other app languages (profile.name_i18n), after the
+    # response — sign-up never waits on the engine.
+    background_tasks.add_task(generate_names_for_profile, result.id)
 
     ip = request.client.host if request.client else None
     # create_session belongs to the onboarding module and takes its repository.
@@ -130,11 +136,16 @@ def get_my_profile_api(
 @router.patch("/")
 def update_profile_api(
     payload: ProfileUpdate,
+    background_tasks: BackgroundTasks,
     cu: CurrentUser = Depends(get_current_user),
     repo: IProfileRepository = Depends(_get_repo),
 ):
     try:
         result = update_profile(repo, cu.user_id, payload)
+        if payload.name is not None or payload.name_i18n is not None:
+            # A changed name dropped its generated spellings; refill them
+            # after the response.
+            background_tasks.add_task(generate_names_for_profile, result.id)
         return ok(result, "Profile updated successfully")
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

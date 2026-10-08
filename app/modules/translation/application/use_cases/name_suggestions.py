@@ -9,7 +9,12 @@ from app.modules.translation.domain.interfaces.content_engine import IContentTra
 from app.modules.translation.domain.interfaces.suggestion_cache import ISuggestionCache
 from app.modules.translation.domain.names import MAX_NAME_LENGTH, script_language
 from app.modules.translation.domain.prompt import LANGUAGE_NAMES, language_name
-from app.modules.translation.domain.transliteration import normalize_spelling, sounds_the_same
+from app.modules.translation.domain.script_convert import to_devanagari
+from app.modules.translation.domain.transliteration import (
+    normalize_spelling,
+    readable_devanagari,
+    sounds_the_same,
+)
 from app.modules.translation.domain.transliteration_prompt import assemble_name_suggestions_prompt
 from app.modules.translation.domain.value_objects import (
     NAME_SUGGESTIONS_CACHE_TTL_SECONDS,
@@ -55,6 +60,12 @@ class NameSuggestionsUseCase:
         if source == target_lang:
             return source, [text]
 
+        # A same-family script (Gujarati, Punjabi, Bengali, Telugu, Kannada,
+        # Malayalam) converts to Hindi exactly, by rule — no engine needed.
+        devanagari = self._devanagari_of(text, source)
+        if target_lang == "hi" and devanagari:
+            return source, [devanagari]
+
         key = f"{target_lang}:{text.lower()}"
         cached = self.cache.get(key)
         if cached is not None:
@@ -79,8 +90,17 @@ class NameSuggestionsUseCase:
         return source, suggestions
 
     @staticmethod
-    def _screen(text: str, source: str, target: str, raw: list) -> list[str]:
-        out: list[str] = []
+    def _devanagari_of(text: str, source: str) -> Optional[str]:
+        """The name in Devanagari if we can get it exactly: as typed (Hindi),
+        or by rule from a same-family script. None otherwise."""
+        if source == "hi":
+            return text
+        converted = normalize_spelling(to_devanagari(text, source))
+        return converted if readable_devanagari(converted) else None
+
+    @classmethod
+    def _screen(cls, text: str, source: str, target: str, raw: list) -> list[str]:
+        devanagari_source = cls._devanagari_of(text, source)
         exact: list[str] = []      # sound the same under the strict rule
         variants: list[str] = []   # only with a final "a" for an unwritten vowel
         for cand in raw:
@@ -91,10 +111,14 @@ class NameSuggestionsUseCase:
                 cand = normalize_spelling(cand) or ""
             if not cand or cand in exact or cand in variants or script_language(cand) != target:
                 continue
-            if {source, target} != {"en", "hi"}:
-                exact.append(cand)
+            if source == "en" and target == "hi":
+                english, devanagari = text, cand
+            elif target == "en" and devanagari_source:
+                # From Hindi, or a same-family script via its exact Devanagari.
+                english, devanagari = cand, devanagari_source
+            else:
+                exact.append(cand)     # no way to check this pair yet; the person decides
                 continue
-            english, devanagari = (text, cand) if source == "en" else (cand, text)
             if sounds_the_same(english, devanagari) is None:
                 exact.append(cand)
             elif sounds_the_same(english, devanagari, final_a_optional=True) is None:

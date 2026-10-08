@@ -190,3 +190,187 @@ def test_suggestions_offer_the_final_a_variant_generation_never_does():
     # A changed vowel is never offered, even in suggestions.
     engine = FakeEngine(["Akshay", "Akshaye", "Akshayi"])
     assert NameSuggestionsUseCase(engine, FakeCache()).execute("अक्षय", "en")[1] == ["Akshay"]
+
+
+# ── Generation (profile.name_i18n backfill) ───────────────────────────────────
+
+from app.modules.translation.application.use_cases.generate_profile_names import (  # noqa: E402
+    GenerateProfileNamesUseCase,
+)
+from app.modules.translation.domain.interfaces.profile_names_repository import ProfileName  # noqa: E402
+from app.modules.translation.domain.names import with_failed  # noqa: E402
+
+
+class GenEngine:
+    """Answers per prompt kind: {"hi": ...} for English names, {"en": ...} for Devanagari."""
+
+    def __init__(self, to_hi=None, to_en=None, fail=False):
+        self.to_hi, self.to_en, self.fail = to_hi or {}, to_en or {}, fail
+        self.prompts = []
+
+    is_configured = True
+
+    def translate_fields(self, prompt):
+        import json
+        self.prompts.append(prompt)
+        if self.fail:
+            raise RuntimeError("down")
+        names = json.loads(prompt.user_content.split("Names:\n", 1)[1])
+        table = self.to_hi if "Devanagari script) so that" in prompt.system_instruction else self.to_en
+        return {k: table[v] for k, v in names.items() if v in table}
+
+
+class MemProfiles:
+    def __init__(self, rows):
+        self.rows = {r.profile_id: r for r in rows}
+        self.saved = {}
+        self.edited_meanwhile = set()
+
+    def profiles_missing_names(self, targets, limit):
+        return list(self.rows.values())[:limit]
+
+    def get(self, profile_id):
+        return self.rows.get(profile_id)
+
+    def save_if_unchanged(self, before, name_i18n):
+        if before.profile_id in self.edited_meanwhile:
+            return False
+        self.saved[before.profile_id] = name_i18n
+        return True
+
+
+def test_generation_english_to_hindi_accepts_and_marks_failures():
+    repo = MemProfiles([
+        ProfileName(1, "Akshay", {"en": "Akshay"}),
+        ProfileName(2, "Kavya", {"en": "Kavya"}),          # engine writes काव्य: ambiguous ending
+        ProfileName(3, "Rahul", None),                      # low confidence
+    ])
+    engine = GenEngine(to_hi={
+        "Akshay": {"hi": "अक्षय", "confidence": 0.95},
+        "Kavya": {"hi": "काव्य", "confidence": 0.95},
+        "Rahul": {"hi": "राहुल", "confidence": 0.6},
+    })
+    stats = GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved[1] == {"en": "Akshay", "hi": "अक्षय", "auto": ["hi"]}
+    assert repo.saved[2] == {"en": "Kavya", "failed": ["hi"]}
+    assert repo.saved[3] == {"en": "Rahul", "failed": ["hi"]}       # seeded with the typed name
+    assert stats["accepted"] == 1 and stats["rejected"] == 2 and len(engine.prompts) == 1
+
+
+def test_generation_hindi_to_english_never_adds_a_final_a():
+    repo = MemProfiles([
+        ProfileName(1, "अक्षय", {"hi": "अक्षय"}),
+        ProfileName(2, "तथागत", {"hi": "तथागत"}),
+    ])
+    engine = GenEngine(to_en={
+        "अक्षय": {"en": "Akshaya", "confidence": 0.95},       # would change the name
+        "तथागत": {"en": "Tathagat", "confidence": 0.9},
+    })
+    GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved[1] == {"hi": "अक्षय", "failed": ["en"]}
+    assert repo.saved[2] == {"hi": "तथागत", "en": "Tathagat", "auto": ["en"]}
+
+
+def test_generation_outage_marks_nothing_and_owner_edits_win():
+    repo = MemProfiles([ProfileName(1, "Akshay", {"en": "Akshay"})])
+    stats = GenerateProfileNamesUseCase(repo, GenEngine(fail=True)).run()
+    assert repo.saved == {} and stats["engine_errors"] == 1          # retried next run
+
+    repo.edited_meanwhile.add(1)
+    engine = GenEngine(to_hi={"Akshay": {"hi": "अक्षय", "confidence": 0.95}})
+    stats = GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved == {} and stats["skipped_changed"] == 1
+
+
+def test_generation_skips_failed_and_marks_unsupported_scripts():
+    # Already failed for this name: not sent again.
+    assert names_to_generate("Rahul", {"en": "Rahul", "failed": ["hi"]}, ("en", "hi")) == []
+    # A new name clears the failure.
+    assert merge_owner_names("Rahul K", None, {"en": "Rahul", "failed": ["hi"]}, name_changed=True) == {"en": "Rahul K"}
+    # Owner typing their own spelling clears it too.
+    got = merge_owner_names("Rahul", {"hi": "राहुल"}, {"en": "Rahul", "failed": ["hi"]}, name_changed=False)
+    assert got == {"en": "Rahul", "hi": "राहुल"}
+    # A script we cannot read at all (Odia is not offered): marked, no engine call.
+    repo = MemProfiles([ProfileName(1, "ଗୌରୀ", None)])
+    engine = GenEngine()
+    GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved[1] == {"failed": ["en", "hi"]} and engine.prompts == []
+
+
+def test_generation_for_one_profile_and_with_generated_clears_failed():
+    repo = MemProfiles([ProfileName(7, "Pooja", None)])
+    engine = GenEngine(to_hi={"Pooja": {"hi": "पूजा", "confidence": 0.95}})
+    GenerateProfileNamesUseCase(repo, engine).for_profile(7)
+    assert repo.saved[7] == {"en": "Pooja", "hi": "पूजा", "auto": ["hi"]}
+    assert with_generated(with_failed({"en": "X"}, "hi"), "hi", "एक्स") == {"en": "X", "hi": "एक्स", "auto": ["hi"]}
+
+
+# ── All Indian scripts: exact conversion and the Tamil/Urdu route ─────────────
+
+from app.modules.translation.domain.script_convert import to_devanagari  # noqa: E402
+
+
+@pytest.mark.parametrize("typed, lang, devanagari", [
+    ("ગૌરી", "gu", "गौरी"), ("હિરેન પટેલ", "gu", "हिरेन पटेल"),
+    ("ਹਰਪ੍ਰੀਤ ਸਿੰਘ", "pa", "हरप्रीत सिंह"),            # Hindi writes Singh as सिंह
+    ("ਸੱਤ", "pa", "सत्त"),                              # addak doubles the consonant
+    ("সৌরভ গাঙ্গুলী", "bn", "सौरभ गांगुली"),           # nasal before consonant -> anusvara
+    ("শরৎ", "bn", "शरत्"),
+    ("వెంకటేష్", "te", "वेंकटेष्"), ("ಕಾರ್ತಿಕ್", "kn", "कार्तिक्"), ("ಅಕ್ಷಯ", "kn", "अक्षय"),
+    ("അർജുൻ", "ml", "अर्जुन्"), ("മേനോൻ", "ml", "मेनोन्"),           # chillu letters
+])
+def test_same_family_scripts_convert_exactly(typed, lang, devanagari):
+    assert to_devanagari(typed, lang) == devanagari
+
+
+def test_conversion_refuses_what_it_cannot_map():
+    assert to_devanagari("கார்த்திக்", "ta") is None        # Tamil: not letter-for-letter
+    assert to_devanagari("ગૌરી", "hi") is None              # wrong source language
+    assert to_devanagari("ગૌ\u0aF1રી", "gu") is None        # a Gujarati sign with no equivalent
+
+
+def test_gujarati_name_gets_exact_hindi_and_checked_english():
+    repo = MemProfiles([ProfileName(1, "ગૌરી", {"gu": "ગૌરી"})])
+    engine = GenEngine(to_en={"गौरी": {"en": "Gauri", "confidence": 0.9}})
+    GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved[1] == {"gu": "ગૌરી", "hi": "गौरी", "en": "Gauri", "auto": ["en", "hi"]}
+    # Only the English went to the engine — the Hindi was converted by rule.
+    assert len(engine.prompts) == 1 and "Devanagari), in ENGLISH" in engine.prompts[0].system_instruction
+
+
+class BothEngine(GenEngine):
+    def __init__(self, answers):
+        super().__init__()
+        self.answers = answers
+
+    def translate_fields(self, prompt):
+        import json
+        self.prompts.append(prompt)
+        names = json.loads(prompt.user_content.split("Names:\n", 1)[1])
+        return {k: self.answers[v] for k, v in names.items() if v in self.answers}
+
+
+def test_tamil_name_accepted_only_when_hindi_and_english_agree():
+    repo = MemProfiles([
+        ProfileName(1, "கார்த்திக்", None),
+        ProfileName(2, "அக்ஷய்", None),
+        ProfileName(3, "முருகன்", None),
+    ])
+    engine = BothEngine({
+        "கார்த்திக்": {"hi": "कार्तिक", "en": "Karthik", "confidence": 0.9},
+        "அக்ஷய்": {"hi": "अक्षय", "en": "Akshaya", "confidence": 0.95},   # pair disagrees
+        "முருகன்": {"hi": "मुरुगन", "en": "Murugan", "confidence": 0.5},   # too unsure
+    })
+    GenerateProfileNamesUseCase(repo, engine).run()
+    assert repo.saved[1] == {"ta": "கார்த்திக்", "hi": "कार्तिक", "en": "Karthik", "auto": ["en", "hi"]}
+    assert repo.saved[2] == {"ta": "அக்ஷய்", "failed": ["en", "hi"]}
+    assert repo.saved[3] == {"ta": "முருகன்", "failed": ["en", "hi"]}
+
+
+def test_suggestions_for_same_family_scripts():
+    engine = FakeEngine(["Gauri", "Gaura"])
+    uc = NameSuggestionsUseCase(engine, FakeCache())
+    # To Hindi: the exact conversion, instantly, no engine call.
+    assert uc.execute("ગૌરી", "hi") == ("gu", ["गौरी"]) and engine.calls == 0
+    # To English: engine candidates checked against that exact Devanagari.
+    assert uc.execute("ગૌરી", "en") == ("gu", ["Gauri"])

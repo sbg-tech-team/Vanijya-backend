@@ -63,3 +63,14 @@ NAME_SUGGESTIONS_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
 # keystroke. Only calls that reach the engine count.
 NAME_SUGGESTIONS_RATE_LIMIT: int = 30
 NAME_SUGGESTIONS_RATE_WINDOW_SECONDS: int = 600
+
+
+# ── Name generation (profile.name_i18n) ───────────────────────────────────────
+# Languages every person's name is kept in. Matches the app languages.
+NAME_TARGET_LANGUAGES: tuple[str, ...] = ("en", "hi")
+# Names per engine call.
+NAME_GENERATION_BATCH: int = 20
+# Names per scheduled run: the backfill drains existing profiles over a few
+# runs instead of a burst of calls that would hit the engine's per-minute
+# limits.
+NAME_GENERATION_PER_RUN: int = 40

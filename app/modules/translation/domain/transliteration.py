@@ -324,3 +324,35 @@ def decide(
     if confidence < ACCEPT_CONFIDENCE:
         return NameVerdict(STATUS_REJECTED, f"confidence {confidence:.2f} below {ACCEPT_CONFIDENCE:.2f}")
     return NameVerdict(STATUS_CONFIDENT, f"sound check passed, confidence {confidence:.2f}")
+
+
+def decide_romanization(
+    devanagari_name: str,
+    english_name: Optional[str],
+    confidence: Optional[float],
+) -> NameVerdict:
+    """The other direction: a name the person typed in Devanagari, written
+    in English letters by the engine. The Devanagari is the owner's own, so
+    there is no ending ambiguity to guard against — only that the English
+    sounds exactly the same (strictly: no final "a" added for an unwritten
+    vowel, which could turn अक्षय into "Akshaya") and the 65% bar."""
+    if not english_name or not english_name.strip():
+        return NameVerdict(STATUS_REJECTED, "no spelling returned")
+    if re.search(r"[^\x00-\x7F]", english_name):
+        return NameVerdict(STATUS_REJECTED, "spelling is not in English letters")
+    mismatch = sounds_the_same(english_name, devanagari_name)
+    if mismatch:
+        return NameVerdict(STATUS_REJECTED, mismatch)
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        return NameVerdict(STATUS_REJECTED, "no confidence reported")
+    if confidence < ACCEPT_CONFIDENCE:
+        return NameVerdict(STATUS_REJECTED, f"confidence {confidence:.2f} below {ACCEPT_CONFIDENCE:.2f}")
+    return NameVerdict(STATUS_CONFIDENT, f"sound check passed, confidence {confidence:.2f}")
+
+
+def readable_devanagari(text: Optional[str]) -> bool:
+    """True if every word is Devanagari the sound check can read — the
+    precondition for storing a Devanagari spelling we did not get from the
+    person themselves."""
+    words = (text or "").split()
+    return bool(words) and all(_devanagari_units(w) for w in words)

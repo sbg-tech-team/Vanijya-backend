@@ -58,6 +58,64 @@ def assemble_name_suggestions_prompt(text: str, target_language_name: str) -> As
     )
 
 
+ROMANIZATION_SYSTEM_INSTRUCTION = (
+    "You write people's names from an Indian B2B trading app, given in Hindi "
+    "(Devanagari), in ENGLISH letters — the way people with that name most "
+    "commonly spell it in English, sounding exactly the same.\n"
+    "Rules:\n"
+    "1. Transliterate, never translate.\n"
+    "2. Never add, drop or change a vowel — above all the LAST vowel of each "
+    "word. Do not add a final 'a' for a vowel that is not written: 'अक्षय' is "
+    "'Akshay', never 'Akshaya'; 'अक्षया' is 'Akshaya'.\n"
+    "3. Keep every word, in the same order, one English word per Hindi word. "
+    "Hindi letter names are initials: 'आर के शर्मा' -> 'R K Sharma'.\n"
+    "4. Use the common spelling ('पूजा' -> 'Pooja', 'सिंह' -> 'Singh').\n"
+    "5. confidence is your probability (0 to 1) that this person spells their "
+    "name exactly this way in English. Lower it when several spellings are "
+    "common ('Gauri' / 'Gouri').\n"
+    "Return ONLY JSON: {id: {\"en\": <name in English letters>, \"confidence\": <0..1>}} "
+    "with exactly the ids given."
+)
+
+
+BOTH_SCRIPTS_SYSTEM_INSTRUCTION = (
+    "You write people's names from an Indian B2B trading app, given in Tamil or "
+    "Urdu script, in BOTH Hindi (Devanagari) and English letters, sounding "
+    "exactly as the person says their name.\n"
+    "Rules:\n"
+    "1. Transliterate, never translate.\n"
+    "2. Use the name's real pronunciation: Tamil writes k/g, t/d, p/b with one "
+    "letter each and Urdu often omits short vowels — choose the sound the name "
+    "actually has ('கார்த்திக்' -> 'कार्तिक' / 'Karthik').\n"
+    "3. The Hindi and the English must sound the same as each other. Never "
+    "add a final 'a' in English for a vowel not written in the Hindi.\n"
+    "4. Keep every word, in the same order.\n"
+    "5. confidence is your probability (0 to 1) that both spellings are how "
+    "this person's name is written. Lower it whenever the original script "
+    "leaves the sound uncertain.\n"
+    "Return ONLY JSON: {id: {\"hi\": <Devanagari>, \"en\": <English letters>, "
+    "\"confidence\": <0..1>}} with exactly the ids given."
+)
+
+
+def assemble_both_scripts_prompt(names: dict[str, str]) -> AssembledPrompt:
+    """`names`: id -> name as written in Tamil or Urdu script."""
+    return AssembledPrompt(
+        system_instruction=BOTH_SCRIPTS_SYSTEM_INSTRUCTION,
+        user_content="Names:\n" + json.dumps(names, ensure_ascii=False),
+        structured_output=True,
+    )
+
+
+def assemble_romanization_prompt(names: dict[str, str]) -> AssembledPrompt:
+    """`names`: id -> name as written in Devanagari."""
+    return AssembledPrompt(
+        system_instruction=ROMANIZATION_SYSTEM_INSTRUCTION,
+        user_content="Names:\n" + json.dumps(names, ensure_ascii=False),
+        structured_output=True,
+    )
+
+
 def assemble_transliteration_prompt(names: dict[str, str]) -> AssembledPrompt:
     """`names`: id -> name as written in English letters."""
     return AssembledPrompt(

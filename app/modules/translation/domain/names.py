@@ -23,6 +23,11 @@ from typing import Optional
 from app.modules.translation.domain.prompt import LANGUAGE_NAMES
 
 AUTO_KEY = "auto"
+# Languages generation tried for the current name and rejected (below the
+# confidence bar, failed the sound check, or ambiguous). Their name stays
+# empty, and they are not retried until the name changes.
+FAILED_KEY = "failed"
+_META_KEYS = (AUTO_KEY, FAILED_KEY)
 MAX_NAME_LENGTH = 100
 
 # Script -> the language a name typed in it is taken to be. Devanagari is
@@ -84,10 +89,13 @@ def merge_owner_names(
     * If the name itself changed, every generated value is dropped — it was
       made from the old name — and generation fills them in again.
     """
-    keep = {} if name_changed or not existing else {
-        k: v for k, v in existing.items() if k != AUTO_KEY and isinstance(v, str)
+    fresh = name_changed or not existing
+    keep = {} if fresh else {
+        k: v for k, v in existing.items() if k not in _META_KEYS and isinstance(v, str)
     }
-    auto = set() if name_changed or not existing else set(existing.get(AUTO_KEY) or [])
+    auto = set() if fresh else set(existing.get(AUTO_KEY) or [])
+    # A failed attempt was for the old name; a new name gets a fresh try.
+    failed = set() if fresh else set(existing.get(FAILED_KEY) or [])
 
     src = script_language(name)
     if src:
@@ -96,22 +104,30 @@ def merge_owner_names(
     for lang, value in (provided or {}).items():
         keep[lang] = value
         auto.discard(lang)
+        failed.discard(lang)
 
     out: dict = dict(keep)
     auto &= set(keep)
+    failed -= set(keep)
     if auto:
         out[AUTO_KEY] = sorted(auto)
+    if failed:
+        out[FAILED_KEY] = sorted(failed)
     return out
 
 
 def names_to_generate(name: str, name_i18n: Optional[dict], targets: tuple[str, ...]) -> list[str]:
-    """Target languages still missing for this name. A stored entry made from
-    an older version of the name (its source-language value no longer equals
-    `name`) means everything generated is stale."""
+    """Target languages still missing for this name — skipping those already
+    tried and rejected for this same name ("failed"), so a name that cannot be
+    converted confidently is not re-sent to the engine on every run. A stored
+    entry made from an older version of the name (its source-language value
+    no longer equals `name`) is stale: everything is tried again."""
     src = script_language(name)
     current = name_i18n or {}
     stale = src is not None and current.get(src) not in (None, name)
-    return [t for t in targets if t != src and (stale or not current.get(t))]
+    failed = set() if stale else set(current.get(FAILED_KEY) or [])
+    return [t for t in targets
+            if t != src and t not in failed and (stale or not current.get(t))]
 
 
 def with_generated(name_i18n: Optional[dict], lang: str, value: str) -> dict:
@@ -121,6 +137,20 @@ def with_generated(name_i18n: Optional[dict], lang: str, value: str) -> dict:
         return out
     out[lang] = value
     out[AUTO_KEY] = sorted(set(out.get(AUTO_KEY) or []) | {lang})
+    if lang in (out.get(FAILED_KEY) or []):
+        rest = sorted(set(out[FAILED_KEY]) - {lang})
+        if rest:
+            out[FAILED_KEY] = rest
+        else:
+            del out[FAILED_KEY]
+    return out
+
+
+def with_failed(name_i18n: Optional[dict], lang: str) -> dict:
+    """Record that generating `lang` was tried and rejected for this name, so
+    it is not retried until the name changes or its owner types a spelling."""
+    out = dict(name_i18n or {})
+    out[FAILED_KEY] = sorted(set(out.get(FAILED_KEY) or []) | {lang})
     return out
 
 
