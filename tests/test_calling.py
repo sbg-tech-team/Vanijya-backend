@@ -186,6 +186,9 @@ class FakeRepo:
     def get_user_snaps(self, uids):
         return {u: self.get_user_snap(u) for u in uids if u in self.names}
 
+    def get_app_languages(self, uids):
+        return {u: lang for u, lang in getattr(self, "app_langs", {}).items() if u in uids}
+
     def get_group_snap(self, gid):
         from app.modules.calling.domain.entities import GroupSnap
         return GroupSnap(group_id=gid, name="Traders") if gid in self.members else None
@@ -198,6 +201,9 @@ class FakeRepo:
 
     def either_blocked(self, a, b):
         return frozenset((a, b)) in self.blocks
+
+    def either_blocked_many(self, user_id, other_ids):
+        return {uid for uid in other_ids if frozenset((user_id, uid)) in self.blocks}
 
     def get_or_create_dm_id(self, a, b):
         return uuid4()
@@ -222,6 +228,12 @@ class FakeRepo:
 
     def get_call(self, call_id):
         return self.calls.get(call_id)
+
+    def get_call_heartbeat_state(self, call_id, user_id):
+        c = self.calls.get(call_id)
+        if c is None:
+            return None
+        return c.status, c.participant(user_id) is not None
 
     def busy_call_id(self, uid):
         horizon = datetime.now(timezone.utc) - timedelta(seconds=MAX_CALL_DURATION_SECONDS)
@@ -531,13 +543,17 @@ def test_provider_told_to_end_on_hangup():
 
 
 def test_duration_cap_sent_to_provider_at_creation():
-    """The only guardrail that survives our backend being down."""
-    prov = FakeProvider()
+    """The only guardrail that survives our backend being down.
+
+    Provisioning is deferred (fired by the router via BackgroundTasks), so at
+    this layer we assert on the declared ProviderCall rather than on the
+    provider having been invoked synchronously.
+    """
     repo = FakeRepo()
-    _start(repo, provider=prov)
-    assert prov.provisioned, "call was never provisioned with a duration cap"
-    _, cap = prov.provisioned[0]
-    assert cap == MAX_CALL_DURATION_SECONDS
+    d = _start(repo)
+    pc = next((p for p in d.provider_calls if p.method == "provision_call"), None)
+    assert pc is not None, "call was never scheduled for provisioning with a duration cap"
+    assert pc.kwargs["max_duration_seconds"] == MAX_CALL_DURATION_SECONDS
 
 
 def test_call_still_works_when_provisioning_fails():
@@ -914,10 +930,15 @@ def test_group_accept_rechecks_blocks():
 
 
 def test_provisioning_happens_after_the_row_exists():
-    """Reordered so a failed DB write cannot orphan a session on the provider."""
-    prov, repo = FakeProvider(), FakeRepo()
-    d = _start(repo, provider=prov)
-    assert prov.provisioned, "call was never provisioned"
+    """Reordered so a failed DB write cannot orphan a session on the provider.
+
+    Provisioning itself is deferred to a background task, but the call row
+    must already be committed before that ProviderCall is even scheduled.
+    """
+    repo = FakeRepo()
+    d = _start(repo)
+    assert any(p.method == "provision_call" for p in d.provider_calls), \
+        "call was never scheduled for provisioning"
     assert d.result.call_id in repo.calls, "provisioned without a persisted call row"
 
 
