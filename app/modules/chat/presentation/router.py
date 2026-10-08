@@ -46,6 +46,7 @@ import redis as redis_lib
 
 from app.core import rate_limiter
 from app.core.redis_client import get_redis
+from app.core.request_language import no_viewer_language
 from app.modules.translation.domain.value_objects import (
     TRANSLATE_RATE_LIMIT,
     TRANSLATE_RATE_WINDOW_SECONDS,
@@ -56,6 +57,7 @@ from app.modules.translation.domain.exceptions import (
     TranslationEngineUnavailableError,
 )
 from app.modules.translation.domain.exceptions import MessageNotFoundError as TranslationMessageNotFoundError
+from app.modules.translation.domain.exceptions import TranslationRejectedError
 from app.modules.translation.presentation.dependencies import (
     get_handle_incoming_message_uc,
     get_toggle_continuous_uc,
@@ -120,7 +122,7 @@ def _translate_incoming_for_receiver(receiver_id: UUID, message_id: UUID) -> Non
     try:
         repo = get_translation_repo(db)
         pipeline = get_translation_pipeline(repo)
-        uc = get_handle_incoming_message_uc(repo, pipeline)
+        uc = get_handle_incoming_message_uc(repo, pipeline, get_redis())
         try:
             result = uc.execute(receiver_id, message_id)
         except TranslationEngineUnavailableError:
@@ -239,20 +241,23 @@ async def send_message(
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_send_message_uc),
 ):
-    msg, receiver_id = uc.execute(
-        sender_id=user_id,
-        conv_id=conv_id,
-        body=body.body,
-        message_type=body.message_type,
-        media_urls=body.media_urls,
-        media_metadata=body.media_metadata,
-        location_lat=body.location_lat,
-        location_lon=body.location_lon,
-        reply_to_id=body.reply_to_id,
-        deal_id=body.deal_id,
-        personal_deal_id=body.personal_deal_id,
-        post_id=body.post_id,
-    )
+    # Built once, returned to the sender AND pushed to the other side: keep
+    # names as typed, not in the sender's app language.
+    with no_viewer_language():
+        msg, receiver_id = uc.execute(
+            sender_id=user_id,
+            conv_id=conv_id,
+            body=body.body,
+            message_type=body.message_type,
+            media_urls=body.media_urls,
+            media_metadata=body.media_metadata,
+            location_lat=body.location_lat,
+            location_lon=body.location_lon,
+            reply_to_id=body.reply_to_id,
+            deal_id=body.deal_id,
+            personal_deal_id=body.personal_deal_id,
+            post_id=body.post_id,
+        )
     background_tasks.add_task(emit_to_user, receiver_id, "new_message", jsonable_encoder(msg))
     background_tasks.add_task(_translate_incoming_for_receiver, receiver_id, msg.id)
     return msg
@@ -297,6 +302,11 @@ def translate_message(
         raise HTTPException(status_code=403, detail=str(e))
     except TranslationEngineUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except TranslationRejectedError:
+        # The engine answered, twice, with something the checks would not
+        # let through. Nothing was stored; tapping again may succeed.
+        raise HTTPException(status_code=502,
+                            detail="Couldn't translate this message reliably. Try again.")
 
 
 @router.get("/conversations/{conv_id}/continuous-translation", response_model=ToggleContinuousTranslationResponse)
@@ -359,20 +369,23 @@ async def create_personal_deal(
     uc=Depends(get_personal_deal_uc),
     peer_uc=Depends(get_conversation_peer_uc),
 ):
-    msg = uc.execute(
-        sender_id=user_id,
-        conv_id=conv_id,
-        commodity_id=body.commodity_id,
-        title=body.title,
-        caption=body.caption,
-        grain_type=body.grain_type,
-        grain_size=body.grain_size,
-        commodity_quantity=body.commodity_quantity,
-        quantity_unit=body.quantity_unit,
-        commodity_price=body.commodity_price,
-        price_type=body.price_type,
-        image_urls=body.image_urls,
-    )
+    # Built once, returned to the sender AND pushed to the other side: keep
+    # names as typed, not in the sender's app language.
+    with no_viewer_language():
+        msg = uc.execute(
+            sender_id=user_id,
+            conv_id=conv_id,
+            commodity_id=body.commodity_id,
+            title=body.title,
+            caption=body.caption,
+            grain_type=body.grain_type,
+            grain_size=body.grain_size,
+            commodity_quantity=body.commodity_quantity,
+            quantity_unit=body.quantity_unit,
+            commodity_price=body.commodity_price,
+            price_type=body.price_type,
+            image_urls=body.image_urls,
+        )
     peer_id = peer_uc.execute(conv_id, user_id)
     if peer_id:
         background_tasks.add_task(emit_to_user, peer_id, "new_message", jsonable_encoder(msg))
@@ -461,19 +474,22 @@ async def send_group_message(
     user_id: UUID = Depends(get_current_user_id),
     uc=Depends(get_group_message_uc),
 ):
-    msg = uc.execute(
-        sender_id=user_id,
-        group_id=group_id,
-        body=body.body,
-        message_type=body.message_type,
-        media_urls=body.media_urls,
-        media_metadata=body.media_metadata,
-        location_lat=body.location_lat,
-        location_lon=body.location_lon,
-        reply_to_id=body.reply_to_id,
-        deal_id=body.deal_id,
-        post_id=body.post_id,
-    )
+    # Built once, returned to the sender AND pushed to the other side: keep
+    # names as typed, not in the sender's app language.
+    with no_viewer_language():
+        msg = uc.execute(
+            sender_id=user_id,
+            group_id=group_id,
+            body=body.body,
+            message_type=body.message_type,
+            media_urls=body.media_urls,
+            media_metadata=body.media_metadata,
+            location_lat=body.location_lat,
+            location_lon=body.location_lon,
+            reply_to_id=body.reply_to_id,
+            deal_id=body.deal_id,
+            post_id=body.post_id,
+        )
     background_tasks.add_task(emit_to_group, group_id, "new_group_message", jsonable_encoder(msg))
     return msg
 

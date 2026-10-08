@@ -11,6 +11,7 @@ from app.modules.profile.domain.exceptions import ProfileNotFoundError
 from app.modules.post.application.use_cases.get_post import batch_feed_cards
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.profile.application.use_cases.create_profile import _to_response
 
 
@@ -66,7 +67,8 @@ def get_profile_by_id(
     return ProfilePublicResponse(
         id=profile.id,
         user_id=profile.users_id,
-        name=profile.name,
+        # Someone else's profile: their name in the viewer's app language.
+        name=name_for_viewer(profile.name, profile.name_i18n),
         role_id=profile.role_id,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
@@ -113,7 +115,8 @@ def get_profile_by_user_id(
     return ProfilePublicResponse(
         id=profile.id,
         user_id=profile.users_id,
-        name=profile.name,
+        # Someone else's profile: their name in the viewer's app language.
+        name=name_for_viewer(profile.name, profile.name_i18n),
         role_id=profile.role_id,
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,

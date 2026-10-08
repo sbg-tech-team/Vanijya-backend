@@ -28,11 +28,18 @@ from app.modules.onboarding.application.use_cases.service import (
 from app.modules.onboarding.domain.exceptions import OnboardingDomainError
 from app.modules.onboarding.domain.interfaces.firebase import IFirebaseVerifier
 from app.modules.onboarding.domain.interfaces.repository import IOnboardingRepository
+from app.dependencies import get_current_or_onboarding_user_id
+from app.modules.onboarding.domain.exceptions import UserNotCreatedError
+from app.modules.onboarding.domain.value_objects import APP_LANGUAGES
 from app.modules.onboarding.presentation.dependencies import (
+    get_app_language_uc,
     get_firebase_verifier,
     get_onboarding_repo,
 )
+from app.modules.translation.domain.prompt import LANGUAGE_NAMES
 from app.modules.onboarding.presentation.schemas import (
+    AppLanguageRequest,
+    AppLanguageResponse,
     FirebaseVerifyRequest,
     LogoutRequest,
     RefreshTokenRequest,
@@ -227,3 +234,43 @@ def logout(
         background_tasks.add_task(_unregister)
 
     return ok(None, "Logged out successfully.")
+
+
+# ---------------------------------------------------------------------------
+# App language — chosen during onboarding, changeable later from settings
+# ---------------------------------------------------------------------------
+
+_SUPPORTED_APP_LANGUAGES = {code: LANGUAGE_NAMES[code] for code in APP_LANGUAGES}
+
+
+@router.get("/app-language")
+def get_app_language(
+    user_id=Depends(get_current_or_onboarding_user_id),
+    uc=Depends(get_app_language_uc),
+):
+    """The language the user runs the app in. Accepts the onboarding token
+    (once POST /profile/user has run) or a normal access token."""
+    try:
+        lang = uc.get(user_id)
+    except UserNotCreatedError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ok(AppLanguageResponse(app_language=lang, supported=_SUPPORTED_APP_LANGUAGES).model_dump(),
+              "App language fetched")
+
+
+@router.put("/app-language")
+def set_app_language(
+    body: AppLanguageRequest,
+    user_id=Depends(get_current_or_onboarding_user_id),
+    uc=Depends(get_app_language_uc),
+):
+    """Set the app language: "en" or "hi". Accepts the onboarding token (once
+    POST /profile/user has run) or a normal access token."""
+    try:
+        lang = uc.set(user_id, body.app_language.strip().lower())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except UserNotCreatedError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ok(AppLanguageResponse(app_language=lang, supported=_SUPPORTED_APP_LANGUAGES).model_dump(),
+              "App language updated")

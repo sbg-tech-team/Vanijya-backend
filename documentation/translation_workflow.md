@@ -268,7 +268,7 @@ Checks apply **per field**. A rejected field is not stored, the good ones are. T
 | Freshness | Messages can't be edited; stored once | Same | Per-field source hash; edits re-translate |
 | Retrieval | Endpoint (+ LRU); DM list if continuous on | Message list (1 query per page) + socket push | Endpoint only (1 query per content type) |
 | Duplicate protection | In-process LRU + DB upsert | DB upsert | Redis lock per (item, language) + DB |
-| Output checks | None beyond parsing | Same | Shape, script, numbers |
+| Output checks | Script, numbers; one retry, then 502 | Script, numbers; one retry, then left untranslated (skipped for 2 h) | Shape, script, numbers; one retry alone |
 | Rate limit | 60 / user / hour, engine calls only | None (driven by incoming messages) | 60 / user / hour, engine calls only |
 | Deleted with | Message (hard delete; soft-deleted messages are just never served) | Same | The item's row |
 
@@ -303,4 +303,3 @@ Checks apply **per field**. A rejected field is not stored, the good ones are. T
 - **Names outside post text are not transliterated:** author, business and group names in feeds. Planned as a separate feature.
 - Group deals and personal deals are not translatable yet.
 - Continuous translation does not exist for groups.
-- Chat translations have no script or number checks yet. Content has both, and they could be applied to chat the same way.

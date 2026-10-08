@@ -38,6 +38,7 @@ from app.recommendation.global_session import blend_all_dimensions
 from app.recommendation.global_taste import read_global_taste_weights_bulk
 from app.shared.utils.time_decay import freshness_boost
 from app.modules.post.domain.exceptions import ProfileNotFoundError
+from app.modules.translation.domain.names import name_for_viewer
 
 log = logging.getLogger(__name__)
 
@@ -365,7 +366,7 @@ def _build_feed_cards(
             is_saved=post.id in saved_ids,
             like_count=post.like_count,
             comment_count=post.comment_count,
-            author_name=author.name if author else "",
+            author_name=name_for_viewer(author.name, author.name_i18n) if author else "",
             author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
             author_user_id=str(author.users_id) if author else "",
             author_company=biz.business_name if biz else None,

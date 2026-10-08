@@ -18,6 +18,7 @@ class UserSnap:
     profile_id: int
     name: str
     avatar_url: str | None = None
+    name_i18n: dict | None = None     # the name per language (profile.name_i18n)
 
 
 @dataclass
@@ -37,6 +38,7 @@ class ParticipantEntity:
     state: str           # ParticipantState
     joined_at: datetime | None = None
     left_at: datetime | None = None
+    name_i18n: dict | None = None     # the name per language (profile.name_i18n)
 
 
 @dataclass

@@ -13,6 +13,7 @@ from app.modules.profile.domain.exceptions import (
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
 from app.modules.profile.application.use_cases.rebuild_embedding import _upsert_user_embedding
 from app.modules.profile.application.use_cases.create_profile import _to_response
+from app.modules.translation.domain.names import clean_owner_names, merge_owner_names
 
 _BUSINESS_FIELDS = {"business_name", "city", "state", "latitude", "longitude"}
 _EMBEDDING_FIELDS = {"commodities", "latitude", "longitude", "quantity_min", "quantity_max"}
@@ -89,8 +90,25 @@ def update_profile(repo: IProfileRepository, user_id: UUID, payload: ProfileUpda
     # "interests" is accepted (if an old client still sends it) and ignored.
     scalar_fields = {
         k: v for k, v in data.items()
-        if k not in _BUSINESS_FIELDS and k not in ("commodities", "interests")
+        if k not in _BUSINESS_FIELDS and k not in ("commodities", "interests", "name_i18n")
     }
+
+    # The name per language. Changing the name drops every generated
+    # spelling (it was made from the old name); spellings the person sends
+    # are stored as theirs.
+    if "name" in data or "name_i18n" in data:
+        new_name = (data.get("name") or profile.name).strip()
+        try:
+            owner_names = clean_owner_names(data.get("name_i18n"))
+        except ValueError as e:
+            raise ProfileValidationError(str(e))
+        if "name" in data:
+            scalar_fields["name"] = new_name
+        scalar_fields["name_i18n"] = merge_owner_names(
+            new_name, owner_names,
+            existing=getattr(profile, "name_i18n", None),
+            name_changed=new_name != profile.name,
+        )
     business_fields = {k: v for k, v in data.items() if k in _BUSINESS_FIELDS}
 
     commodity_to_add: set[int] = set()

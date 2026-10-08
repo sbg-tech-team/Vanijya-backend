@@ -88,6 +88,7 @@ class ProfileEntity:
     avatar_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    name_i18n: Optional[dict] = None
 
     # Relationships
     user: Optional["UserEntity"] = None

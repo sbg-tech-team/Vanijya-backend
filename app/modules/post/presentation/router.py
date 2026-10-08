@@ -13,6 +13,7 @@ from app.dependencies import get_current_profile_id, get_current_user_id
 from app.modules.post.presentation.schemas import PostCreate, PostUpdate, CommentCreate, FollowingFeedResponse, CommentFeedResponse, MyPostFeedResponse, SavedPostFeedResponse, PostSendRequest, PostSendResponse
 from app.modules.post.application import service
 from app.shared.utils.response import ok
+from app.core.request_language import no_viewer_language
 
 router = APIRouter(prefix="/posts", tags=["Posts"])
 
@@ -244,7 +245,10 @@ async def send_post_api(
     """
     from app.core.realtime import emit_to_user, emit_to_group
     try:
-        result = service.send_post(repo, deliver_uc, post_id, profile_id, user_id, payload, background_tasks)
+        # Delivered into other people's chats: names as typed, not in the
+        # sender's app language.
+        with no_viewer_language():
+            result = service.send_post(repo, deliver_uc, post_id, profile_id, user_id, payload, background_tasks)
     except service.PostNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

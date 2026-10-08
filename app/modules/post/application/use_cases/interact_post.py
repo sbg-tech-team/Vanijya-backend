@@ -4,6 +4,7 @@ from typing import Protocol
 
 from app.modules.post.data.models import CATEGORY_DEAL, Post, PostLike, PostComment, PostShare, PostSave, PostDealDetails
 from app.modules.post.domain.interfaces.repository import IPostRepository
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.post.domain.exceptions import (
     PostNotFoundError, PostForbiddenError,
     CommentNotFoundError, CommentForbiddenError, CommentsDisabledError,
@@ -142,7 +143,7 @@ def add_comment(
         content=comment.content,
         commenter_profile_id=comment.profile_id,
         commenter_user_id=str(commenter.users_id) if commenter else "",
-        commenter_name=commenter.name if commenter else "",
+        commenter_name=name_for_viewer(commenter.name, commenter.name_i18n) if commenter else "",
         commenter_role=_ROLE_NAMES.get(commenter.role_id, "Trader") if commenter else "Trader",
         commenter_company=commenter.business.business_name if commenter and commenter.business else None,
         commenter_avatar_url=commenter.avatar_url if commenter else None,
@@ -178,7 +179,7 @@ def get_comments(
             content=c.content,
             commenter_profile_id=c.profile_id,
             commenter_user_id=str(commenter.users_id) if commenter else "",
-            commenter_name=commenter.name if commenter else "",
+            commenter_name=name_for_viewer(commenter.name, commenter.name_i18n) if commenter else "",
             commenter_role=_ROLE_NAMES.get(commenter.role_id, "Trader") if commenter else "Trader",
             commenter_company=biz.business_name if biz else None,
             commenter_avatar_url=commenter.avatar_url if commenter else None,

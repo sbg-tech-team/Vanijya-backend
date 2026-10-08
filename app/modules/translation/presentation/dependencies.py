@@ -10,6 +10,8 @@ from app.core.redis_client import get_redis
 from app.dependencies import get_db
 from app.modules.translation.application.pipeline import TranslationPipeline
 from app.modules.translation.application.use_cases.handle_incoming_message import HandleIncomingMessageUseCase
+from app.modules.translation.application.use_cases.generate_profile_names import GenerateProfileNamesUseCase
+from app.modules.translation.application.use_cases.name_suggestions import NameSuggestionsUseCase
 from app.modules.translation.application.use_cases.resolve_content_language import ResolveContentLanguageUseCase
 from app.modules.translation.application.use_cases.resolve_target_language import ResolveTargetLanguageUseCase
 from app.modules.translation.application.use_cases.toggle_continuous import ToggleContinuousTranslationUseCase
@@ -19,7 +21,10 @@ from app.modules.translation.application.use_cases.translation_preference import
 from app.modules.translation.data.adapters.gemini_engine import GeminiTranslationEngine
 from app.modules.translation.data.adapters.inmemory_cache import InMemoryTranslationCache
 from app.modules.translation.data.adapters.redis_lock import RedisTranslationLock
+from app.modules.translation.data.adapters.redis_rejection_memo import RedisRejectionMemo
+from app.modules.translation.data.adapters.redis_suggestion_cache import RedisSuggestionCache
 from app.modules.translation.data.content_repository import ContentTranslationRepository
+from app.modules.translation.data.profile_names_repository import ProfileNamesRepository
 from app.modules.translation.data.repository import TranslationRepository
 
 # Process-lifetime singletons — must not be recreated per request, or they'd
@@ -65,8 +70,12 @@ def get_translate_message_uc(
 def get_handle_incoming_message_uc(
     repo: TranslationRepository = Depends(get_translation_repo),
     pipeline: TranslationPipeline = Depends(get_translation_pipeline),
+    rc: redis.Redis = Depends(get_redis),
 ) -> HandleIncomingMessageUseCase:
-    return HandleIncomingMessageUseCase(repository=repo, context_store=repo, pipeline=pipeline)
+    """Also called directly (not through Depends) by chat's background task,
+    which must then pass `rc` itself."""
+    return HandleIncomingMessageUseCase(repository=repo, context_store=repo, pipeline=pipeline,
+                                        rejection_memo=RedisRejectionMemo(rc))
 
 
 def get_toggle_continuous_uc(
@@ -81,6 +90,10 @@ def get_toggle_continuous_uc(
 
 def get_content_translation_repo(db: Session = Depends(get_db)) -> ContentTranslationRepository:
     return ContentTranslationRepository(db)
+
+
+def get_name_suggestions_uc(rc: redis.Redis = Depends(get_redis)) -> NameSuggestionsUseCase:
+    return NameSuggestionsUseCase(engine=_engine, cache=RedisSuggestionCache(rc))
 
 
 def get_translate_content_uc(
@@ -121,7 +134,44 @@ def run_translation_retry_job() -> dict:
         uc = HandleIncomingMessageUseCase(
             repository=repo, context_store=repo,
             pipeline=TranslationPipeline(repository=repo, context_store=repo, engine=_engine),
+            rejection_memo=RedisRejectionMemo(get_redis()),
         )
         return run_translation_retry(repo, uc.execute)
+    finally:
+        db.close()
+
+
+# ── Name generation (profile.name_i18n) ──────────────────────────────────────
+# Runs outside a request — scheduled, or as a BackgroundTask after a profile
+# is created/edited — so each owns its session.
+
+def _profile_names_uc(db: Session) -> GenerateProfileNamesUseCase:
+    return GenerateProfileNamesUseCase(ProfileNamesRepository(db), _engine)
+
+
+def run_profile_names_job() -> dict:
+    """Scheduled: fill in missing name languages, backfilling existing profiles."""
+    from app.core.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return _profile_names_uc(db).run()
+    finally:
+        db.close()
+
+
+def generate_names_for_profile(profile_id: int) -> None:
+    """BackgroundTask after a profile is created or its name edited. Never
+    raises: a failure here must not surface anywhere — the scheduled job
+    picks the profile up again."""
+    import logging
+
+    from app.core.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        _profile_names_uc(db).for_profile(profile_id)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("name generation for profile %s failed: %s", profile_id, exc)
     finally:
         db.close()

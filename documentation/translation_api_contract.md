@@ -266,6 +266,7 @@ For messages **the user received**, in DMs **and** groups. Never call it for the
 | 403 | User is not in that DM / group | `{"detail": "You do not have access to this message."}` |
 | 404 | No such message, deleted, or no text | `{"detail": "Message not found or has no text body."}` |
 | 429 | **60 per user per hour** (separate from the content limit). Only translations that reach the engine count; a 403, a 404 or a repeat served from cache never does | `{"detail": "Too many requests. Retry after 3600 seconds."}` |
+| 502 | The translation failed the quality checks twice (wrong script, a number changed). Nothing was stored | `{"detail": "Couldn't translate this message reliably. Try again."}` |
 | 503 | Engine not configured or unreachable | `{"detail": ...}` |
 
 The translation is stored. In a DM with continuous mode on it also comes back on `GET .../messages` (§6.3). **In groups, keep the result client-side**, since group message lists never carry translations.
@@ -306,6 +307,8 @@ Every incoming message in one DM is translated for this user automatically.
 ```
 
 Show `translated_text` when present, else `body`. This covers scroll-back, reopening a thread, reconnecting after a dropped socket, and messages that arrived while offline. `GET /chat/groups/{group_id}/messages` always has these as `null`.
+
+A message whose translation fails the quality checks stays untranslated: `translated_text` is `null` and no socket event is sent. It is not retried for 2 hours.
 
 ### 6.4 Socket event `message_translated`
 
@@ -361,7 +364,7 @@ Re-sending items that are already `ready` is harmless (they come back `cached: t
 2. Toggle on: `POST .../continuous-translation {enabled: true, target_lang: <reading language>}`. Toggle off: `{enabled: false}`.
 3. Render each message with `translated_text ?? body`.
 4. On `message_translated`, update that bubble if it's on screen.
-5. Long-press → Translate on a received message (DM or group): `POST /chat/messages/{id}/translate {target_lang: <reading language>}`. In groups, keep the result in memory.
+5. Long-press → Translate on a received message (DM or group): `POST /chat/messages/{id}/translate {target_lang: <reading language>}`. In groups, keep the result in memory. On `502`, show the original + "Couldn't translate. Tap to retry".
 
 ---
 

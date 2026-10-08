@@ -46,6 +46,19 @@ class OnboardingRepository(IOnboardingRepository):
         row = self.db.query(Profile.id).filter(Profile.users_id == user_id).first()
         return row[0] if row else None
 
+    def get_app_language(self, user_id: UUID) -> str | None:
+        row = self.db.query(User.app_language).filter(User.id == user_id).first()
+        return row[0] if row else None
+
+    def set_app_language(self, user_id: UUID, app_language: str) -> bool:
+        updated = (
+            self.db.query(User)
+            .filter(User.id == user_id)
+            .update({User.app_language: app_language}, synchronize_session=False)
+        )
+        self.db.commit()
+        return updated > 0
+
     def find_profile_by_name(self, name: str) -> DevProfileRef | None:
         profile = self.db.query(Profile).filter(Profile.name.ilike(name)).first()
         if profile is None:

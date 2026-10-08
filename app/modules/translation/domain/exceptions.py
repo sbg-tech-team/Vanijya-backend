@@ -30,3 +30,10 @@ class LanguageNotChosenError(TranslationError):
     language — nothing to translate into. The client prompts the reader to
     choose one (PUT /translate/preference) rather than the server guessing."""
     pass
+
+
+class TranslationRejectedError(TranslationError):
+    """The engine's output failed a quality check (wrong script, a word
+    mixing scripts, a number lost or changed) twice in a row. Nothing was
+    stored. Single tap -> 502; continuous mode simply leaves the original."""
+    pass

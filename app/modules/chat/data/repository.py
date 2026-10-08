@@ -15,6 +15,7 @@ from app.core.database.session import SessionLocal
 from app.modules.chat.data.models import ChatAttachment, Conversation, ConversationMember, Message
 from app.modules.chat.domain.interfaces.repository import IChatRepository
 from app.modules.chat.domain.value_objects import ConversationStatus
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.translation.data.models import (
     MessageTranslation,
     ReaderConversationTranslationPref,
@@ -52,7 +53,7 @@ def _profile_snap(profile: Profile) -> UserSnap:
     return UserSnap(
         user_id=profile.users_id,
         profile_id=profile.id,
-        name=profile.name,
+        name=name_for_viewer(profile.name, profile.name_i18n),
         is_user_verified=profile.is_user_verified,
         is_business_verified=profile.is_business_verified,
         avatar_url=profile.avatar_url,
@@ -88,11 +89,11 @@ def _group_last_message(db: Session, group_id: UUID) -> Optional[GroupLastMessag
     )
     if row is None:
         return None
-    sender = db.query(Profile.name).filter(Profile.users_id == row.sender_id).first()
+    sender = db.query(Profile.name, Profile.name_i18n).filter(Profile.users_id == row.sender_id).first()
     return GroupLastMessage(
         id=row.id,
         sender_id=row.sender_id,
-        sender_name=sender[0] if sender else "Unknown",
+        sender_name=name_for_viewer(sender[0], sender[1]) if sender else "Unknown",
         body=row.body,
         message_type=row.message_type,
         sent_at=row.sent_at,
@@ -261,8 +262,8 @@ def _group_last_messages_batch(db: Session, group_ids: list[UUID]) -> dict[UUID,
     )
     sender_ids = {row.sender_id for row in rows}
     sender_names = {
-        p.users_id: p.name
-        for p in db.query(Profile.users_id, Profile.name).filter(Profile.users_id.in_(sender_ids))
+        p.users_id: name_for_viewer(p.name, p.name_i18n)
+        for p in db.query(Profile.users_id, Profile.name, Profile.name_i18n).filter(Profile.users_id.in_(sender_ids))
     }
     return {
         row.context_id: GroupLastMessage(
@@ -302,7 +303,7 @@ def _post_snap_from_row(post, author) -> PostSnap:
         caption=post.caption,
         category_id=post.category_id,
         category_name=CATEGORY_NAMES.get(post.category_id, ""),
-        author_name=author.name if author else "",
+        author_name=name_for_viewer(author.name, author.name_i18n) if author else "",
     )
 
 
@@ -721,6 +722,7 @@ class ChatRepository(IChatRepository):
                 cm_receiver.user_id.label("receiver_id"),
                 Profile.id.label("profile_id"),
                 Profile.name,
+                Profile.name_i18n,
                 Profile.is_user_verified,
                 Profile.is_business_verified,
                 Profile.avatar_url,
@@ -741,7 +743,7 @@ class ChatRepository(IChatRepository):
             sender_snap=UserSnap(
                 user_id=sender_id,
                 profile_id=row.profile_id,
-                name=row.name,
+                name=name_for_viewer(row.name, row.name_i18n),
                 is_user_verified=row.is_user_verified,
                 is_business_verified=row.is_business_verified,
                 avatar_url=row.avatar_url,
@@ -822,6 +824,7 @@ class ChatRepository(IChatRepository):
                 cm_other.user_id.label("other_user_id"),
                 Profile.id.label("profile_id"),
                 Profile.name,
+                Profile.name_i18n,
                 Profile.avatar_url,
             )
             .join(cm_me,   and_(cm_me.conversation_id   == Conversation.id, cm_me.user_id   == user_id))
@@ -856,7 +859,7 @@ class ChatRepository(IChatRepository):
                     conversation_id=row.conv_id,
                     profile_id=row.profile_id,
                     user_id=row.other_user_id,
-                    name=row.name,
+                    name=name_for_viewer(row.name, row.name_i18n),
                     avatar_url=row.avatar_url,
                     last_message_at=row.last_message_at,
                 )

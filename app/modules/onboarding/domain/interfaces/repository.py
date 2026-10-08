@@ -19,6 +19,16 @@ class IOnboardingRepository(ABC):
     def get_profile_id_for_user(self, user_id: UUID) -> int | None: ...
 
     @abstractmethod
+    def get_app_language(self, user_id: UUID) -> str | None:
+        """The user's app language, or None if the user row does not exist yet."""
+        ...
+
+    @abstractmethod
+    def set_app_language(self, user_id: UUID, app_language: str) -> bool:
+        """Store it. False if the user row does not exist yet."""
+        ...
+
+    @abstractmethod
     def find_profile_by_name(self, name: str) -> DevProfileRef | None:
         """Case-insensitive name match. DEBUG-only dev-token endpoint."""
         ...

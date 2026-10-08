@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from app.recommendation.lookup import AmplifyLookupMixin
@@ -280,14 +280,7 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
                 )
             )
         if q:
-            query = query.filter(
-                Profile.name.ilike(f"%{q}%")
-                | Profile.id.in_(
-                    self.db.query(Business.profile_id).filter(
-                        Business.business_name.ilike(f"%{q}%")
-                    )
-                )
-            )
+            query = query.filter(self._name_or_business_matches(q))
         if city:
             query = query.filter(
                 Profile.id.in_(
@@ -303,6 +296,27 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
         rows = query.offset((page - 1) * limit).limit(limit).all()
         return rows, total
 
+    def _name_or_business_matches(self, q: str):
+        """A person matches if `q` is in their name as typed, in their name in
+        any other language (profile.name_i18n — so "akshay" finds someone who
+        typed "अक्षय" and the reverse), or in their business name.
+
+        Only the language values of name_i18n are searched: it also holds the
+        "auto" / "failed" bookkeeping lists, and matching its raw text would
+        make a search for "auto" return almost everyone."""
+        pattern = f"%{q}%"
+        in_other_language = text(
+            "EXISTS (SELECT 1 FROM jsonb_each_text(profile.name_i18n) AS kv(k, v) "
+            "WHERE kv.k NOT IN ('auto', 'failed') AND kv.v ILIKE :name_pattern)"
+        ).bindparams(name_pattern=pattern)
+        return or_(
+            Profile.name.ilike(pattern),
+            in_other_language,
+            Profile.id.in_(
+                self.db.query(Business.profile_id).filter(Business.business_name.ilike(pattern))
+            ),
+        )
+
     def suggest_profiles(self, q: str, limit: int) -> list:
         return (
             self.db.query(Profile)
@@ -311,14 +325,7 @@ class ConnectionsRepository(AmplifyLookupMixin, IConnectionsRepository):
                 joinedload(Profile.business),
                 joinedload(Profile.commodities).joinedload(Profile_Commodity.commodity),
             )
-            .filter(
-                Profile.name.ilike(f"%{q}%")
-                | Profile.id.in_(
-                    self.db.query(Business.profile_id).filter(
-                        Business.business_name.ilike(f"%{q}%")
-                    )
-                )
-            )
+            .filter(self._name_or_business_matches(q))
             .limit(limit)
             .all()
         )

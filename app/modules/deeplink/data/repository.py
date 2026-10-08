@@ -20,6 +20,7 @@ from app.modules.deeplink.domain.interfaces.repository import IDeepLinkRepositor
 from app.modules.news.data.models import RawArticle
 from app.modules.post.data.models import Post
 from app.modules.profile.data.models import Profile
+from app.modules.translation.domain.names import name_for_viewer
 
 
 class DeepLinkRepository(IDeepLinkRepository):
@@ -36,7 +37,7 @@ class DeepLinkRepository(IDeepLinkRepository):
             post_id=post.id,
             caption=post.caption,
             image_url=post.image_urls[0] if post.image_urls else None,
-            author_name=profile.name if profile else None,
+            author_name=name_for_viewer(profile.name, profile.name_i18n) if profile else None,
         )
 
     def get_article(self, article_id: UUID) -> ShareArticle | None:
@@ -68,7 +69,7 @@ class DeepLinkRepository(IDeepLinkRepository):
         business = profile.business
         return ShareProfile(
             profile_id=profile.id,
-            name=profile.name,
+            name=name_for_viewer(profile.name, profile.name_i18n),
             avatar_url=profile.avatar_url,
             business_name=business.business_name if business else None,
             city=business.city if business else None,

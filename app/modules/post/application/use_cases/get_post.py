@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from app.modules.post.data.models import Post, PostLike, PostSave, PostView
 from app.modules.post.domain.interfaces.repository import IPostRepository
 from app.modules.post.domain.exceptions import PostNotFoundError
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.post.application.schemas import (
     PostResponse, PostDealResponse, FeedPostCard, MyPostCard,
     MyPostFeedResponse, PostFeedResponse, SavedPostFeedResponse, FollowingFeedResponse,
@@ -171,7 +172,7 @@ def batch_feed_cards(
             is_saved=post.id in saved_ids,
             like_count=post.like_count,
             comment_count=post.comment_count,
-            author_name=author.name if author else "",
+            author_name=name_for_viewer(author.name, author.name_i18n) if author else "",
             author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
             author_user_id=str(author.users_id) if author else "",
             author_company=biz.business_name if biz else None,
@@ -225,7 +226,7 @@ def _batch_my_post_cards(
             view_count=post.view_count,
             share_count=post.share_count,
             save_count=post.save_count,
-            author_name=author.name if author else "",
+            author_name=name_for_viewer(author.name, author.name_i18n) if author else "",
             author_role=_ROLE_NAMES.get(author.role_id, "Trader") if author else "Trader",
             author_user_id=str(author.users_id) if author else "",
             author_company=biz.business_name if biz else None,

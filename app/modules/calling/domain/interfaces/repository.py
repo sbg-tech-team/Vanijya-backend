@@ -22,6 +22,12 @@ class ICallingRepository(ABC):
     def get_user_snap(self, user_id: UUID) -> UserSnap | None: ...
 
     @abstractmethod
+    def get_app_languages(self, user_ids: list[UUID]) -> dict[UUID, str]:
+        """Each user's saved app language (users.app_language) — for content
+        pushed to them, where the request's language is the sender's."""
+        ...
+
+    @abstractmethod
     def get_user_snaps(self, user_ids: list[UUID]) -> dict[UUID, UserSnap]:
         """Bulk identity lookup — one query, keyed by user_id."""
         ...

@@ -45,3 +45,32 @@ CONTENT_WAIT_POLL_SECONDS: float = 0.5
 # never rate limited.
 CONTENT_TRANSLATE_RATE_LIMIT: int = 60
 CONTENT_TRANSLATE_RATE_WINDOW_SECONDS: int = 3600
+
+
+# ── Chat translation checks ───────────────────────────────────────────────────
+# After a continuous-mode message fails the checks twice, skip it for this
+# long. The 5-minute recovery job looks back 60 minutes, so without this a
+# message the engine cannot translate cleanly would be re-sent ~24 times.
+CHAT_REJECTION_MEMO_TTL_SECONDS: int = 2 * 3600
+
+
+# ── Name suggestions (onboarding / profile edit) ──────────────────────────────
+NAME_SUGGESTIONS_MAX: int = 4
+# Spellings of a name do not change; a cached answer serves everyone who
+# types the same name (common names are cached for all users).
+NAME_SUGGESTIONS_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
+# Called when the user stops typing — a few times per onboarding, not per
+# keystroke. Only calls that reach the engine count.
+NAME_SUGGESTIONS_RATE_LIMIT: int = 30
+NAME_SUGGESTIONS_RATE_WINDOW_SECONDS: int = 600
+
+
+# ── Name generation (profile.name_i18n) ───────────────────────────────────────
+# Languages every person's name is kept in. Matches the app languages.
+NAME_TARGET_LANGUAGES: tuple[str, ...] = ("en", "hi")
+# Names per engine call.
+NAME_GENERATION_BATCH: int = 20
+# Names per scheduled run: the backfill drains existing profiles over a few
+# runs instead of a burst of calls that would hit the engine's per-minute
+# limits.
+NAME_GENERATION_PER_RUN: int = 40

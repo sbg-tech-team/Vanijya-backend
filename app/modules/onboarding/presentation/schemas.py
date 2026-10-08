@@ -45,3 +45,12 @@ class LogoutRequest(BaseModel):
     # cannot infer it: a user may be signed in on several devices and the
     # session carries no link to a push token.
     fcm_token: Optional[str] = None
+
+
+class AppLanguageRequest(BaseModel):
+    app_language: str   # "en" | "hi" — the translation module's codes
+
+
+class AppLanguageResponse(BaseModel):
+    app_language: str
+    supported: dict[str, str]   # code -> display name

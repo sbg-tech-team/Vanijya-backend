@@ -20,7 +20,12 @@ from fastapi.responses import JSONResponse
 
 from app.core import rate_limiter
 from app.core.redis_client import get_redis
-from app.dependencies import CurrentUser, get_current_user, get_current_user_id
+from app.dependencies import (
+    CurrentUser,
+    get_current_or_onboarding_user_id,
+    get_current_user,
+    get_current_user_id,
+)
 from app.modules.translation.domain.content import ContentRef, canonical_id
 from app.modules.translation.domain.exceptions import (
     LanguageNotChosenError,
@@ -28,15 +33,20 @@ from app.modules.translation.domain.exceptions import (
 )
 from app.modules.translation.domain.prompt import LANGUAGE_NAMES
 from app.modules.translation.domain.value_objects import (
+    NAME_SUGGESTIONS_RATE_LIMIT,
+    NAME_SUGGESTIONS_RATE_WINDOW_SECONDS,
     CONTENT_TRANSLATE_RATE_LIMIT,
     CONTENT_TRANSLATE_RATE_WINDOW_SECONDS,
 )
 from app.modules.translation.presentation.dependencies import (
+    get_name_suggestions_uc,
     get_resolve_content_language_uc,
     get_translate_content_uc,
     get_translation_preference_uc,
 )
 from app.modules.translation.presentation.schemas import (
+    NameSuggestionsRequest,
+    NameSuggestionsResponse,
     ContentItemOut,
     TranslateContentRequest,
     TranslateContentResponse,
@@ -131,3 +141,37 @@ def set_translation_preference(
     """Used when the app runs in English. Also becomes chat's fallback language."""
     return TranslationPreferenceOut(target_lang=uc.set(user_id, body.target_lang),
                                     supported=LANGUAGE_NAMES)
+
+
+@router.post("/name-suggestions", response_model=NameSuggestionsResponse)
+def name_suggestions(
+    body: NameSuggestionsRequest,
+    user_id=Depends(get_current_or_onboarding_user_id),
+    uc=Depends(get_name_suggestions_uc),
+    r: redis_lib.Redis = Depends(get_redis),
+):
+    """Spellings of a name in another script, for the name field at
+    onboarding and profile edit. The app calls this once the person stops
+    typing; they pick a suggestion or type their own. Works with the
+    onboarding token (before a profile exists) or a normal access token.
+
+    Cached answers are free; only calls that reach the engine count against
+    the limit (NAME_SUGGESTIONS_RATE_LIMIT per window)."""
+    def _rate_limit() -> None:
+        try:
+            rate_limiter.check(
+                r, f"name_suggest:{user_id}",
+                limit=NAME_SUGGESTIONS_RATE_LIMIT, window=NAME_SUGGESTIONS_RATE_WINDOW_SECONDS,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            log.warning("name suggestion rate limiting unavailable for %s", user_id)
+
+    try:
+        source, suggestions = uc.execute(body.text, body.to, before_engine_call=_rate_limit)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except TranslationEngineUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return NameSuggestionsResponse(source_lang=source, to=body.to, suggestions=suggestions)

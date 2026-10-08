@@ -47,6 +47,7 @@ def _to_participant(row: CallParticipant, snap: UserSnap | None) -> ParticipantE
         user_id=row.user_id,
         profile_id=snap.profile_id if snap else 0,
         name=snap.name if snap else "Unknown",
+        name_i18n=snap.name_i18n if snap else None,
         avatar_url=snap.avatar_url if snap else None,
         role=row.role,
         state=row.state,
@@ -71,24 +72,32 @@ class CallingRepository(ICallingRepository):
 
     def get_user_snap(self, user_id: UUID) -> UserSnap | None:
         row = (
-            self.db.query(Profile.users_id, Profile.id, Profile.name, Profile.avatar_url)
+            self.db.query(Profile.users_id, Profile.id, Profile.name, Profile.avatar_url, Profile.name_i18n)
             .filter(Profile.users_id == user_id)
             .first()
         )
         if row is None:
             return None
-        return UserSnap(user_id=row[0], profile_id=row[1], name=row[2], avatar_url=row[3])
+        return UserSnap(user_id=row[0], profile_id=row[1], name=row[2], avatar_url=row[3], name_i18n=row[4])
+
+    def get_app_languages(self, user_ids: list[UUID]) -> dict[UUID, str]:
+        if not user_ids:
+            return {}
+        return {
+            uid: lang
+            for uid, lang in self.db.query(User.id, User.app_language).filter(User.id.in_(user_ids)).all()
+        }
 
     def get_user_snaps(self, user_ids: list[UUID]) -> dict[UUID, UserSnap]:
         if not user_ids:
             return {}
         rows = (
-            self.db.query(Profile.users_id, Profile.id, Profile.name, Profile.avatar_url)
+            self.db.query(Profile.users_id, Profile.id, Profile.name, Profile.avatar_url, Profile.name_i18n)
             .filter(Profile.users_id.in_(user_ids))
             .all()
         )
         return {
-            r[0]: UserSnap(user_id=r[0], profile_id=r[1], name=r[2], avatar_url=r[3])
+            r[0]: UserSnap(user_id=r[0], profile_id=r[1], name=r[2], avatar_url=r[3], name_i18n=r[4])
             for r in rows
         }
 

@@ -19,6 +19,7 @@ from app.modules.profile.domain.exceptions import (
 )
 from app.modules.profile.domain.interfaces.repository import IProfileRepository
 from app.modules.profile.application.use_cases.rebuild_embedding import _upsert_user_embedding
+from app.modules.translation.domain.names import clean_owner_names, merge_owner_names
 
 
 def _uniq(ids: Iterable[int]) -> list[int]:
@@ -57,6 +58,7 @@ def _to_response(profile, posts_count: int = 0) -> ProfileResponse:
         id=profile.id,
         user_id=profile.users_id,
         name=profile.name,
+        name_i18n=getattr(profile, "name_i18n", None),
         role_id=profile.role_id,
         phone_number=profile.user.phone_number,
         country_code=profile.user.country_code,
@@ -215,10 +217,18 @@ def create_profile(repo: IProfileRepository, user_id: UUID, payload: ProfileCrea
     commodity_ids = _validate_commodity_ids(repo, payload.commodities)
     # payload.interests, if an old client still sends it, is accepted and ignored.
 
+    name = payload.name.strip()
+    try:
+        owner_names = clean_owner_names(payload.name_i18n)
+    except ValueError as e:
+        raise ProfileValidationError(str(e))
+    name_i18n = merge_owner_names(name, owner_names, existing=None, name_changed=True)
+
     repo.create_profile(
         user_id=user_id,
         role_id=payload.role_id,
-        name=payload.name.strip(),
+        name=name,
+        name_i18n=name_i18n,
         qty_min=payload.quantity_min,
         qty_max=payload.quantity_max,
         business_name=payload.business_name.strip() if payload.business_name else None,

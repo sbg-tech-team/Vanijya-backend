@@ -171,6 +171,14 @@ def start():
         id="translation.retry", max_instances=1, coalesce=True,
     )
 
+    # People's names in every app language (profile.name_i18n): fills in what
+    # profile create/edit did not, and backfills existing profiles a few
+    # dozen at a time.
+    scheduler.add_job(
+        translation_di.run_profile_names_job, "interval", minutes=10,
+        id="translation.profile_names", max_instances=1, coalesce=True,
+    )
+
     scheduler.add_job(_keep_alive,      "interval", minutes=10,  id="server.keepalive")
 
     scheduler.start()

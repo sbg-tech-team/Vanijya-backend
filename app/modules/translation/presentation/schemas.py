@@ -66,3 +66,21 @@ class TranslationPreferenceIn(BaseModel):
 class TranslationPreferenceOut(BaseModel):
     target_lang: Optional[str] = None
     supported: dict[str, str]
+
+
+class NameSuggestionsRequest(BaseModel):
+    # The name as the person is typing it, in any script.
+    text: str = Field(min_length=1, max_length=100)
+    # The language to suggest spellings in ("en" for a name typed in Hindi).
+    to: str
+
+    @field_validator("to")
+    @classmethod
+    def _check_to(cls, v: str) -> str:
+        return _supported(v)
+
+
+class NameSuggestionsResponse(BaseModel):
+    source_lang: str          # language the name was typed in, from its script
+    to: str
+    suggestions: list[str]    # most common first; may be empty — the person can always type their own

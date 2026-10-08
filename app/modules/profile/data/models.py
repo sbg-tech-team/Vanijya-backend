@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -25,6 +25,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     fcm_token: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     access_token: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # Language the user runs the app in, chosen at onboarding (en | hi).
+    # Written through PUT /auth/app-language; codes are the translation
+    # module's. The app also sends it per request as X-App-Language — this
+    # stored copy is for server-side work with no request (name
+    # transliteration, push text).
+    app_language: Mapped[str] = mapped_column(String(10), nullable=False, default="en",
+                                              server_default="en")
 
     __table_args__ = (
         UniqueConstraint("country_code", "phone_number", name="uq_phone"),
@@ -79,7 +86,13 @@ class Profile(Base):
     role_id: Mapped[int] = mapped_column(Integer, ForeignKey("roles.id"))
 
     name: Mapped[str] = mapped_column(String(100))
-    
+    # The same name per language, e.g. {"hi": "तथागत", "en": "Tathagata",
+    # "auto": ["en"]}. `name` stays exactly what the person typed; this holds
+    # it under its own language plus other languages — typed/picked by the
+    # person, or generated (listed under "auto"). Rules live in
+    # app/modules/translation/domain/names.py.
+    name_i18n: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     quantity_min: Mapped[Decimal] = mapped_column(Numeric)
     quantity_max: Mapped[Decimal] = mapped_column(Numeric)
 
