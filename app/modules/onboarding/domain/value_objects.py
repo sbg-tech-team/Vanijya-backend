@@ -87,3 +87,11 @@ class TokenPair:
     access_token: str
     refresh_token: str
     expires_in: int  # seconds until access token expires
+
+
+# ── App language ──────────────────────────────────────────────────────────────
+# Languages the app UI can run in. Codes are the translation module's
+# (ISO 639-1); only these two are offered today. Adding one here is all it
+# takes to accept it at PUT /auth/app-language.
+APP_LANGUAGES: tuple[str, ...] = ("en", "hi")
+DEFAULT_APP_LANGUAGE: str = "en"

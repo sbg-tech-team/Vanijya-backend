@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.database.session import SessionLocal
@@ -60,3 +60,13 @@ def get_onboarding_claims(token: str = Depends(oauth2_scheme)) -> OnboardingClai
 
 def get_onboarding_user_id(token: str = Depends(oauth2_scheme)) -> UUID:
     return decode_onboarding_token(token)
+
+
+def get_current_or_onboarding_user_id(token: str = Depends(oauth2_scheme)) -> UUID:
+    """For the few endpoints used both during onboarding and after it (the
+    app-language setting): accepts a normal access token or an onboarding
+    token. Either way only the caller's own user id comes out of it."""
+    try:
+        return get_current_user_id(token)
+    except HTTPException:
+        return decode_onboarding_token(token)

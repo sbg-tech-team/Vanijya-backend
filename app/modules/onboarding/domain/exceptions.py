@@ -20,6 +20,13 @@ class OnboardingDomainError(Exception):
     """
 
 
+class UserNotCreatedError(OnboardingDomainError):
+    """
+    Raised when an app-language call arrives before the user row exists —
+    i.e. before POST /profile/user in the onboarding flow.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Firebase / token verification
 # ---------------------------------------------------------------------------

@@ -25,6 +25,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     fcm_token: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     access_token: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # Language the user runs the app in, chosen at onboarding (en | hi).
+    # Written through PUT /auth/app-language; codes are the translation
+    # module's. The app also sends it per request as X-App-Language — this
+    # stored copy is for server-side work with no request (name
+    # transliteration, push text).
+    app_language: Mapped[str] = mapped_column(String(10), nullable=False, default="en",
+                                              server_default="en")
 
     __table_args__ = (
         UniqueConstraint("country_code", "phone_number", name="uq_phone"),

@@ -2,6 +2,7 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
+from app.modules.onboarding.application.use_cases.app_language import AppLanguageUseCase
 from app.modules.onboarding.data.adapters.firebase import FirebaseVerifier
 from app.modules.onboarding.data.repository import OnboardingRepository
 from app.modules.onboarding.domain.interfaces.firebase import IFirebaseVerifier
@@ -14,3 +15,9 @@ def get_onboarding_repo(db: Session = Depends(get_db)) -> IOnboardingRepository:
 
 def get_firebase_verifier() -> IFirebaseVerifier:
     return FirebaseVerifier()
+
+
+def get_app_language_uc(
+    repo: IOnboardingRepository = Depends(get_onboarding_repo),
+) -> AppLanguageUseCase:
+    return AppLanguageUseCase(repo)
