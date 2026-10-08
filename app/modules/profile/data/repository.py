@@ -159,6 +159,7 @@ def _to_profile_entity(profile: Profile) -> ProfileEntity:
         followers_count=profile.followers_count,
         following_count=profile.following_count,
         avatar_url=profile.avatar_url,
+        name_i18n=profile.name_i18n,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
         business=business,
@@ -375,12 +376,14 @@ class ProfileRepository(IProfileRepository):
         latitude: float,
         longitude: float,
         commodity_ids: list[int],
+        name_i18n: dict | None = None,
     ) -> None:
         try:
             profile = Profile(
                 users_id=user_id,
                 role_id=role_id,
                 name=name,
+                name_i18n=name_i18n,
                 quantity_min=qty_min,
                 quantity_max=qty_max,
             )

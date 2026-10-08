@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -61,6 +61,10 @@ class ProfileCreate(BaseModel):
 
     # Screen 4
     name: str
+    # The person's own spelling of their name in other languages, e.g.
+    # {"en": "Tathagata"} for someone who typed "तथागत" — typed, or picked
+    # from POST /translate/name-suggestions. Optional.
+    name_i18n: Optional[Dict[str, str]] = None
     commodities: List[int]          # [1=Rice, 2=Cotton, 3=Sugar] — multi-select
     # Disconnected (2026-10-06): profile_interests drove zero calculations
     # anywhere in the backend — onboarding/profile capture only, never read
@@ -89,6 +93,9 @@ class ProfileResponse(BaseModel):
     id: int
     user_id: UUID           # UUID from users table — matches user_id/author_user_id on other endpoints
     name: str
+    # {"hi": ..., "en": ..., "auto": [...]} — the name per language; "auto"
+    # lists the ones the system generated (see ProfileCreate.name_i18n).
+    name_i18n: Optional[Dict[str, Any]] = None
     role_id: int
     phone_number: str       # from users table — shown as read-only on Edit Profile screen
     country_code: str
@@ -141,6 +148,8 @@ class ProfilePublicResponse(BaseModel):
 
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
+    # Same as ProfileCreate.name_i18n: the person's own spellings.
+    name_i18n: Optional[Dict[str, str]] = None
     commodities: Optional[List[int]] = None
     interests: Optional[List[int]] = None
     quantity_min: Optional[float] = None

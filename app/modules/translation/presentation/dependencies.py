@@ -10,6 +10,7 @@ from app.core.redis_client import get_redis
 from app.dependencies import get_db
 from app.modules.translation.application.pipeline import TranslationPipeline
 from app.modules.translation.application.use_cases.handle_incoming_message import HandleIncomingMessageUseCase
+from app.modules.translation.application.use_cases.name_suggestions import NameSuggestionsUseCase
 from app.modules.translation.application.use_cases.resolve_content_language import ResolveContentLanguageUseCase
 from app.modules.translation.application.use_cases.resolve_target_language import ResolveTargetLanguageUseCase
 from app.modules.translation.application.use_cases.toggle_continuous import ToggleContinuousTranslationUseCase
@@ -20,6 +21,7 @@ from app.modules.translation.data.adapters.gemini_engine import GeminiTranslatio
 from app.modules.translation.data.adapters.inmemory_cache import InMemoryTranslationCache
 from app.modules.translation.data.adapters.redis_lock import RedisTranslationLock
 from app.modules.translation.data.adapters.redis_rejection_memo import RedisRejectionMemo
+from app.modules.translation.data.adapters.redis_suggestion_cache import RedisSuggestionCache
 from app.modules.translation.data.content_repository import ContentTranslationRepository
 from app.modules.translation.data.repository import TranslationRepository
 
@@ -86,6 +88,10 @@ def get_toggle_continuous_uc(
 
 def get_content_translation_repo(db: Session = Depends(get_db)) -> ContentTranslationRepository:
     return ContentTranslationRepository(db)
+
+
+def get_name_suggestions_uc(rc: redis.Redis = Depends(get_redis)) -> NameSuggestionsUseCase:
+    return NameSuggestionsUseCase(engine=_engine, cache=RedisSuggestionCache(rc))
 
 
 def get_translate_content_uc(

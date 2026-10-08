@@ -143,7 +143,7 @@ def _devanagari_units(word: str) -> Optional[list[str]]:
     return units
 
 
-def devanagari_pattern(word: str) -> Optional[re.Pattern]:
+def devanagari_pattern(word: str, final_a_optional: bool = False) -> Optional[re.Pattern]:
     """Regex the English sound key must match for this Devanagari word.
     Hindi drops the inherent "a" at the end of a word and often in the
     middle: final -> absent, medial -> optional."""
@@ -157,7 +157,9 @@ def devanagari_pattern(word: str) -> Optional[re.Pattern]:
     # strict part of the check.
     if units[-1].endswith(_OPTIONAL_A):
         after_cluster = len(units) >= 2 and not any(c in "aeiou" for c in units[-2])             and _OPTIONAL_A not in units[-2] and units[-2] != "n"
-        if not after_cluster:
+        # final_a_optional (suggestions only — the person picks): a final
+        # unwritten vowel may also be spelled "a" (Tathagat / Tathagata).
+        if not after_cluster and not final_a_optional:
             units[-1] = units[-1][:-1]
     raw = "".join(units)
     # Doubled consonants on the English side were collapsed; collapse here too.
@@ -202,13 +204,18 @@ def normalize_spelling(devanagari_name: Optional[str]) -> Optional[str]:
 
 @dataclass(frozen=True)
 class NameVerdict:
-    status: str                 # confident | suggested | rejected
+    status: str                 # confident | rejected
     reason: str                 # why, for logs and review sheets
 
 
-def sounds_the_same(english_name: str, devanagari_name: str) -> Optional[str]:
+def sounds_the_same(english_name: str, devanagari_name: str, final_a_optional: bool = False) -> Optional[str]:
     """None if every word of the Devanagari spelling sounds like the matching
-    English word; otherwise the reason it does not."""
+    English word; otherwise the reason it does not.
+
+    final_a_optional relaxes one rule, for SUGGESTIONS the person chooses
+    from: an English final "a" may stand for a Hindi word ending on a bare
+    consonant (Tathagata / तथागत, Rama / राम). Automatic generation never
+    uses it — there that ambiguity is exactly what must not be guessed."""
     en_words = _ROMAN_WORD.findall(english_name)
     hi_words = _DEVANAGARI_WORD.findall(devanagari_name)
     if not en_words:
@@ -223,7 +230,7 @@ def sounds_the_same(english_name: str, devanagari_name: str) -> Optional[str]:
             if devanagari_letter_key(hi) != key:
                 return f"initial {en!r} written as {hi!r}"
             continue
-        pattern = devanagari_pattern(hi)
+        pattern = devanagari_pattern(hi, final_a_optional)
         if pattern is None:
             return f"cannot read {hi!r}"
         if not any(pattern.match(k) for k in _key_variants(key)):

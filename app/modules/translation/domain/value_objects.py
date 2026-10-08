@@ -52,3 +52,14 @@ CONTENT_TRANSLATE_RATE_WINDOW_SECONDS: int = 3600
 # long. The 5-minute recovery job looks back 60 minutes, so without this a
 # message the engine cannot translate cleanly would be re-sent ~24 times.
 CHAT_REJECTION_MEMO_TTL_SECONDS: int = 2 * 3600
+
+
+# ── Name suggestions (onboarding / profile edit) ──────────────────────────────
+NAME_SUGGESTIONS_MAX: int = 4
+# Spellings of a name do not change; a cached answer serves everyone who
+# types the same name (common names are cached for all users).
+NAME_SUGGESTIONS_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
+# Called when the user stops typing — a few times per onboarding, not per
+# keystroke. Only calls that reach the engine count.
+NAME_SUGGESTIONS_RATE_LIMIT: int = 30
+NAME_SUGGESTIONS_RATE_WINDOW_SECONDS: int = 600

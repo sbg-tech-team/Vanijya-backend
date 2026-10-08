@@ -77,6 +77,7 @@ class IProfileRepository(ABC):
         latitude: float,
         longitude: float,
         commodity_ids: list[int],
+        name_i18n: dict | None = None,
     ) -> None:
         """Creates Profile + Business + commodity junctions atomically.
         No longer takes interest_ids (2026-10-06) — profile_interests is

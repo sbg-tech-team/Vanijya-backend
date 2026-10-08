@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -86,7 +86,13 @@ class Profile(Base):
     role_id: Mapped[int] = mapped_column(Integer, ForeignKey("roles.id"))
 
     name: Mapped[str] = mapped_column(String(100))
-    
+    # The same name per language, e.g. {"hi": "तथागत", "en": "Tathagata",
+    # "auto": ["en"]}. `name` stays exactly what the person typed; this holds
+    # it under its own language plus other languages — typed/picked by the
+    # person, or generated (listed under "auto"). Rules live in
+    # app/modules/translation/domain/names.py.
+    name_i18n: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     quantity_min: Mapped[Decimal] = mapped_column(Numeric)
     quantity_max: Mapped[Decimal] = mapped_column(Numeric)
 

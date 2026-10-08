@@ -33,6 +33,31 @@ TRANSLITERATION_SYSTEM_INSTRUCTION = (
 )
 
 
+NAME_SUGGESTIONS_SYSTEM_INSTRUCTION = (
+    "A person is typing their own name in an Indian B2B trading app. Suggest how "
+    "that SAME name is written in the target language's script — the spellings "
+    "people with this name actually use, most common first.\n"
+    "Rules:\n"
+    "1. Transliterate, never translate: keep the sound exactly.\n"
+    "2. Never add, drop or change a vowel — above all the LAST vowel of each "
+    "word. 'अक्षय' is 'Akshay', never 'Akshaya'; 'Akshaya' is 'अक्षया', never "
+    "'अक्षय'. The one allowed difference: a final unwritten vowel may also be "
+    "spelled with 'a' in English, as a separate suggestion after the closest "
+    "one ('तथागत' -> 'Tathagat', 'Tathagata').\n"
+    "3. Keep every word, in the same order. Give different real spellings "
+    "only ('Gauri' / 'Gouri', 'Tathagat'), no inventions.\n"
+    "Return ONLY JSON: {\"suggestions\": [<spelling>, ...]} with at most 4 entries."
+)
+
+
+def assemble_name_suggestions_prompt(text: str, target_language_name: str) -> AssembledPrompt:
+    return AssembledPrompt(
+        system_instruction=NAME_SUGGESTIONS_SYSTEM_INSTRUCTION,
+        user_content=f"Target language: {target_language_name}.\nName as typed: {text}",
+        structured_output=True,
+    )
+
+
 def assemble_transliteration_prompt(names: dict[str, str]) -> AssembledPrompt:
     """`names`: id -> name as written in English letters."""
     return AssembledPrompt(
