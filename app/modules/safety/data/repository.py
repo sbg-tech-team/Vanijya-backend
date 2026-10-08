@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.modules.profile.data.models import Profile
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.safety.data.models import UserBlock, UserReport
 from app.modules.safety.domain.entities import BlockedUser, Report
 from app.modules.safety.domain.interfaces.repository import ISafetyRepository
@@ -66,6 +67,7 @@ class SafetyRepository(ISafetyRepository):
                 UserBlock.blocked_id,
                 UserBlock.blocked_at,
                 Profile.name,
+                Profile.name_i18n,
                 Profile.avatar_url,
             )
             .order_by(UserBlock.blocked_at.desc())
@@ -77,7 +79,7 @@ class SafetyRepository(ISafetyRepository):
             BlockedUser(
                 blocked_id=r.blocked_id,
                 blocked_at=r.blocked_at,
-                name=r.name,
+                name=name_for_viewer(r.name, r.name_i18n) if r.name else r.name,
                 avatar_url=r.avatar_url,
             )
             for r in rows

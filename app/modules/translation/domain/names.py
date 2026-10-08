@@ -162,3 +162,13 @@ def display_name(name: str, name_i18n: Optional[dict], lang: Optional[str]) -> s
         if isinstance(value, str) and value.strip():
             return value
     return name
+
+
+def name_for_viewer(name: str, name_i18n: Optional[dict], lang: Optional[str] = None) -> str:
+    """display_name() for the person looking at the response: their app
+    language comes from the current request (X-App-Language) unless `lang`
+    is given — pushes to another user pass that user's language."""
+    if lang is None:
+        from app.core.request_language import get_viewer_language
+        lang = get_viewer_language()
+    return display_name(name, name_i18n, lang)

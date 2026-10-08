@@ -39,6 +39,7 @@ from app.modules.news.presentation.schemas import (
     ToggleSaveOut,
 )
 from app.shared.utils.response import ok
+from app.core.request_language import no_viewer_language
 
 router = APIRouter(prefix="/interactions", tags=["News Interactions"])
 
@@ -165,15 +166,17 @@ def send_news_article(
     from app.core.realtime import emit_to_group, emit_to_user
 
     try:
-        result = use_case.execute(
-            sender_profile_id=profile.profile_id,
-            sender_user_id=profile.user_id,
-            article_id=article_id,
-            dm_conversation_ids=body.dm_conversation_ids,
-            group_ids=body.group_ids,
-            caption=body.caption,
-            rc=rc,
-        )
+        # Delivered into other people's chats: names as typed.
+        with no_viewer_language():
+            result = use_case.execute(
+                sender_profile_id=profile.profile_id,
+                sender_user_id=profile.user_id,
+                article_id=article_id,
+                dm_conversation_ids=body.dm_conversation_ids,
+                group_ids=body.group_ids,
+                caption=body.caption,
+                rc=rc,
+            )
     except ArticleNotFoundError:
         raise HTTPException(status_code=404, detail="Article not found")
 

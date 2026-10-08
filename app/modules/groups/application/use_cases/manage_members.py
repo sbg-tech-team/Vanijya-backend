@@ -6,6 +6,7 @@ All functions are pure business logic; no FastAPI imports.
 Domain exceptions from app.modules.groups.domain.exceptions are raised on error.
 """
 from __future__ import annotations
+from app.modules.translation.domain.names import name_for_viewer
 
 import secrets
 from datetime import datetime, timezone
@@ -176,7 +177,7 @@ def get_members(
         out.append(
             GroupMemberOut(
                 user_id=m.user_id,
-                name=p.name if p else "Unknown",
+                name=name_for_viewer(p.name, getattr(p, "name_i18n", None)) if p else "Unknown",
                 role=p.role.name if p and p.role else "Unknown",
                 avatar_url=p.avatar_url if p else None,
                 is_admin=(m.role == "admin"),

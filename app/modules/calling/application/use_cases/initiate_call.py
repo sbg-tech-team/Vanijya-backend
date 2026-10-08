@@ -22,7 +22,9 @@ from app.modules.calling.application.dispatch import (
     PushMessage,
     SocketEvent,
 )
+from app.core.request_language import viewer_language
 from app.modules.calling.application.presenters import to_call_out
+from app.modules.translation.domain.names import display_name
 from app.modules.calling.domain.exceptions import (
     CallBlockedError,
     CallBudgetExceededError,
@@ -130,30 +132,42 @@ def initiate_call(
         raise VideoProviderError("Calling is temporarily unavailable.") from exc
 
     callee_ids = [uid for uid in participant_ids if uid != caller_id]
-    ring_payload = to_call_out(call, ring_timeout=RING_TIMEOUT_SECONDS).model_dump(mode="json")
+
+    # Each callee sees names in THEIR app language, not the caller's: the
+    # ringing screen is built per callee, and the push is sent once per
+    # language group. Saved language, since the request's header is the
+    # caller's. One query for all callees.
+    callee_lang = repo.get_app_languages(callee_ids)
+    ring_payloads: dict[str | None, dict] = {}
+    for lang in {callee_lang.get(uid) for uid in callee_ids}:
+        with viewer_language(lang):
+            ring_payloads[lang] = to_call_out(call, ring_timeout=RING_TIMEOUT_SECONDS).model_dump(mode="json")
+    by_lang: dict[str | None, list[UUID]] = {}
+    for uid in callee_ids:
+        by_lang.setdefault(callee_lang.get(uid), []).append(uid)
 
     return CallDispatch(
         result=to_call_out(call, creds=creds, ring_timeout=RING_TIMEOUT_SECONDS),
         socket_events=[
-            SocketEvent(event="incoming_call", payload=ring_payload, user_id=uid)
+            SocketEvent(event="incoming_call", payload=ring_payloads[callee_lang.get(uid)], user_id=uid)
             for uid in callee_ids
         ],
         pushes=[PushMessage(
-            user_ids=callee_ids,
+            user_ids=uids,
             data={
                 "type": "incoming_call",
                 "call_id": str(call.id),
                 "call_type": call.call_type,
                 "media": call.media,
                 "caller_user_id": str(caller.user_id),
-                "caller_name": caller.name,
+                "caller_name": display_name(caller.name, caller.name_i18n, lang),
                 "caller_avatar_url": caller.avatar_url or "",
                 "group_id": str(group.group_id) if group else "",
                 "group_name": group.name if group else "",
                 "created_at": call.created_at.isoformat(),
                 "ring_timeout_seconds": str(RING_TIMEOUT_SECONDS),
             },
-        )],
+        ) for lang, uids in by_lang.items()],
         provider_calls=[ProviderCall("provision_call", {
             "stream_call_type": stream_call_type,
             "stream_call_id": stream_call_id,

@@ -4,6 +4,7 @@ Kept out of the use-case files because five of them build the same CallOut.
 """
 from __future__ import annotations
 
+from app.modules.translation.domain.names import name_for_viewer
 from app.modules.calling.application.schemas import (
     CallHistoryItemOut,
     CallOut,
@@ -46,7 +47,7 @@ def to_call_out(
             ParticipantOut(
                 user_id=p.user_id,
                 profile_id=p.profile_id,
-                name=p.name,
+                name=name_for_viewer(p.name, p.name_i18n),
                 avatar_url=p.avatar_url,
                 role=p.role,
                 state=p.state,

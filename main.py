@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 import socketio
 from fastapi import FastAPI
 
+from app.core.request_language import RequestLanguageMiddleware
+
 from app.routers import register_routers
 from app.core.realtime import sio, start_evict_listener, stop_evict_listener
 # Imported for its @sio.event side effects — registers the chat socket handlers.
@@ -39,6 +41,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Vanijyaa API", lifespan=lifespan)
+# Reads X-App-Language once per request; people's names in responses are
+# shown in that language where we have it (app/core/request_language.py).
+app.add_middleware(RequestLanguageMiddleware)
 
 
 app.get("/", status_code=200)(lambda: {"message": "Server is up and running!"})

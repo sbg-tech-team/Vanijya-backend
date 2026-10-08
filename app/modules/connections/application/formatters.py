@@ -4,6 +4,7 @@ app_new had four byte-identical copies of `_fmt_profile` across the use-case
 files; this is the single definition.
 """
 from __future__ import annotations
+from app.modules.translation.domain.names import name_for_viewer
 
 
 def fmt_profile(profile, *, msg_req_status: str | None = None,
@@ -11,7 +12,7 @@ def fmt_profile(profile, *, msg_req_status: str | None = None,
     """Serialize a Profile into a flat dict for connection list responses."""
     return {
         "user_id":              str(profile.users_id),
-        "name":                 profile.name,
+        "name":                 name_for_viewer(profile.name, getattr(profile, "name_i18n", None)),
         "avatar_url":           profile.avatar_url,
         "role":                 profile.role.name.lower() if profile.role else None,
         "commodity":            [pc.commodity.name.lower() for pc in profile.commodities],
